@@ -1,0 +1,196 @@
+@* Bringing a server that already exists under management (docs/design.md § 4.4).
+   Registration, not installation: the folder is inspected, never written to —
+   beyond server-name, which is pre-filled from the folder's own file so writing
+   it back is usually the identity. *@
+
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Services.Instances
+
+@inject InstanceRegistry Registry
+
+<div class="provision-panel" style="max-width:36rem">
+    <h3>Add an existing server</h3>
+
+    <p class="check-detail">
+        Point the wrapper at a Bedrock server folder you already have — on any
+        volume — and it is managed from here on: console, backups, players,
+        updates. Nothing in the folder is installed over or moved.
+    </p>
+
+    <label class="field">
+        <span>Server folder</span>
+        <input class="form-control" value="@folder" disabled="@busy"
+               placeholder="D:\minecraft\my-old-server"
+               @onchange="OnFolderChanged" />
+        <span class="check-detail">
+            The folder that holds <code>bedrock_server.exe</code>, its
+            <code>worlds</code> and <code>server.properties</code>.
+        </span>
+    </label>
+
+    @if (folderRefusal is { } refused)
+    {
+        @* Above the inspection, not beside it: a folder that will be refused should
+           not first be described as if it were a candidate. *@
+        <p class="console-fault">@refused</p>
+    }
+    else if (report is { Exists: true } seen)
+    {
+        @if (!seen.HasExecutable)
+        {
+            <p class="console-fault">
+                No <code>bedrock_server.exe</code> in that folder — it does not look
+                like a Bedrock server. To set up a new one, use
+                <strong>New instance</strong> instead.
+            </p>
+        }
+        else
+        {
+            <dl class="inline-dl">
+                <dt>Calls itself</dt>
+                <dd>@(seen.ServerName ?? "—")</dd>
+                <dt>Port</dt>
+                <dd>@(seen.Port?.ToString() ?? "—")</dd>
+                <dt>World</dt>
+                <dd>@(seen.WorldName ?? "—")</dd>
+            </dl>
+
+            @if (portCollision is { } holder)
+            {
+                <p class="check-detail">
+                    <strong>@holder</strong> already uses port @seen.Port — only one of
+                    them can run at a time until one moves, on its Server properties tab.
+                </p>
+            }
+        }
+    }
+    else if (report is { Exists: false })
+    {
+        <p class="console-fault">That folder does not exist, or the path is not a full path.</p>
+    }
+
+    <label class="field">
+        <span>Name</span>
+        <input class="form-control" @bind="name" @bind:event="oninput" disabled="@busy"
+               placeholder="Pre-filled from the folder when it says" />
+    </label>
+
+    <div class="field-row">
+        <input type="checkbox" @bind="autoStart" disabled="@busy" />
+        <span>
+            Start automatically with the service
+            <span class="check-detail">
+                Off to begin with, deliberately: if this server is still being run by
+                whatever ran it yesterday, the wrapper starting a second copy would
+                fight it for the port. Stop the old arrangement first, then turn
+                this on.
+            </span>
+        </span>
+    </div>
+
+    @if (error is not null)
+    {
+        <p class="console-fault">@error</p>
+    }
+
+    <div class="provision-controls">
+        <button class="btn btn-primary" @onclick="AdoptAsync"
+                disabled="@(busy || folderRefusal is not null || string.IsNullOrWhiteSpace(folder)
+                            || string.IsNullOrWhiteSpace(name))">
+            @(busy ? "Adding…" : "Add this server")
+        </button>
+        <button class="btn btn-secondary" @onclick="OnCancelled" disabled="@busy">Cancel</button>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public EventCallback<InstanceSupervisor> OnAdopted { get; set; }
+
+    [Parameter]
+    public EventCallback OnCancelled { get; set; }
+
+    private string folder = string.Empty;
+    private string name = string.Empty;
+    private bool autoStart;
+    private bool busy;
+    private string? error;
+    private BdsFolderReport? report;
+    private string? portCollision;
+    private string? folderRefusal;
+
+    private void OnFolderChanged(ChangeEventArgs e)
+    {
+        folder = e.Value?.ToString()?.Trim() ?? string.Empty;
+        error = null;
+
+        // Asked before the folder is inspected, and answered by the same code that
+        // would refuse the adoption, so the pre-flight and the refusal cannot say
+        // different things about one path.
+        folderRefusal = folder.Length > 0 ? Registry.WhyThisFolderCannotHoldAServer(folder) : null;
+
+        report = folder.Length > 0 && folderRefusal is null
+            ? BdsFolderInspector.Inspect(folder)
+            : null;
+
+        // The folder's own name for itself, so adopting does not quietly rename
+        // it — writing server-name back becomes the identity. Only when the
+        // administrator has not typed one already: their half-typed name is not
+        // ours to replace.
+        if (string.IsNullOrWhiteSpace(name) && report?.ServerName is { } serverName)
+        {
+            name = serverName;
+        }
+
+        portCollision = FindPortCollision();
+    }
+
+    /// <summary>
+    /// Which managed server already listens on the inspected folder's port, if
+    /// any — computed once when the folder changes, not on every render.
+    /// </summary>
+    /// <remarks>
+    /// The parent page re-renders this form every second (its own status timer),
+    /// and every managed instance's <c>server.properties</c> is a filesystem
+    /// read — cheap for a local disk, but a managed instance can live on any
+    /// volume, including an unreachable network share, where
+    /// <see cref="Directory.Exists"/> blocks for the OS's own connect timeout.
+    /// A render-time property paid that cost, on the UI thread, every tick.
+    /// </remarks>
+    private string? FindPortCollision()
+    {
+        if (report?.Port is not { } port)
+        {
+            return null;
+        }
+
+        return Registry.All
+            .FirstOrDefault(s => BdsFolderInspector.Inspect(s.WorkingDirectory).Port == port)
+            ?.Definition.Name;
+    }
+
+    private async Task AdoptAsync()
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+
+        try
+        {
+            var adopted = await Registry.AdoptAsync(name, folder, autoStart);
+            await OnAdopted.InvokeAsync(adopted);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}

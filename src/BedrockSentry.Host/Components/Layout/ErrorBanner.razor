@@ -1,0 +1,26 @@
+@* Blazor's unhandled-error bar.
+
+   The framework owns all of the behaviour. `blazor.web.js` finds this element by
+   id and shows it by setting an inline `style.display="block"`, and the dismiss
+   handler is its too — there is deliberately no @@onclick here and nothing to
+   wire up, which is why none of this can be tested from C#.
+
+   `T155`: this markup used to be written out twice, once in MainLayout and once
+   in EmptyLayout, and only MainLayout had a stylesheet. Scoped CSS compiles to
+   `#blazor-error-ui[b-…]` and that attribute is stamped only on the markup of the
+   component the stylesheet belongs to — so under EmptyLayout nothing matched, the
+   `display: none` never applied, and the sign-in, setup and access-denied pages
+   each rendered a permanent "An unhandled error has occurred." below the fold
+   with a 🗙 that looked inert. Nothing had failed.
+
+   It lives here, rendered once from App.razor, rather than being fixed by moving
+   the rules into the global stylesheet. The duplicated markup was the actual
+   cause: a third layout would have forgotten the div entirely and had no banner
+   at all. ReconnectModal is the same shape for the same reason — a
+   framework-recognised element by id, its own scoped CSS, rendered once. *@
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

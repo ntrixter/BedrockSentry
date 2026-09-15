@@ -1,0 +1,349 @@
+# Builds, tests, and publishes a self-contained BedrockSentry release.
+#
+# Two consumers, one artifact: an administrator running install.ps1 for the first
+# time, and (from milestone 3.5) the wrapper's own self-update fetching a newer
+# build. Both pull the same zip, which is why the pipeline is built once rather
+# than improvised separately for each.
+#
+# NOTE (D13, open): the self-updater downloads over anonymous HTTPS. A private
+# repository serves neither the manifest nor the asset without a bearer token,
+# and shipping a token inside an installed Windows Service is not an option. This
+# workflow publishes to GitHub Releases on the assumption the repository is public
+# by the time self-update ships. If that decision lands elsewhere, only the
+# publish step and the downloadUrl in version.json change.
+#
+# NOTE (tags before build.70): every tag published up to and including
+# v0.3.0-build.69+0d03316 points at one stale commit, because the publish
+# step created tags without --target and the API defaults a new tag to the default
+# branch's head. Do not trust those tags for source — `git checkout <tag>`, the
+# release page's Source code links and `git describe` all resolve to the wrong
+# tree for them. The short SHA in each tag's own name is the commit that was
+# actually built, and version.json's commitSha is authoritative. Fixed forward
+# from build.70 rather than by moving 65 tags out from under published releases;
+# the assets, which are what anyone consumes, were always correct.
+
+name: release
+
+on:
+  push:
+    branches: [main, build]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel: a half-published release is worse than a redundant one.
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Windows, not Linux. Every project except Core targets net10.0-windows, and
+    # a self-contained win-x64 publish cannot be cross-built for the pieces that
+    # matter here.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # SourceLink stamps the commit into InformationalVersion, which BuildInfo
+          # parses back out to answer "is there an update".
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      # setup-dotnet's own cache option requires packages.lock.json, which this
+      # repository does not use.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Resolve version and channel
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $prefix = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.VersionPrefix |
+            Where-Object { $_ } | Select-Object -First 1
+
+          if (-not $prefix) { throw 'VersionPrefix not found in Directory.Build.props.' }
+
+          # Branch name to channel name. They are deliberately not the same string:
+          # the branch is repository housekeeping and the channel is a contract with
+          # whoever selected it. A single name serving as both overpromises, because a
+          # branch is renamed freely and a channel cannot be - an installed wrapper
+          # holds the channel string in its config. UpdateChannel.Stable is the config
+          # value that matches 'stable'.
+          #
+          # `main` is the stable branch because the DEFAULT BRANCH is what a visitor
+          # lands on: it is what the README renders from, what a plain clone returns,
+          # and what the language bar reads. That should be tested code. Snapshots
+          # land on `build` and are PROMOTED to `main`, which makes the arrangement a
+          # ratchet - a stable release cannot be cut from unverified code by accident,
+          # because promotion is its own deliberate act.
+          $channel = if ($env:GITHUB_REF_NAME -eq 'main') { 'stable' } else { 'build' }
+
+          # The stable channel gets a clean semantic version; build gets a
+          # monotonic prerelease so every run is distinguishable.
+          #
+          # BUILD NUMBER OFFSET, REBASED TWICE (2026-09-09, then 2026-09-15). A run
+          # number is per repository and starts at 1, so every time this project moves
+          # to a new repository the counter restarts. It has moved twice: once when
+          # the history was rewritten, and once when the code was split out to be
+          # published from a repository of its own.
+          #
+          # The offset is the LAST BUILD NUMBER THE PREVIOUS REPOSITORY REACHED, so
+          # run 1 here produces the next number in one continuous sequence. The
+          # previous repository ended at build.89; 1 + 89 = 90.
+          #
+          # Continuity is not tidiness. Two different build.1s in one project's
+          # history cannot be told apart in an issue record or a release note - and
+          # worse, an installed wrapper compares versions to decide whether an update
+          # is newer, so a counter that restarts BELOW the running build is invisible
+          # to every install in the field. Nothing reports an error; they simply never
+          # update again.
+          #
+          # GitHub offers no way to set or reset a run number, so this is the only
+          # mechanism available. Do not remove it, and when rebasing it read the
+          # latest tag rather than this sentence - the number moves every release. It
+          # can be retired only by raising VersionPrefix, which starts a new version
+          # line where the old numbers cannot be confused with the new ones.
+          $buildNumber = [int]$env:GITHUB_RUN_NUMBER + 89
+
+          $version = if ($channel -eq 'stable') {
+            $prefix
+          } else {
+            "$prefix-build.$buildNumber"
+          }
+
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $identity = "$version+$shortSha"
+
+          "version=$version"   | Out-File $env:GITHUB_OUTPUT -Append
+          "channel=$channel"   | Out-File $env:GITHUB_OUTPUT -Append
+          "identity=$identity" | Out-File $env:GITHUB_OUTPUT -Append
+          "shortSha=$shortSha" | Out-File $env:GITHUB_OUTPUT -Append
+
+          Write-Host "Building $identity on channel $channel"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: >
+          dotnet build --no-restore -c Release
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:BedrockSentryChannel=${{ steps.version.outputs.channel }}
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+      # These two steps were absent until 2026-09-10, which meant the PowerShell
+      # was parsed on every branch EXCEPT the ones that ship it: ci.yml skipped
+      # them and this workflow had no parse at all. The scripts
+      # that go in the archive were the ones nothing checked. Same shape as the
+      # licence manifest - a rule that runs everywhere except where it matters is
+      # a rule that is already broken.
+      - name: Parse the PowerShell
+        shell: pwsh
+        run: |
+          $bad = $false
+
+          foreach ($script in Get-ChildItem scripts/*.ps1) {
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  $script.FullName, [ref] $null, [ref] $errors) | Out-Null
+
+              if ($errors) {
+                  $bad = $true
+                  foreach ($e in $errors) {
+                      Write-Host "::error file=$($script.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+                  }
+              } else {
+                  Write-Host "$($script.Name) parses clean."
+              }
+          }
+
+          if ($bad) { throw 'One or more scripts failed to parse.' }
+
+      # T157. The parse above is PowerShell 7; a real server runs these under
+      # Windows PowerShell 5.1, and the difference is invisible to a parse
+      # because a PS6+ parameter is perfectly valid syntax that simply does not
+      # bind. ConvertFrom-Json -AsHashtable sat in install.ps1 for weeks and
+      # would have left an upgraded Server Core box with the service stopped.
+      #
+      # shell: powershell is the whole point of this step - it is the only one
+      # in either workflow that is not pwsh. Do not "tidy" it to match.
+      - name: Check the PowerShell against Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\Assert-PowerShell51.ps1
+
+      # Publish does its own RID-specific build; --no-build would reuse the
+      # RID-agnostic output above and produce the wrong thing.
+      #
+      # --self-contained is explicit on purpose: since .NET 8, passing -r alone
+      # quietly produces a framework-dependent publish, which would need a .NET 10
+      # runtime already installed on the target box. That is precisely the support
+      # burden D10 chose to avoid.
+      - name: Publish host
+        run: >
+          dotnet publish src/BedrockSentry.Host/BedrockSentry.Host.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:BedrockSentryChannel=${{ steps.version.outputs.channel }}
+          -p:ContinuousIntegrationBuild=true
+          -o stage
+
+      - name: Publish updater
+        run: >
+          dotnet publish src/BedrockSentry.Updater/BedrockSentry.Updater.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:BedrockSentryChannel=${{ steps.version.outputs.channel }}
+          -p:ContinuousIntegrationBuild=true
+          -o stage/updater
+
+      - name: Assemble the archive
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $identity = '${{ steps.version.outputs.identity }}'
+
+          # install.ps1 reads this to name the version directory, and the health
+          # endpoint reports the same string so the updater can confirm the build
+          # it installed is the one that actually came up.
+          Set-Content -Path stage/version.txt -Value $identity -Encoding UTF8 -NoNewline
+
+          Copy-Item scripts/install.ps1, scripts/uninstall.ps1, scripts/stdin-spike.ps1 -Destination stage/
+          # The wrapper's own licence, and the notices for everything a
+          # self-contained publish redistributes alongside it. MIT and Apache-2.0
+          # both ask that their notice travel with the copy, and until 2026-09-03
+          # the zip carried neither.
+          Copy-Item LICENSE, THIRD-PARTY-NOTICES.txt -Destination stage/
+
+          # ZipFile rather than Compress-Archive: Compress-Archive mangles empty
+          # directories and is markedly slower on trees this size.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $zipName = "bedrocksentry-$($identity.Replace('+','_')).zip"
+
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path stage).Path,
+            (Join-Path (Get-Location) $zipName),
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $false)
+
+          # Before the hash is published and before anything is uploaded: one
+          # manifest, in scripts/ReleaseContents.ps1, that package-local.ps1 is
+          # held to as well. The licence was absent from every release for months
+          # while the project was documented as MIT throughout, which is what a rule
+          # written only in prose is worth.
+          . ./scripts/ReleaseContents.ps1
+          Assert-ReleaseArchive -ZipPath $zipName
+
+          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          "zipName=$zipName" | Out-File $env:GITHUB_OUTPUT -Append
+          "sha256=$hash"     | Out-File $env:GITHUB_OUTPUT -Append
+
+          Write-Host "$zipName  sha256=$hash"
+
+      - name: Write the channel manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # The updater compares commitSha, not version: on the build channel the
+          # version prefix never moves, so version comparison alone would never
+          # detect an update.
+          @{
+            identity    = '${{ steps.version.outputs.identity }}'
+            version     = '${{ steps.version.outputs.version }}'
+            commitSha   = '${{ github.sha }}'
+            channel     = '${{ steps.version.outputs.channel }}'
+            publishedAt = (Get-Date).ToUniversalTime().ToString('o')
+            sha256      = '${{ steps.package.outputs.sha256 }}'
+            downloadUrl = "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.identity }}/${{ steps.package.outputs.zipName }}"
+          } | ConvertTo-Json | Set-Content -Path version.json -Encoding UTF8
+
+      - name: Publish the immutable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tag = 'v${{ steps.version.outputs.identity }}'
+          $prerelease = if ('${{ steps.version.outputs.channel }}' -eq 'stable') { '--latest' } else { '--prerelease' }
+
+          # --target is load-bearing. The tag does not exist yet, so this call
+          # creates it, and without a target the API points a new tag at the
+          # DEFAULT BRANCH's head, which is `main`. Every tag published before
+          # build.70 landed on one stale commit as a result: the assets were
+          # always right and version.json always carried the real commitSha, so
+          # self-update was never affected, but `git checkout <tag>`, the release
+          # page's Source code links and `git describe` all resolved to the wrong
+          # tree. Silently.
+          #
+          # github.sha, not github.ref_name: this pins the exact commit that was
+          # built. A branch name would re-resolve at publish time, so a second push
+          # landing mid-run would tag a commit nobody compiled — and the step is
+          # called immutable for a reason.
+          gh release create $tag `
+            '${{ steps.package.outputs.zipName }}' `
+            version.json `
+            --target ${{ github.sha }} `
+            --title $tag `
+            --notes "Channel: ${{ steps.version.outputs.channel }}`nCommit: ${{ github.sha }}`nSHA-256: ${{ steps.package.outputs.sha256 }}" `
+            $prerelease
+
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)." }
+
+      # A fixed tag per channel that always carries the newest manifest, so the
+      # updater has one stable URL to poll rather than having to enumerate
+      # releases and work out which is newest.
+      - name: Update the channel pointer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tag = 'channel-${{ steps.version.outputs.channel }}'
+
+          gh release delete $tag --yes --cleanup-tag 2>$null
+
+          # --target for the same reason as above. It matters less here — nobody
+          # checks out a rolling pointer for source — but --cleanup-tag means this
+          # tag is genuinely recreated each run, so without it the pointer sits on
+          # the default branch and its Source code links serve that tree rather than
+          # the one this run built - which on a `build` run is the wrong channel
+          # entirely.
+          gh release create $tag version.json `
+            --target ${{ github.sha }} `
+            --title "Latest ${{ steps.version.outputs.channel }}" `
+            --notes 'Rolling pointer to the newest build on this channel. Do not link to this tag for a specific version.' `
+            --prerelease
+
+          if ($LASTEXITCODE -ne 0) { throw "Publishing the channel pointer failed ($LASTEXITCODE)." }
+
+# There is deliberately no upload-artifact step. It used to upload a second copy
+# of the zip and the manifest for the Actions UI, which nothing ever downloaded:
+# install.ps1 and the self-updater both fetch from the immutable release above,
+# and the manifest's downloadUrl points there too.
+#
+# It was removed because it eventually failed every run — "Artifact storage quota
+# has been hit" — after the release itself had already published. That is the
+# worst shape a CI failure can take: a red workflow whose build, tests and publish
+# all succeeded, so the red X trains people to assume the build is broken when it
+# is not, or worse, to stop reading it. A duplicate nobody consumes is not worth
+# a permanently failing pipeline.

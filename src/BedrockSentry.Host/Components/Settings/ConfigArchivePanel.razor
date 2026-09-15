@@ -1,0 +1,221 @@
+@* Export and import the wrapper's own settings (docs/design.md § 13). The answer to
+   "I am moving this to a new box" and to "I broke something, what did it used
+   to say". *@
+
+@using System.Text
+@using BedrockSentry.Services.Configuration
+@using Microsoft.AspNetCore.Components.Forms
+
+@inject ConfigArchive Archive
+@inject TimeProvider Time
+@inject IJSRuntime JS
+
+<h2>Settings export and import</h2>
+
+<p class="lead">
+    Every instance definition, its backup and update settings, and the
+    install-wide update options — as one JSON file you can keep, diff, hand-edit
+    and put back.
+</p>
+
+<div class="empty-state">
+    <p style="margin-top:0">
+        <strong>The login is never included</strong>, not even hashed, so a restore
+        on a new machine asks you to set a password rather than inheriting one. The
+        certificate settings are left out too: they hold a certificate password in
+        plain text and describe the machine rather than the installation.
+    </p>
+
+    <div class="provision-controls">
+        <button class="btn btn-secondary" @onclick="ExportAsync" disabled="@busy">
+            @(exporting ? "Preparing…" : "Export to JSON")
+        </button>
+
+        <InputFile OnChange="PreviewAsync" accept=".json" disabled="@busy" />
+    </div>
+
+    @if (error is not null)
+    {
+        <p class="console-fault">@error</p>
+    }
+
+    @if (preview is { } pending && pendingJson is not null)
+    {
+        <div class="danger-panel" style="margin-top:1rem">
+            <h3>Import this file?</h3>
+
+            <p>
+                It carries
+                <strong>@pending.Sections.Count section@(pending.Sections.Count == 1 ? "" : "s")</strong>
+                @if (pending.Instances.Count > 0)
+                {
+                    <text>
+                        and <strong>@pending.Instances.Count
+                        server@(pending.Instances.Count == 1 ? "" : "s")</strong>
+                        (@string.Join(", ", pending.Instances))
+                    </text>
+                }.
+            </p>
+
+            <p class="check-detail">
+                Each server in the file is written exactly as it was exported, so a
+                setting removed since then does not survive inside it. A server
+                configured here and <em>not</em> in the file is left alone — an
+                import never deletes one.
+            </p>
+
+            @if (pending.NewInstances.Count > 0)
+            {
+                <p class="console-fault">
+                    <strong>@string.Join(", ", pending.NewInstances)
+                    @(pending.NewInstances.Count == 1 ? "is" : "are") new to this machine.</strong>
+                    Servers are read once when the service starts, so restart the
+                    BedrockSentry service afterwards for
+                    @(pending.NewInstances.Count == 1 ? "it" : "them") to appear — and
+                    make sure the world files are where the imported definition says
+                    they are.
+                </p>
+            }
+            else if (pending.NeedsRestart)
+            {
+                <p class="check-detail">
+                    Changes to a server's own settings are picked up as its pages are
+                    used; a restart is only needed for servers that are new here.
+                </p>
+            }
+
+            <div class="provision-controls">
+                <button class="btn btn-danger" @onclick="ImportAsync" disabled="@busy">
+                    @(importing ? "Importing…" : "Import these settings")
+                </button>
+                <button class="btn btn-secondary" @onclick="Cancel" disabled="@busy">Cancel</button>
+            </div>
+        </div>
+    }
+
+    @if (imported is { } done)
+    {
+        <p class="check-detail">
+            <strong>Imported.</strong>
+            @done.Sections.Count section@(done.Sections.Count == 1 ? "" : "s"),
+            @done.Instances.Count server@(done.Instances.Count == 1 ? "" : "s").
+            @if (done.NewInstances.Count > 0)
+            {
+                <text>
+                    Restart the BedrockSentry service for
+                    @string.Join(", ", done.NewInstances) to start being managed.
+                </text>
+            }
+        </p>
+    }
+</div>
+
+@code {
+    private bool exporting;
+    private bool importing;
+    private bool busy => exporting || importing;
+
+    private string? error;
+
+    /// Held between the preview and the confirmation, so the file is read once
+    /// and the thing imported is exactly the thing described.
+    private string? pendingJson;
+    private ConfigImportResult? preview;
+    private ConfigImportResult? imported;
+
+    private async Task ExportAsync()
+    {
+        exporting = true;
+        error = null;
+        imported = null;
+
+        try
+        {
+            var json = await Archive.ExportAsync(Time.GetUtcNow());
+            var name = $"bedrocksentry-settings-{Time.GetUtcNow():yyyyMMdd-HHmmss}.json";
+
+            await JS.InvokeVoidAsync(
+                "bedrockSentryDownload", name, Convert.ToBase64String(Encoding.UTF8.GetBytes(json)));
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            exporting = false;
+        }
+    }
+
+    /// <summary>
+    /// Reads the file and says what importing it would do, without doing it.
+    /// </summary>
+    /// <remarks>
+    /// A step the player import does not have, and this one needs: that import
+    /// only ever adds rows, while this rewrites server definitions and can leave
+    /// the wrapper pointed at directories that do not exist on this machine.
+    /// Worth reading before pressing.
+    /// </remarks>
+    private async Task PreviewAsync(InputFileChangeEventArgs args)
+    {
+        importing = true;
+        error = null;
+        imported = null;
+        preview = null;
+        pendingJson = null;
+
+        try
+        {
+            // 4 MB. A settings file is kilobytes; the ceiling is here so a wrong
+            // file cannot be read into memory whole before anything notices.
+            await using var stream = args.File.OpenReadStream(4L * 1024 * 1024);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+
+            var json = await reader.ReadToEndAsync();
+
+            preview = await Archive.PreviewAsync(json);
+            pendingJson = json;
+        }
+        catch (Exception ex)
+        {
+            error = $"That file could not be read — {ex.Message}";
+        }
+        finally
+        {
+            importing = false;
+        }
+    }
+
+    private async Task ImportAsync()
+    {
+        if (pendingJson is null)
+        {
+            return;
+        }
+
+        importing = true;
+        error = null;
+
+        try
+        {
+            imported = await Archive.ImportAsync(pendingJson);
+            preview = null;
+            pendingJson = null;
+        }
+        catch (Exception ex)
+        {
+            error = $"That file could not be imported — {ex.Message}";
+        }
+        finally
+        {
+            importing = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        preview = null;
+        pendingJson = null;
+        error = null;
+    }
+}

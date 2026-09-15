@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone helper executable for wrapper self-update file swaps.
+
+    No project references, on purpose — and the reason is mechanical, not
+    stylistic. This process exists because a running service cannot overwrite
+    its own loaded assemblies, so it performs the swap while the wrapper is
+    stopped (docs/design.md section 12). Referencing Core would pull Core's assembly
+    into this process's own load set, and Core's assembly is one of the files
+    it has to replace. Staying reference-free is what lets it swap the whole
+    wrapper without locking any part of it.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+
+    <!--
+      Single-file, and the opposite of the Host's settings on purpose — which is
+      why these live here rather than in Directory.Build.props. The helper is
+      copied out of the install tree before it runs, and one file is far easier to
+      stage correctly than a directory of them.
+
+      NOT NativeAOT, despite the size appeal. Whether ServiceController survives
+      ILC trimming at runtime is unverified, cross-OS AOT cannot be built at all,
+      and this is the one component whose failure mode is "the service is down and
+      the thing that fixes it is the thing that broke". Worth revisiting at
+      milestone 19 once there is a Windows runner to smoke-test on.
+    -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Explicit reference required: without it, ServiceController resolves to a
+      type-forward with no implementation behind it (CS1069).
+    -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.10" />
+  </ItemGroup>
+
+</Project>

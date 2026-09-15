@@ -1,0 +1,92 @@
+@* One host check: its state, what it means, and — where there is something to
+   press — what pressing it would change.
+
+   Shared by every check panel rather than copied into each. The rules encoded
+   here are the ones docs/design.md § 13.1 is emphatic about: a fix is offered only for
+   Missing, never for Unknown, and the fix describes itself before it is pressed
+   because "fix" is not a description of anything. Those held in one panel and
+   not the other would be the kind of drift nobody notices until a button
+   appears where it should not. *@
+
+@using BedrockSentry.Core.Diagnostics
+
+<div class="prop">
+    @* Drawn as soon as the row is known to exist, before its answer arrives.
+       Holding the panel back until the slowest probe returns is what made this
+       page look like it had failed to load. *@
+    @if (Check is not { } check)
+    {
+        <div class="prop-edit">
+            <div class="check-title">
+                <span class="check-state check-running"></span>
+                @Title
+            </div>
+        </div>
+        <div class="prop-doc"><p>Checking…</p></div>
+    }
+    else
+    {
+        <div class="prop-edit">
+            <div class="check-title">
+                <span class="check-state check-@check.State.ToString().ToLowerInvariant()"></span>
+                @check.Title
+            </div>
+
+            @if (check is { State: SystemCheckState.Missing, CanFix: true })
+            {
+                <div class="provision-controls">
+                    <button class="btn btn-secondary btn-sm" @onclick="OnFix" disabled="@Disabled">
+                        @(Applying ? "Applying…" : "Apply fix")
+                    </button>
+                </div>
+            }
+
+            @if (Outcome is { } outcome)
+            {
+                <div class="prop-check @(outcome.Succeeded ? "ok" : "bad")">@outcome.Message</div>
+            }
+        </div>
+
+        <div class="prop-doc">
+            <p>@check.Detail</p>
+
+            @if (check.FixDescription is { } fix && check.State is SystemCheckState.Missing)
+            {
+                @* Said before the button is pressed, not after. These change the
+                   machine's security posture, and the administrator gets to read
+                   the change before authorising it. *@
+                <span class="prop-allowed">Apply fix: @fix</span>
+            }
+
+            @if (check.Warning is { } warning && check.State is SystemCheckState.Missing)
+            {
+                <p class="prop-check warn">@warning</p>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>What the row is called before it has an answer to call itself.</summary>
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = string.Empty;
+
+    /// <summary>Null while the probe is still out. The row renders either way.</summary>
+    [Parameter]
+    public SystemCheck? Check { get; set; }
+
+    /// <summary>This row's own fix is running.</summary>
+    [Parameter]
+    public bool Applying { get; set; }
+
+    /// <summary>Any fix is running, anywhere in the panel.</summary>
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    /// <summary>What the last fix on this row did, if one has run.</summary>
+    [Parameter]
+    public SystemCheckFix? Outcome { get; set; }
+
+    [Parameter]
+    public EventCallback OnFix { get; set; }
+}

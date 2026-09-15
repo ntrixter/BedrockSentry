@@ -1,0 +1,153 @@
+@using BedrockSentry.Core.Instances
+
+@* What happened to a removed instance, shown on the Status page the removal sends
+   you to (`T169`).
+
+   Moved here out of ConfigurationTab rather than copied. That panel used to render
+   this itself, below the fold of a page describing a server that no longer existed,
+   and leaving its copy behind would be two renderings of one report with only one of
+   them reachable — the shape `T155` was.
+
+   ErrorBanner is the precedent for a small single-purpose component a page renders
+   once. *@
+
+@* T186. The palette and the ARIA role follow the outcome, because one of the arms
+   reports irreversible loss and the rest do not. Both read Outcome.AnythingLost
+   rather than switching again here — the rule lives in Core where the suite can
+   reach it, and there is no second copy to drift. *@
+<div class="page-notice @(Outcome.AnythingLost ? "page-notice-loss" : null)"
+     role="@(Outcome.AnythingLost ? "alert" : "status")">
+    <p><strong>@Outcome.Name</strong> has been removed.</p>
+    <ul class="milestone-list">
+        <li>
+            @* `T176`. The PartlyDeleted arm is the reason this is a switch over three
+               states rather than a bool: a delete that got part-way used to land in
+               the "kept" branch, so world data was lost and this sentence said it was
+               not. That branch now says so first and loudest, because it is the only
+               one an administrator has to act on. *@
+            @switch (Outcome.Files)
+            {
+                case DirectoryRemoval.Deleted:
+                    <text>Its files and world were deleted from <code>@Outcome.WorkingDirectory</code>.</text>
+                    break;
+
+                case DirectoryRemoval.PartlyDeleted:
+                    <text>
+                        <strong>Deleting its files failed part-way, so some of the world is
+                        already gone.</strong> @DirectoryRemovalPhrase.OpeningSentence(Outcome.FilesFailedBecause)
+                        Check <code>@Outcome.WorkingDirectory</code> before relying on
+                        anything left in it — what is still there is what could not be
+                        deleted, not a part of the world the delete never reached.
+                    </text>
+                    break;
+
+                case DirectoryRemoval.Refused:
+                    <text>
+                        Its files were <strong>kept</strong>, untouched:
+                        @DirectoryRemovalPhrase.Sentence(Outcome.FilesFailedBecause)
+                        Delete <code>@Outcome.WorkingDirectory</code> by hand if you meant to.
+                    </text>
+                    break;
+
+                default:
+                    <text>Its files are still at <code>@Outcome.WorkingDirectory</code>.</text>
+                    break;
+            }
+
+            @* `T190`. The console transcripts are part of what "delete its files"
+               promises, so a failure there has to reach the operator — but they are
+               log files, not world data, and they get a trailing clause on this line
+               rather than a bullet of their own or a share of the sentence above.
+
+               They used to be reported by overwriting Files with PartlyDeleted. That
+               could only fire when the working directory had been deleted COMPLETELY,
+               so the operator was told some of the world was gone and sent to inspect
+               a folder that no longer existed. No path existed on which that was true.
+               Only the failure is shown: "the logs were deleted too" is not news.
+
+               `T192`. IT NAMES ITS OWN FOLDER, and that is the whole point of the
+               <code> below. This arm used to print no path at all, so the only path in
+               the notice was the working directory — which on this branch was deleted
+               SUCCESSFULLY — and a reader following the sentence went to the wrong
+               folder. The transcript root is rendered nowhere else in the panel, has no
+               Storage override and sits under the ACL-denied data root, so if this
+               sentence does not name it the operator has no route to it at all.
+
+               Not merely a missing nicety: `T190`'s severity bound called that defect a
+               wording problem BECAUSE the path was printed mid-message, and `T190`'s own
+               fix is what deleted the fragment that printed it.
+
+               `Refused` IS DELIBERATELY NOT TESTED HERE, where it used to be. The
+               transcripts are assigned only from TryDeleteDirectory, whose four returns
+               do not include Refused, so that arm could never fire — and its wording
+               would have been wrong if it had, because Refused means nothing was
+               touched. InstanceCreationTests.A_transcript_removal_never_reports_refused
+               pins that unreachability across both ways the delete can end, so adding a
+               refusing path fails the suite rather than silently re-enabling a sentence
+               that contradicts it. *@
+            @if (Outcome.Transcripts is DirectoryRemoval.PartlyDeleted)
+            {
+                <text>
+                    Its console transcripts at <code>@Outcome.TranscriptDirectory</code>
+                    were not all deleted, which does not affect the world or the archives:
+                    @DirectoryRemovalPhrase.Sentence(Outcome.TranscriptsFailedBecause)
+                </text>
+            }
+        </li>
+        <li>
+            @* Missing until `T169`: the service has always worked this out and logged
+               it, and only the panel was silent — about the one step `D39` calls
+               irreversible.
+
+               The last branch deliberately says only that nothing was deleted. From
+               the outcome alone, "you did not ask" and "you asked and there was no
+               backup folder" are the same pair of values, and the service is right
+               not to claim a deletion for a folder that never existed. Do not reword
+               this to "you chose to keep them" — that is false in the second case. *@
+            @switch (Outcome.Backups)
+            {
+                case DirectoryRemoval.Deleted:
+                    <text>Its backup archives were deleted.</text>
+                    break;
+
+                case DirectoryRemoval.PartlyDeleted:
+                    <text>
+                        <strong>Deleting its backup archives failed part-way, so some of
+                        them are already gone.</strong> @DirectoryRemovalPhrase.OpeningSentence(Outcome.BackupsFailedBecause)
+                        Check the backups folder — the archives still there are the ones
+                        that could not be deleted, not the ones it chose to keep.
+                    </text>
+                    break;
+
+                case DirectoryRemoval.Refused:
+                    <text>
+                        Its backup archives were <strong>kept</strong>, untouched:
+                        @DirectoryRemovalPhrase.Sentence(Outcome.BackupsFailedBecause)
+                    </text>
+                    break;
+
+                default:
+                    <text>No backup archives were deleted.</text>
+                    break;
+            }
+        </li>
+        <li>
+            @(Outcome.PlayerRecordsForgotten > 0
+                ? $"{Outcome.PlayerRecordsForgotten} player records were erased."
+                : "No player records were stored for it, so none were erased.")
+        </li>
+    </ul>
+    <button class="btn btn-secondary" @onclick="OnDismiss">Dismiss</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public InstanceRemovalOutcome Outcome { get; set; } = default!;
+
+    /// <remarks>
+    /// The holder has already been emptied by the time this renders, so dismissing
+    /// only clears the page's own copy — there is nothing left to take again.
+    /// </remarks>
+    [Parameter]
+    public EventCallback OnDismiss { get; set; }
+}

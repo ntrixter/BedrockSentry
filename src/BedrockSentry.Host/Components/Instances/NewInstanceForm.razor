@@ -1,0 +1,240 @@
+@* Creating a server: name it, pick a version, take the suggested port. *@
+
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Core.Packages
+@using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Packages
+
+@inject InstanceRegistry Registry
+@inject ServerPackageStore Packages
+
+<div class="provision-panel" style="max-width:36rem">
+    <h3>New instance</h3>
+
+    <label class="field">
+        <span>Name</span>
+        <input class="form-control" @bind="name" @bind:event="oninput"
+               placeholder="Creative" disabled="@busy" />
+    </label>
+
+    <label class="field">
+        <span>Server version</span>
+        <select class="form-select" @bind="package" disabled="@busy">
+            @if (available.Count == 0)
+            {
+                <option value="">No packages in @Packages.Directory</option>
+            }
+            else
+            {
+                @foreach (var candidate in available)
+                {
+                    <option value="@candidate.FileName">@candidate.Display</option>
+                }
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Port</span>
+        <input class="form-control" type="number" @bind="port" disabled="@busy" />
+    </label>
+
+    <label class="field">
+        <span>Folder</span>
+        <input class="form-control" @bind="folder" disabled="@busy"
+               placeholder="@DefaultFolder" />
+        <span class="check-detail">
+            Leave blank for the default shown. A full path puts this server on
+            whichever volume you like — it does not have to share one with the
+            others.
+        </span>
+    </label>
+
+    <div class="field-row">
+        <input type="checkbox" @bind="autoStart" disabled="@busy" />
+        <span>Start automatically with the service</span>
+    </div>
+
+    <h3 style="margin-top:1.25rem">World</h3>
+
+    @* Everything here is editable afterwards under Server properties. It is on
+       this form because these are the answers somebody has already decided
+       before they click Create — and because the seed decides the terrain and
+       does nothing at all after the first launch. *@
+
+    <label class="field">
+        <span>Seed</span>
+        <input class="form-control" @bind="seed" disabled="@busy"
+               placeholder="Leave blank for a random world" />
+        <span class="check-detail">
+            Only read when the world is first generated. Changing it later does
+            nothing to a world that already exists.
+        </span>
+    </label>
+
+    <label class="field">
+        <span>Game mode</span>
+        <select class="form-select" @bind="gamemode" disabled="@busy">
+            <option value="survival">Survival</option>
+            <option value="creative">Creative</option>
+            <option value="adventure">Adventure</option>
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Difficulty</span>
+        <select class="form-select" @bind="difficulty" disabled="@busy">
+            <option value="peaceful">Peaceful</option>
+            <option value="easy">Easy</option>
+            <option value="normal">Normal</option>
+            <option value="hard">Hard</option>
+        </select>
+    </label>
+
+    <div class="field-row">
+        <input type="checkbox" @bind="allowCheats" disabled="@busy" />
+        <span>
+            Allow cheats
+            <span class="check-detail">
+                Turns on the operator command set for anyone the permissions file
+                promotes.
+            </span>
+        </span>
+    </div>
+
+    <div class="field-row">
+        <input type="checkbox" @bind="allowList" disabled="@busy" />
+        <span>
+            Enforce the allowlist
+            <span class="check-detail">
+                Off means anyone who can reach the port can join. The list itself is
+                edited on the instance's Players tab.
+            </span>
+        </span>
+    </div>
+
+    <div class="field-row">
+        <input type="checkbox" @bind="emitTelemetry" disabled="@busy" />
+        <span>
+            Send telemetry to Mojang
+            <span class="check-detail">
+                Bedrock ships no line for this and prints a notice on every startup
+                until one exists, so the wrapper writes your answer either way.
+            </span>
+        </span>
+    </div>
+
+    @if (Registry.All.Count > 1 || (Registry.All.Count == 1 && port != 19132))
+    {
+        @* D24. The reassurance is the point: every server keeps Bedrock's own LAN
+           default, and the guard settles the port contention that used to make
+           people turn it off — which stopped the collision and left those servers
+           unjoinable instead. *@
+        <p class="console-hint">
+            Bedrock answers LAN discovery on 19132 and 19133 whatever port a server is
+            set to, so more than one server wants the same pair. The wrapper holds them
+            for whichever server is configured for 19132, so this one starts normally
+            with LAN visibility left alone.
+        </p>
+    }
+
+    @if (error is not null)
+    {
+        <p class="console-fault">@error</p>
+    }
+
+    <div class="provision-controls">
+        <button class="btn btn-primary" @onclick="CreateAsync"
+                disabled="@(busy || string.IsNullOrWhiteSpace(name))">
+            @(busy ? "Creating…" : "Create instance")
+        </button>
+        <button class="btn btn-secondary" @onclick="OnCancelled" disabled="@busy">Cancel</button>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public EventCallback<InstanceSupervisor> OnCreated { get; set; }
+
+    [Parameter]
+    public EventCallback OnCancelled { get; set; }
+
+    private IReadOnlyList<ServerPackage> available = [];
+    private string name = string.Empty;
+    private string folder = string.Empty;
+    private string? package;
+    private int port;
+    private bool autoStart = true;
+    private bool busy;
+    private string? error;
+
+    private string seed = string.Empty;
+    private string gamemode = "survival";
+    private string difficulty = "hard";
+    private bool allowCheats;
+    private bool allowList;
+
+    /// Ticked by default: Bedrock asks for this on every startup until the
+    /// setting exists, and the answer is the operator's to give rather than the
+    /// wrapper's to assume.
+    private bool emitTelemetry = true;
+
+    protected override void OnInitialized()
+    {
+        available = Packages.List();
+        package = available.FirstOrDefault()?.FileName;
+        port = Registry.SuggestPort();
+    }
+
+    /// <summary>
+    /// Where this server will land if the folder is left blank — live, so the
+    /// placeholder answers the question before anyone has to ask it.
+    /// </summary>
+    private string DefaultFolder =>
+        Path.Combine(
+            Registry.Root,
+            InstanceLayout.SanitiseFolderName(
+                string.IsNullOrWhiteSpace(name) ? "your-server" : name,
+                "your-server"));
+
+    private async Task CreateAsync()
+    {
+        if (busy || string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+
+        try
+        {
+            var created = await Registry.CreateAsync(new NewInstanceRequest(
+                name,
+                string.IsNullOrEmpty(package) ? null : package,
+                port,
+                autoStart,
+                WorkingDirectory: string.IsNullOrWhiteSpace(folder) ? null : folder.Trim(),
+                StartNow: autoStart,
+                World: new NewWorldSettings
+                {
+                    Seed = seed,
+                    Gamemode = gamemode,
+                    Difficulty = difficulty,
+                    AllowCheats = allowCheats,
+                    AllowList = allowList,
+                    EmitTelemetry = emitTelemetry,
+                }));
+
+            await OnCreated.InvokeAsync(created);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}

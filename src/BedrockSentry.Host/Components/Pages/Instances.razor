@@ -1,0 +1,349 @@
+@page "/instances"
+@page "/instances/{InstanceId}"
+@page "/instances/{InstanceId}/{Tab}"
+@* Needs a circuit: this is a live view of running processes with controls that
+   act on them. *@
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Host.Components.Instances
+@using BedrockSentry.Services.Instances
+
+@inject InstanceRegistry Registry
+@inject NavigationManager Navigation
+
+<PageTitle>@(supervisor?.Definition.Name ?? "Instances") · BedrockSentry</PageTitle>
+
+<h1>Instances</h1>
+
+@if (Registry.All.Count == 0 && !creating && !adopting)
+{
+    <p class="lead">Every Bedrock server this wrapper manages.</p>
+    <p class="empty-state">
+        @(Registry.Retired.Count > 0
+            ? "Nothing is being managed right now. Create a server, or bring a retired one back below."
+            : "No instances yet. Create one below, or add it to the config file by hand — both end up in the same place.")
+    </p>
+    <p>
+        <button class="btn btn-primary" @onclick="OpenCreate">New instance</button>
+        <button class="btn btn-secondary" @onclick="OpenAdopt">Add an existing server</button>
+    </p>
+}
+else
+{
+    <p class="lead">Every Bedrock server this wrapper manages.</p>
+
+    <nav class="instance-tabs">
+        @foreach (var instance in Registry.Statuses())
+        {
+            @* Carries the current tab across. Comparing two servers means looking
+               at the same thing on both, so switching from one console to another
+               should land on the console — not send you back to Status to click
+               through again. *@
+            <a class="instance-tab @(instance.InstanceId == InstanceId && !creating && !adopting ? "active" : null)"
+               href="@($"instances/{instance.InstanceId}/{CurrentTab}")">
+                @instance.Name
+                <span class="state-dot state-@instance.State.ToString().ToLowerInvariant()"></span>
+            </a>
+        }
+
+        @* Sits in the instance strip because that is where someone looks for
+           "another one of these", even though neither is itself an instance.
+
+           Wrapped, because the push-to-the-right belongs to the pair rather than
+           to each button. Both used to carry `margin-left: auto` themselves, and
+           in a flex row each one then absorbs its own share of the free space —
+           so the first landed in the middle of the strip and the second at the
+           end, with a gap between them that looked like a mistake because it was
+           one. A container also means a third action cannot bring it back. *@
+        <div class="instance-tab-actions">
+            <button class="instance-tab instance-tab-new @(creating ? "active" : null)" @onclick="OpenCreate">
+                + New instance
+            </button>
+            <button class="instance-tab instance-tab-new @(adopting ? "active" : null)" @onclick="OpenAdopt">
+                + Add existing
+            </button>
+        </div>
+    </nav>
+
+    @if (creating)
+    {
+        <NewInstanceForm OnCreated="OnCreatedAsync" OnCancelled="@(() => creating = false)" />
+    }
+    else if (adopting)
+    {
+        <AdoptInstanceForm OnAdopted="OnCreatedAsync" OnCancelled="@(() => adopting = false)" />
+    }
+    else if (supervisor is null)
+    {
+        <p class="empty-state">No instance named <code>@InstanceId</code> is configured.</p>
+    }
+    else
+    {
+        <nav class="sub-tabs">
+            @foreach (var (key, label) in Tabs)
+            {
+                <a class="sub-tab @(key == CurrentTab ? "active" : null)"
+                   href="@($"instances/{supervisor.InstanceId}/{key}")">@label</a>
+            }
+        </nav>
+
+        @switch (CurrentTab)
+        {
+            case "console":
+                @* Keyed on the instance so switching servers builds a fresh
+                   console rather than reusing one holding another instance's
+                   sequence cursor — which would silently show the wrong output. *@
+                <ConsoleTab Supervisor="supervisor" @key="supervisor.InstanceId"
+                            @bind-Filters="consoleFilters" />
+                break;
+
+            case "players":
+                @* Keyed like the others: the roster polls on a timer, and carrying
+                   one instance's timer across a switch would leave it reporting
+                   another server's players under this server's heading. *@
+                <PlayersTab Supervisor="supervisor" @key="supervisor.InstanceId" />
+                break;
+
+            case "backups":
+                @* Keyed like the others: the history and unsaved strategy edits
+                   belong to one server, and carrying either across a switch
+                   would show or save them against the wrong one. *@
+                <BackupsTab Supervisor="supervisor" @key="supervisor.InstanceId" />
+                break;
+
+            case "properties":
+                @* Keyed for the same reason the console is: the editor holds
+                   unsaved edits, and carrying them across a switch to another
+                   server would write one instance's changes into another's file. *@
+                <ServerPropertiesTab Supervisor="supervisor" @key="supervisor.InstanceId" />
+                break;
+
+            case "configuration":
+                <ConfigurationTab Supervisor="supervisor" @key="supervisor.InstanceId" />
+                break;
+
+            default:
+                <StatusTab Supervisor="supervisor" @key="supervisor.InstanceId" />
+                break;
+        }
+    }
+}
+
+@if (Registry.Retired is { Count: > 0 } retired)
+{
+    @* Retired instances have no supervisor, so they appear in none of the views
+       above — correct, there is no server to manage, but it also means this is
+       the only place they exist. Without it "retire" is a one-way door. *@
+    <h2>Retired</h2>
+    <p class="lead">
+        Not managed and not started, with their files and player history kept.
+        Bring one back and it is managed again immediately — no service restart.
+    </p>
+
+    @if (restoreError is not null)
+    {
+        <p class="console-fault">@restoreError</p>
+    }
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Instance</th>
+                    <th>Runs from</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var instance in retired)
+                {
+                    <tr>
+                        <td>@instance.Name</td>
+                        <td><code>@instance.WorkingDirectory</code></td>
+                        <td>
+                            <button class="btn btn-sm btn-secondary"
+                                    @onclick="() => RestoreAsync(instance.InstanceId)"
+                                    disabled="@restoring">
+                                Restore
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <p class="console-hint">
+        To get rid of one for good, restore it first — deleting a world is confirmed
+        with your password on the instance's own Configuration tab, and that tab needs
+        the instance back to show it.
+    </p>
+}
+
+@code {
+    /// Order matters: this is the order they appear in.
+    private static readonly (string Key, string Label)[] Tabs =
+    [
+        ("status", "Status"),
+        ("console", "Console"),
+        ("players", "Players"),
+        ("backups", "Backups"),
+        ("properties", "Server properties"),
+        ("configuration", "Configuration"),
+    ];
+
+    [Parameter]
+    public string? InstanceId { get; set; }
+
+    [Parameter]
+    public string? Tab { get; set; }
+
+    private InstanceSupervisor? supervisor;
+    private bool creating;
+    private bool adopting;
+
+    private bool restoring;
+    private string? restoreError;
+
+    /// Lives here rather than in the console so it survives switching instances
+    /// and tabs — the console is rebuilt on both, and a filter that reset every
+    /// time you glanced at another server would be worse than no filter.
+    private ConsoleFilters consoleFilters = ConsoleFilters.All;
+
+    private PeriodicTimer? timer;
+    private CancellationTokenSource? cts;
+
+    /// Normalised to one of <see cref="Tabs"/>, so a hand-typed or stale URL
+    /// shows Status *and* highlights Status, rather than rendering one tab while
+    /// the strip claims none — and so a bad segment is not carried onto every
+    /// other instance's link when switching between them.
+    private string CurrentTab =>
+        Tab is { Length: > 0 } tab
+        && Tabs.Any(t => t.Key.Equals(tab, StringComparison.OrdinalIgnoreCase))
+            ? tab.ToLowerInvariant()
+            : "status";
+
+    protected override void OnParametersSet()
+    {
+        // No instance in the URL: land on the first one rather than an empty page.
+        // Redirecting rather than rendering it directly keeps the address bar
+        // honest about what is on screen.
+        if (InstanceId is null && !creating && !adopting)
+        {
+            var first = Registry.Statuses().FirstOrDefault();
+            if (first is not null)
+            {
+                Navigation.NavigateTo($"instances/{first.InstanceId}", replace: true);
+                return;
+            }
+        }
+
+        if (InstanceId is not null)
+        {
+            // A real navigation to a specific instance — this only runs when the
+            // route actually changes, never merely because a form was opened —
+            // so whatever form was open is done being looked at. Without this,
+            // clicking another instance's tab changes the URL and the active
+            // highlight but leaves the create/adopt form on screen, unreachable
+            // from that instance's own console or status.
+            creating = false;
+            adopting = false;
+        }
+
+        supervisor = InstanceId is not null && Registry.TryGet(InstanceId, out var found) ? found : null;
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        cts = new CancellationTokenSource();
+
+        // One second, for the state dots, the badge and the uptime. The console
+        // polls faster on its own, because output is the thing you watch.
+        timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        _ = TickAsync(cts.Token);
+    }
+
+    private async Task TickAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await timer!.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away or losing the circuit.
+        }
+    }
+
+    private void OpenCreate()
+    {
+        creating = true;
+        adopting = false;
+    }
+
+    private void OpenAdopt()
+    {
+        adopting = true;
+        creating = false;
+    }
+
+    private async Task RestoreAsync(string instanceId)
+    {
+        if (restoring)
+        {
+            return;
+        }
+
+        restoring = true;
+        restoreError = null;
+
+        try
+        {
+            var restored = await Registry.RestoreAsync(instanceId);
+
+            // Straight to it. Restoring a server is something you do because you
+            // want to look at it or start it, and it comes back stopped.
+            Navigation.NavigateTo($"instances/{restored.InstanceId}");
+        }
+        catch (Exception ex)
+        {
+            restoreError = ex.Message;
+        }
+        finally
+        {
+            restoring = false;
+        }
+    }
+
+    private Task OnCreatedAsync(InstanceSupervisor created)
+    {
+        creating = false;
+        adopting = false;
+
+        // Straight to the new server's console: the next thing anyone wants after
+        // creating one is to watch it come up.
+        Navigation.NavigateTo($"instances/{created.InstanceId}/console");
+        return Task.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (cts is not null)
+        {
+            await cts.CancelAsync();
+            cts.Dispose();
+        }
+
+        timer?.Dispose();
+    }
+}

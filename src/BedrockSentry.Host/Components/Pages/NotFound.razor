@@ -1,0 +1,11 @@
+@page "/not-found"
+@layout MainLayout
+@* Anonymous, or a 404 fetched by a signed-out browser redirects to the login page —
+   which 404s its own assets and loops. *@
+@attribute [AllowAnonymous]
+
+<PageTitle>Not found · BedrockSentry</PageTitle>
+
+<h1>Not found</h1>
+<p>That page does not exist.</p>
+<p><a href="/">Back to status</a></p>

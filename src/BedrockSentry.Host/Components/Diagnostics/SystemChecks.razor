@@ -1,0 +1,258 @@
+@* Firewall and Defender: what is set up, what is not, and a button for each
+   thing BedrockSentry can do about it. *@
+@implements IDisposable
+
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Services.Diagnostics
+@using BedrockSentry.Services.Instances
+
+@inject InstanceRegistry Registry
+@inject FirewallInspector Firewall
+@inject DefenderInspector Defender
+@inject AppIsolationInspector AppIsolation
+
+<h2>Reachability and scanning</h2>
+
+<p class="lead">
+    The two things that make a working server look broken. Neither is changed
+    unless you press a button.
+</p>
+
+@* Still running with nothing to show is "checking", not "nothing to check" —
+   the local-Minecraft rows are not known until the read comes back, and calling
+   that an empty result would be wrong for the second it takes. *@
+@if (checks is null || (checks.Count == 0 && running))
+{
+    <p class="empty-state">Checking…</p>
+}
+else if (checks.Count == 0)
+{
+    <p class="empty-state">
+        Nothing to check — the port and folder checks run per instance and there
+        are no servers, and there is no Minecraft installed on this machine.
+    </p>
+}
+else
+{
+    <div class="prop-panel">
+        @foreach (var item in checks)
+        {
+            <SystemCheckRow Title="@item.Title"
+                            Check="@item.Check"
+                            Applying="@(busy == item.Key)"
+                            Disabled="@(busy is not null)"
+                            Outcome="@Outcome(item)"
+                            OnFix="@(() => FixAsync(item))" />
+        }
+    </div>
+
+    <p class="console-hint">
+        Rechecked when you reload this page.
+        <button class="btn btn-secondary btn-sm" @onclick="RunAsync" disabled="@(busy is not null || running)">
+            Check again
+        </button>
+    </p>
+}
+
+@code {
+    private sealed class Item
+    {
+        public required string Key { get; init; }
+
+        /// What the row is called before it has an answer to call itself.
+        public required string Title { get; init; }
+
+        /// Null while the probe is still out. The row renders either way.
+        public SystemCheck? Check { get; set; }
+
+        public required Func<SystemCheck> Read { get; init; }
+
+        public required Func<Task<SystemCheckFix>> Fix { get; init; }
+    }
+
+    private List<Item>? checks;
+    private string? busy;
+    private bool running;
+
+    /// The machine's answers, read once per run and shared by every row.
+    private FirewallInspector.Rules firewall = new(false, string.Empty, string.Empty);
+    private DefenderInspector.Exclusions defender = new(false, string.Empty, string.Empty);
+
+    private CancellationTokenSource? cts;
+
+    /// Kept beside the checks rather than on them: a fix re-runs every check,
+    /// which rebuilds the list, and an outcome stored on an Item would vanish at
+    /// the moment it became worth reading.
+    private readonly Dictionary<string, SystemCheckFix> outcomes = [];
+
+    private SystemCheckFix? Outcome(Item item) =>
+        outcomes.TryGetValue(item.Key, out var outcome) ? outcome : null;
+
+    /// Deliberately not OnInitializedAsync. That runs during prerender, so
+    /// awaiting the probes there holds back the HTTP response itself — the whole
+    /// status page waits on the firewall before a single byte reaches the
+    /// browser. OnAfterRender does not run during prerender, so the page paints
+    /// first and these fill in behind it.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            cts = new CancellationTokenSource();
+            await RunAsync();
+        }
+    }
+
+    private async Task RunAsync()
+    {
+        if (running)
+        {
+            return;
+        }
+
+        running = true;
+
+        try
+        {
+            // Rebuilt rather than refreshed in place: an instance may have been
+            // added, removed or repointed since the last run, and a stale row
+            // offering to open a port for a server that no longer exists is worse
+            // than a moment with no rows at all.
+            var built = new List<Item>();
+
+            foreach (var supervisor in Registry.All.OrderBy(s => s.Definition.Name))
+            {
+                var name = supervisor.Definition.Name;
+                var directory = supervisor.WorkingDirectory;
+
+                foreach (var port in PortInspector.PortsOf(directory)
+                    .Where(p => p.Key is "server-port")
+                    .Select(p => p.Port))
+                {
+                    built.Add(new Item
+                    {
+                        Key = $"firewall:{supervisor.InstanceId}:{port}",
+                        Title = FirewallInspector.CheckTitle(name, port),
+                        Read = () => FirewallInspector.Check(firewall, name, port),
+                        Fix = () => Firewall.AllowAsync(name, port),
+                    });
+                }
+
+                built.Add(new Item
+                {
+                    Key = $"defender:{supervisor.InstanceId}",
+                    Title = DefenderInspector.CheckTitle(name),
+                    Read = () => DefenderInspector.Check(defender, name, directory),
+                    Fix = () => Defender.ExcludeAsync(directory),
+                });
+            }
+
+            // Named before they are answered, so the panel has its shape from the
+            // first paint and rows resolve in place rather than appearing.
+            checks = built;
+            StateHasChanged();
+
+            var token = cts?.Token ?? CancellationToken.None;
+
+            // All three describe the machine rather than an instance, so they are
+            // read once here and every row is decided against them. Together
+            // rather than in turn: they are unrelated processes and no answer
+            // depends on another.
+            var firewallRead = Firewall.ReadAsync(token);
+            var defenderRead = Defender.ReadAsync(token);
+            var isolationRead = AppIsolation.ReadAsync(token);
+
+            firewall = await firewallRead;
+            defender = await defenderRead;
+            var isolation = await isolationRead;
+
+            foreach (var item in built)
+            {
+                item.Check = item.Read();
+            }
+
+            // Appended rather than named up front, because unlike the others these
+            // are not known until the read returns — a machine with no Minecraft
+            // client on it has no row here at all, which is the answer rather than
+            // a Good nobody needs to think about.
+            AddLocalMinecraft(built, isolation);
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away mid-probe.
+        }
+        finally
+        {
+            running = false;
+        }
+
+        // OnAfterRender does not re-render on its own, so without this the rows
+        // would sit on "Checking…" holding answers they already have.
+        StateHasChanged();
+    }
+
+    /// One row per Minecraft installed here, and none at all when there is none.
+    private void AddLocalMinecraft(List<Item> built, AppIsolationInspector.Isolation isolation)
+    {
+        if (!isolation.Read)
+        {
+            // "Could not ask" is worth saying, but there is nothing to offer
+            // against it — Unavailable carries no fix.
+            built.Add(new Item
+            {
+                Key = "isolation:unknown",
+                Title = "Local Minecraft",
+                Check = AppIsolationInspector.Unavailable(isolation.Error),
+                Read = () => AppIsolationInspector.Unavailable(isolation.Error),
+                Fix = () => throw new InvalidOperationException("Nothing to apply."),
+            });
+
+            return;
+        }
+
+        foreach (var package in AppIsolationInspector.Packages(isolation.Json))
+        {
+            built.Add(new Item
+            {
+                Key = $"isolation:{package.Family}",
+                Title = AppIsolationInspector.CheckTitle(package.Family),
+                Check = AppIsolationInspector.Check(package),
+                Read = () => AppIsolationInspector.Check(package),
+                Fix = () => AppIsolation.ExemptAsync(package.Family),
+            });
+        }
+    }
+
+    public void Dispose()
+    {
+        cts?.Cancel();
+        cts?.Dispose();
+    }
+
+    private async Task FixAsync(Item item)
+    {
+        if (busy is not null)
+        {
+            return;
+        }
+
+        busy = item.Key;
+
+        try
+        {
+            outcomes[item.Key] = await item.Fix();
+
+            // Re-read rather than assuming the fix worked. A cmdlet can report
+            // success and still leave a machine where policy overrode it, and
+            // the check is the only thing that actually knows.
+            await RunAsync();
+        }
+        catch (Exception ex)
+        {
+            outcomes[item.Key] = new SystemCheckFix(false, ex.Message);
+        }
+        finally
+        {
+            busy = null;
+        }
+    }
+}

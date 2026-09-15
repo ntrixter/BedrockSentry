@@ -1,0 +1,175 @@
+# Compiles and tests, and publishes nothing.
+#
+# release.yml does build, test *and* publish in one job with no conditions on the
+# publish steps, and it triggers only on the release branches. That once made
+# pushing to `build` the only way to find out whether anything compiled — so every
+# compile check cut a release, and the build number counted pushes rather than
+# versions worth installing. This is the other half of that job, split out so the
+# two decisions are separate: this one answers "is it sound", release.yml answers
+# "ship it".
+#
+# ONLY `build` IS IGNORED, AND THE ASYMMETRY IS DELIBERATE. release.yml covers
+# both of its branches, so on paper both could be skipped here. They cannot,
+# because this file is published to a second repository where the branch names
+# mean different things, and `main` is the ONLY branch in one of them — ignoring
+# it there would leave that repository with no build check at all, silently and
+# for as long as nobody pushed a differently-named branch.
+#
+# `build` is safe to ignore because it means the same thing in both: frequent
+# snapshots, every one of which release.yml builds and tests. `main` is not, so it
+# runs here as well; a promotion is rare and a duplicated run before a stable
+# release is a second opinion rather than waste.
+#
+# This is the same trap the paths-ignore note below describes, one field up: a
+# LIST OF NAMES in a file that crosses names things that may not exist on the
+# other side.
+#
+# windows-latest for the same reason release.yml uses it: every project except
+# Core targets net10.0-windows, and the Windows-only tests — ShadowCopyPathTests
+# and the port-hold case — skip anywhere else. A Linux SDK is fine for a fast
+# local check and cannot replace this.
+
+name: ci
+
+on:
+  push:
+    branches-ignore: [build]
+    # A commit touching only the working documents cannot break a build, and
+    # report-only commits change no tracked file at all. Mixed commits still run: a
+    # paths-ignore filter only skips when *every* changed file matches.
+    #
+    # '*.md' RATHER THAN '**.md', and the single star is the whole point: in an
+    # Actions path filter one star matches the repository ROOT only, so this skips
+    # the working documents while still running on docs/** and on
+    # companion-pack/README.md. Those two DO cross to the public repository and are
+    # in the code-hygiene scan's scope, and '**.md' skipped them - a check that never
+    # runs on the files it is meant to police is the shape this repository keeps
+    # re-learning.
+    #
+    # A glob rather than a list of filenames, because this file crosses to the public
+    # repository and a list would name documents that do not exist there.
+    paths-ignore:
+      - '*.md'
+  pull_request:
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch. The opposite of release.yml, which
+# never cancels: a half-published release is worse than a redundant one, but a
+# half-finished check of code that has already been replaced is just waiting.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore
+
+      # No -p:Version here. Stamping a version is a release concern, and a check
+      # that invents one would report a build identity nothing can be installed
+      # from.
+      - name: Build
+        run: dotnet build --no-restore -c Release -p:ContinuousIntegrationBuild=true
+
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+      # The install scripts are the least-checked code in the repository: nothing
+      # compiles them, and they are only ever exercised by somebody running a real
+      # install. Several of the open defects live in them (`T137`, `T139`, half of
+      # `T138`, `T157`).
+      #
+      # These are parseable off Windows with pwsh, so both of these steps' logic can
+      # be run locally - though only this runner has Windows PowerShell 5.1, which is
+      # what the step below needs.
+      #
+      # A parse is not a run and proves only that the file is syntactically valid
+      # PowerShell — but that is the failure this catches, and it costs a second.
+      - name: Parse the PowerShell
+        shell: pwsh
+        run: |
+          $bad = $false
+
+          foreach ($script in Get-ChildItem scripts/*.ps1) {
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  $script.FullName, [ref] $null, [ref] $errors) | Out-Null
+
+              if ($errors) {
+                  $bad = $true
+                  foreach ($e in $errors) {
+                      Write-Host "::error file=$($script.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+                  }
+              } else {
+                  Write-Host "$($script.Name) parses clean."
+              }
+          }
+
+          if ($bad) { throw 'One or more scripts failed to parse.' }
+
+      # T157. The parse above is PowerShell 7; a real server runs these under
+      # Windows PowerShell 5.1, and the difference is invisible to a parse
+      # because a PS6+ parameter is perfectly valid syntax that simply does not
+      # bind. ConvertFrom-Json -AsHashtable sat in install.ps1 for weeks and
+      # would have left an upgraded Server Core box with the service stopped.
+      #
+      # shell: powershell is the whole point of this step - it is the only one
+      # in either workflow that is not pwsh. Do not "tidy" it to match.
+      - name: Check the PowerShell against Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\Assert-PowerShell51.ps1
+
+      # The code-comment standard: a comment may describe the system, it may not
+      # describe the project. The full rule, the referent test that applies it and the
+      # rewrite form are in the script's own header. The bar sits here, at the commit
+      # that writes the comment, rather than at publication - a filter that routinely
+      # catches things is a filter whose failures become normal.
+      #
+      # SELF-TEST FIRST, AND IT IS NOT CEREMONY. Its fixtures pin fifteen NEGATIVE
+      # cases - real lines from this tree that must stay clean - alongside six
+      # positives. A check that only pins positives is the half-a-rule shape
+      # RemovalPhraseTests already fell into, and here it would mean nobody notices
+      # the rules have been tightened into noise until somebody deletes the step.
+      #
+      # Deliberately NOT in release.yml, unlike the two steps above. T157's lesson -
+      # a check that skips the release branches skips the ones that ship - was about
+      # a safety check. This is not one: the real gate is the publish skill, which
+      # refuses. A violation can sit on build for a cycle and reach nobody.
+      - name: Check the code comments describe the system, not the project
+        shell: pwsh
+        run: |
+          .\scripts\Assert-CodeHygiene.ps1 -SelfTest
+          .\scripts\Assert-CodeHygiene.ps1
+
+      # The two lists that describe the publishable tree live in different files, and
+      # a file in the first but not the second is PUBLISHED UNCHECKED. That gap was
+      # real: paths-ignore skipped docs/ and companion-pack/README.md, both of which
+      # cross, and it was true from the hygiene check's first commit.
+      #
+      # One rule stated in two places is enforced in one, so it gets this class's
+      # remedy - a check that fails when they diverge - rather than a comment asking
+      # people to keep them in step.
+      - name: Check the crossing set and the scanned set agree
+        shell: pwsh
+        run: .\scripts\Assert-PublishScope.ps1

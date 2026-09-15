@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Implementations of the abstractions declared in Core.
+
+    The framework reference is what lets password hashing and DataProtection
+    live here instead of in Core. Core stays on plain net10.0 with no ASP.NET
+    dependency, which is the guarantee D9 exists to provide; the moment Core
+    needs Microsoft.AspNetCore.App, that guarantee is gone and the platform
+    analyzer stops catching accidental Windows coupling there.
+  -->
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BedrockSentry.Core\BedrockSentry.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- So path-math helpers like InstanceRegistry's PathsOverlap can be unit
+         tested directly against constructed paths, rather than only indirectly
+         through the filesystem — a volume root, in particular, is not
+         something a test should actually point real operations at. -->
+    <InternalsVisibleTo Include="BedrockSentry.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      DPAPI. Not part of the shared framework, so it needs an explicit reference
+      even though it is Windows-only. Used to protect the generated certificate's
+      export password at rest (D12) rather than leaving it in a plaintext sidecar.
+    -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
+
+    <!--
+      WMI. Reads Windows Server Data Deduplication state for the status page
+      (D55) through CIM directly, which is what keeps it from becoming the
+      fourth inspector that shells out to PowerShell. It is redistributed in the
+      self-contained publish, so it has an entry in THIRD-PARTY-NOTICES.txt.
+    -->
+    <PackageReference Include="System.Management" Version="10.0.10" />
+  </ItemGroup>
+
+</Project>

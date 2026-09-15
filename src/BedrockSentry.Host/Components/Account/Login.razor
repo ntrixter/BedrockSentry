@@ -1,0 +1,148 @@
+@page "/account/login"
+@layout BedrockSentry.Host.Components.Layout.EmptyLayout
+@attribute [AllowAnonymous]
+
+@using System.ComponentModel.DataAnnotations
+@using System.Security.Claims
+@using BedrockSentry.Core.Security
+@using BedrockSentry.Services.Security
+@using Microsoft.AspNetCore.Authentication
+@using Microsoft.AspNetCore.Authentication.Cookies
+
+@inject IAdminCredentialService Credentials
+@inject NavigationManager Navigation
+
+<PageTitle>Sign in · BedrockSentry</PageTitle>
+
+<div class="auth-shell">
+    <div class="auth-card">
+        <h1>BedrockSentry</h1>
+        <p class="auth-subtitle">Sign in to manage your servers.</p>
+
+        <EditForm Model="Input" method="post" OnValidSubmit="SignInAsync" FormName="login">
+            <DataAnnotationsValidator />
+
+            @if (failed)
+            {
+                @* Deliberately does not say which field was wrong — that would confirm
+                   whether a username exists to anyone probing the form. *@
+                <div class="auth-error" role="alert">
+                    That username and password combination was not accepted.
+                </div>
+            }
+
+            <label>
+                <span>Username</span>
+                <InputText @bind-Value="Input!.Username" autocomplete="username" class="form-control" />
+            </label>
+            <ValidationMessage For="() => Input!.Username" />
+
+            <label>
+                <span>Password</span>
+                <InputText type="password" @bind-Value="Input!.Password" autocomplete="current-password" class="form-control" />
+            </label>
+            <ValidationMessage For="() => Input!.Password" />
+
+            @* D58. Off by default: unticked is exactly the behaviour that shipped
+               before this existed, so nobody's session gets longer unless they ask. *@
+            <label class="auth-remember">
+                <InputCheckbox @bind-Value="Input!.RememberMe" />
+                <span>@SignInLifetime.Label</span>
+            </label>
+            <p class="auth-hint">@SignInLifetime.Help</p>
+
+            <button type="submit" class="btn btn-primary auth-submit">Sign in</button>
+        </EditForm>
+    </div>
+
+    <p class="auth-build">@BuildInfo.Identity</p>
+</div>
+
+@code {
+    private bool failed;
+
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    // Initialised in OnInitialized rather than with a property initializer: the form
+    // binder assigns this during a post, and an initializer can be overwritten with
+    // null on the way through (BL0008).
+    [SupplyParameterFromForm]
+    private LoginModel? Input { get; set; }
+
+    protected override void OnInitialized() => Input ??= new();
+
+    // Spelling must match CookieAuthenticationOptions.ReturnUrlParameter exactly. A
+    // mismatch is silent — the parameter simply never binds and every sign-in lands
+    // on the root instead of where the user was going.
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    private string? ReturnUrl { get; set; }
+
+    private async Task SignInAsync()
+    {
+        var result = Credentials.Verify(Input!.Username, Input.Password);
+
+        if (result == CredentialVerification.Failed)
+        {
+            failed = true;
+            return;
+        }
+
+        if (result == CredentialVerification.SuccessRehashNeeded)
+        {
+            // The stored hash predates current policy. This is the only moment the
+            // plaintext is available to upgrade it, so take it.
+            await Credentials.SetCredentialAsync(Input!.Username, Input.Password);
+        }
+
+        var current = Credentials.Current;
+
+        var identity = new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.Name, current.Username ?? Input!.Username),
+                new Claim(BedrockSentryClaims.SecurityStamp, current.SecurityStamp ?? string.Empty),
+            ],
+            CookieAuthenticationDefaults.AuthenticationScheme);
+
+        await HttpContext.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            new ClaimsPrincipal(identity),
+            SignInLifetime.For(Input!.RememberMe, DateTimeOffset.UtcNow));
+
+        Navigation.NavigateTo(SafeReturnUrl());
+    }
+
+    /// <summary>
+    /// Only same-site, path-relative destinations are honoured.
+    /// </summary>
+    /// <remarks>
+    /// The leading-double-slash check is the part that matters: "//evil.com" is a
+    /// protocol-relative absolute URL that browsers follow off-site, and it passes
+    /// Uri.IsWellFormedUriString and a naive StartsWith('/') test alike.
+    /// </remarks>
+    private string SafeReturnUrl()
+    {
+        var target = ReturnUrl;
+
+        if (string.IsNullOrWhiteSpace(target)
+            || !target.StartsWith('/')
+            || target.StartsWith("//", StringComparison.Ordinal))
+        {
+            return "/";
+        }
+
+        return target;
+    }
+
+    private sealed class LoginModel
+    {
+        [Required(ErrorMessage = "Enter your username.")]
+        public string Username { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Enter your password.")]
+        public string Password { get; set; } = string.Empty;
+
+        /// <summary>Deliberately not [Required] — false is a valid answer.</summary>
+        public bool RememberMe { get; set; }
+    }
+}

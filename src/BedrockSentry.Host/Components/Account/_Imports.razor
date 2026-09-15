@@ -1,0 +1,11 @@
+@* Everything in this folder stays on static server-side rendering.
+
+   Sign-in writes an authentication cookie, which means writing a response header,
+   which is impossible once an interactive circuit has taken over the response. The
+   trap is that it appears to work: HttpContext is non-null during prerendering, so
+   SignInAsync succeeds on the first render and silently stops working once the
+   circuit connects.
+
+   Excluding the whole area from interactive routing removes the possibility rather
+   than relying on nobody adding @rendermode to a page here later. *@
+@attribute [ExcludeFromInteractiveRouting]

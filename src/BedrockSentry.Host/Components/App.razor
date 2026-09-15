@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+@* The theme is stamped onto the document server-side, from a cookie, before the
+   page is sent. Applying it from script after load would flash the wrong colours
+   on every navigation. data-bs-theme drives Bootstrap 5.3's own dark mode from
+   the same value. *@
+<html lang="en" data-theme="@theme" data-bs-theme="@theme">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    @* In <head> so the toggle's handler exists before anyone can press it. *@
+    <script src="@Assets["theme.js"]"></script>
+    <script src="@Assets["console.js"]"></script>
+    <script src="@Assets["download.js"]"></script>
+    <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    @* Must match <AssemblyName> exactly. @Assets does not throw on an unknown key —
+       it passes the string straight through, producing a silent 404 and an app with
+       no scoped CSS at all. *@
+    <link rel="stylesheet" href="@Assets["BedrockSentry.Host.styles.css"]" />
+    <ImportMap />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <HeadOutlet />
+</head>
+
+<body>
+    <Routes />
+    <ReconnectModal />
+    @* Once, here, rather than once per layout — which is how EmptyLayout ended up
+       with the markup and none of the stylesheet (`T155`). A layout added later
+       gets it without anybody remembering to. *@
+    <ErrorBanner />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>
+
+@code {
+    private const string ThemeCookie = "bedrocksentry-theme";
+
+    [CascadingParameter]
+    private HttpContext? HttpContext { get; set; }
+
+    private string theme = "dark";
+
+    protected override void OnInitialized()
+    {
+        // Only the two known values are honoured, and anything else falls back to
+        // the default. The cookie is attacker-controllable and this value is
+        // interpolated into an attribute, so an allow-list is the safe shape even
+        // though Razor would encode it anyway.
+        theme = HttpContext?.Request.Cookies[ThemeCookie] == "light" ? "light" : "dark";
+    }
+}

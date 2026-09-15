@@ -1,0 +1,104 @@
+BedrockSentry — third-party notices
+====================================
+
+BedrockSentry itself is MIT-licensed; see LICENSE. This file covers the other
+people's work that ships inside a BedrockSentry release archive.
+
+Releases are published self-contained, which means the zip carries not only
+BedrockSentry's own code but a copy of the .NET runtime and every library it
+depends on. Those components are redistributed under their own licences, each of
+which asks that its notice travel with the copy. This file is that notice.
+
+Nothing in this file concerns Minecraft or the Bedrock Dedicated Server. The
+server binary is not part of any BedrockSentry release — it is downloaded from
+Mojang on the machine that runs it, and it is governed by Mojang's own terms, not
+by anything here. See README.md.
+
+
+----------------------------------------------------------------------
+.NET and ASP.NET Core runtime
+----------------------------------------------------------------------
+
+Copyright (c) .NET Foundation and Contributors.
+Licensed under the MIT License (text below).
+
+This is the largest part of the archive by far: the shared framework, the
+ASP.NET Core module (aspnetcorev2_inprocess.dll), the QUIC transport
+(msquic.dll), and the Microsoft.Extensions.* and System.* libraries. The
+runtime has third-party notices of its own, covering components it in turn
+contains, at:
+
+  https://github.com/dotnet/runtime/blob/main/THIRD-PARTY-NOTICES.TXT
+  https://github.com/dotnet/aspnetcore/blob/main/THIRD-PARTY-NOTICES.txt
+
+Also under this licence and copyright:
+  Microsoft.Data.Sqlite
+  Microsoft.Extensions.Hosting.WindowsServices
+  System.Security.Cryptography.ProtectedData
+  System.ServiceProcess.ServiceController
+  System.Diagnostics.EventLog
+  System.Management            (WMI, for the Data Deduplication read - D55)
+  System.CodeDom               (pulled in by System.Management)
+
+
+----------------------------------------------------------------------
+SQLitePCLRaw
+----------------------------------------------------------------------
+
+  SQLitePCLRaw.core
+  SQLitePCLRaw.provider.e_sqlite3
+  SQLitePCLRaw.batteries_v2
+  SQLitePCLRaw.lib.e_sqlite3  (the packaging of e_sqlite3.dll)
+
+Copyright 2014-2024 SourceGear, LLC.
+Licensed under the Apache License, Version 2.0 (text below).
+
+
+----------------------------------------------------------------------
+SQLite  (e_sqlite3.dll)
+----------------------------------------------------------------------
+
+SQLite is in the public domain. Its authors have dedicated the code to the
+public domain and disclaim copyright; the full statement is at
+https://www.sqlite.org/copyright.html. The build shipped here is the one
+packaged by SQLitePCLRaw, above.
+
+
+======================================================================
+The MIT License
+======================================================================
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+======================================================================
+Apache License, Version 2.0
+======================================================================
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use the covered files except in compliance with the License. You may obtain a
+copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.

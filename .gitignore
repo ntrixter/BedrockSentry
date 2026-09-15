@@ -1,0 +1,101 @@
+# =========================
+# BedrockSentry .gitignore
+# =========================
+
+## .NET build output
+[Bb]in/
+[Oo]bj/
+out/
+publish/
+*.pdb
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## NuGet
+*.nupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Test results
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+
+## Logs
+*.log
+logs/
+
+## Local configuration and secrets — never commit real config
+appsettings.Development.json
+appsettings.Local.json
+appsettings.*.local.json
+**/config.local.*
+*.env
+
+## Local-only working files: results, scratchpads and hand-created toggles.
+## These two rules exist because nothing enforced the convention before them —
+## such files had simply never been committed, which is not the same as being
+## safe from it.
+*.local
+*.local.md
+
+## The rest of the working state left behind by running this software on a real
+## machine. These were ignored only by .git/info/exclude, which is machine-local,
+## uncommitted and survives no clone — so a fresh checkout shows live worlds and
+## player data as untracked, and the "git status is clean afterwards" safety
+## signal drowns in them.
+/test-instances/
+/.claude/test-mode.json
+/.claude/settings.local.json
+
+## TLS certificates — generated at runtime, never committed
+*.pfx
+*.pem
+*.key
+*.crt
+
+## Runtime data: BDS installs, worlds, backups, player database.
+## Scoped to specific runtime roots rather than matching folder names
+## anywhere, so nothing under companion-pack/ or src/ is ever caught by
+## accident. The BDS binary itself is downloaded per-install and must never be
+## committed: Minecraft's usage guidelines require every copy to come from Mojang.
+/instances/
+/bedrock-server/
+/bds/
+/backups/
+worlds/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+players.json
+config-export*.json
+
+## Zips, in both directions. package-local.ps1 writes its release archive to the
+## repository root by default — a ~120 MB self-contained publish, which is build
+## output however it is named — and a Bedrock download landing here must never be
+## committed at all. The rules above only cover those as
+## directories, so a zip sitting beside them would otherwise be staged by a plain
+## `git add .`.
+bedrocksentry-*.zip
+bedrock-server-*.zip
+
+## OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Misc
+*.tmp
+*.bak
+node_modules/

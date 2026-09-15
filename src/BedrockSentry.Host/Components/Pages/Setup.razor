@@ -1,0 +1,223 @@
+@page "/setup"
+@layout BedrockSentry.Host.Components.Layout.EmptyLayout
+@attribute [AllowAnonymous]
+
+@using System.ComponentModel.DataAnnotations
+@using System.Text.Json.Nodes
+@using BedrockSentry.Core.Configuration
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Core.Security
+@using BedrockSentry.Services.Configuration
+@using Microsoft.Extensions.Options
+
+@inject IAdminCredentialService Credentials
+@inject SetupState State
+@inject ISentryPaths Paths
+@inject IOptions<TlsOptions> Tls
+
+<PageTitle>First-run setup · BedrockSentry</PageTitle>
+
+<div class="auth-shell">
+    <div class="auth-card auth-card-wide">
+
+        @* [AllowAnonymous] alone would leave this page reachable forever. The runtime
+           check is what actually closes it once an account exists. *@
+        @if (State.IsConfigured)
+        {
+            <h1>Already set up</h1>
+            <p>An administrator account already exists on this install.</p>
+            <p><a href="/account/login">Sign in</a></p>
+        }
+        else if (completed)
+        {
+            <h1>Setup complete</h1>
+            <p>
+                The administrator account <strong>@Input!.Username</strong> has been created.
+            </p>
+            <div class="setup-notice">
+                <p>
+                    <strong>One more step: restart the BedrockSentry service.</strong>
+                </p>
+                <p>
+                    Until setup finished, the wrapper listened only on this machine's
+                    loopback address — so that nobody on the network could reach this
+                    wizard and claim the administrator account first. It starts
+                    listening on the network on the next start.
+                </p>
+                <p class="setup-command">net stop BedrockSentry &amp;&amp; net start BedrockSentry</p>
+                <p>
+                    Then sign in at
+                    <code>https://&lt;this-server&gt;:@Tls.Value.Port/</code>. The
+                    certificate is self-signed by default, so expect a browser warning
+                    the first time.
+                </p>
+            </div>
+        }
+        else
+        {
+            <h1>First-run setup</h1>
+            <p class="auth-subtitle">Create the administrator account for this install.</p>
+
+            <EditForm Model="Input" method="post" OnValidSubmit="CompleteAsync" FormName="setup">
+                <DataAnnotationsValidator />
+
+                @if (error is not null)
+                {
+                    <div class="auth-error" role="alert">@error</div>
+                }
+
+                <label>
+                    <span>Setup token</span>
+                    <InputText @bind-Value="Input!.Token" class="form-control" autocomplete="off" />
+                </label>
+                <p class="field-hint">
+                    Written to <code>@TokenPath</code> when the service started, and
+                    recorded in the Windows event log. Readable only by SYSTEM and
+                    local administrators.
+                </p>
+                <ValidationMessage For="() => Input!.Token" />
+
+                <label>
+                    <span>Username</span>
+                    <InputText @bind-Value="Input!.Username" class="form-control" autocomplete="username" />
+                </label>
+                <ValidationMessage For="() => Input!.Username" />
+
+                <label>
+                    <span>Password</span>
+                    <InputText type="password" @bind-Value="Input!.Password" class="form-control" autocomplete="new-password" />
+                </label>
+                <p class="field-hint">At least @SetupModel.MinimumPasswordLength characters.</p>
+                <ValidationMessage For="() => Input!.Password" />
+
+                <label>
+                    <span>Confirm password</span>
+                    <InputText type="password" @bind-Value="Input!.ConfirmPassword" class="form-control" autocomplete="new-password" />
+                </label>
+                <ValidationMessage For="() => Input!.ConfirmPassword" />
+
+                <label>
+                    <span>Instance folder</span>
+                    <InputText @bind-Value="Input!.InstanceRoot" class="form-control" autocomplete="off"
+                               spellcheck="false" />
+                </label>
+                @* Asked here because it is the one choice that is awkward to
+                   change later: moving it once servers exist means moving their
+                   worlds too. Everything else in the wrapper can be edited from
+                   a settings page afterwards. *@
+                <p class="field-hint">
+                    Where each server's files and worlds are kept — one folder per
+                    server, underneath this. Put it on the volume with the room;
+                    worlds and backups grow, and moving them later means moving
+                    live worlds. Leave it as it is if you have no reason not to.
+                </p>
+                <ValidationMessage For="() => Input!.InstanceRoot" />
+
+                <button type="submit" class="btn btn-primary auth-submit">Create account</button>
+            </EditForm>
+        }
+    </div>
+
+    <p class="auth-build">@BuildInfo.Identity</p>
+</div>
+
+@code {
+    private bool completed;
+    private string? error;
+
+    // Initialised in OnInitialized rather than with a property initializer: the form
+    // binder assigns this during a post, and an initializer can be overwritten with
+    // null on the way through (BL0008).
+    [SupplyParameterFromForm]
+    private SetupModel? Input { get; set; }
+
+    // Prefilled with the default rather than left blank, so the field reads as a
+    // choice already made well rather than a question that must be answered.
+    protected override void OnInitialized() =>
+        Input ??= new() { InstanceRoot = Paths.Instances };
+
+    private string TokenPath => System.IO.Path.Combine(Paths.Config, "setup-token.txt");
+
+    private async Task CompleteAsync()
+    {
+        error = null;
+
+        if (!State.ValidateToken(Input!.Token))
+        {
+            error = "That setup token is not correct.";
+            return;
+        }
+
+        // Before the account, not after. A root that cannot be written to is a
+        // question worth asking again, and a half-finished setup whose only
+        // remaining step is unreachable — the wizard closes once an account
+        // exists — would leave the wrapper with nowhere to put a server and no
+        // way back to the page that chose it.
+        try
+        {
+            Services.Configuration.InstanceRoot.Prepare(Input.InstanceRoot);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            error = $"That folder could not be used: {ex.Message}";
+            return;
+        }
+
+        // Written only when it is not the default. Leaving the setting absent
+        // keeps instances tracking the data root, which is what an empty value
+        // means; writing the resolved path would pin them to a location that no
+        // longer moves with it.
+        if (!Services.Configuration.InstanceRoot.IsDefault(Input.InstanceRoot, Paths.Instances))
+        {
+            await JsonConfigWriter.MergeAsync(
+                System.IO.Path.Combine(Paths.Config, "bedrocksentry.json"),
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{InstanceOptions.SectionName}:Root"] =
+                        System.IO.Path.GetFullPath(Input.InstanceRoot.Trim()),
+                });
+        }
+
+        await Credentials.SetCredentialAsync(Input!.Username, Input.Password);
+        State.CompleteSetup();
+
+        completed = true;
+    }
+
+    private sealed class SetupModel : IValidatableObject
+    {
+        public const int MinimumPasswordLength = 12;
+
+        [Required(ErrorMessage = "Enter the setup token.")]
+        public string Token { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Choose a username.")]
+        [StringLength(64, MinimumLength = 3, ErrorMessage = "Usernames are 3 to 64 characters.")]
+        public string Username { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Choose a password.")]
+        [StringLength(256, MinimumLength = MinimumPasswordLength,
+            ErrorMessage = "Passwords must be at least {2} characters.")]
+        public string Password { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Confirm the password.")]
+        public string ConfirmPassword { get; set; } = string.Empty;
+
+        public string InstanceRoot { get; set; } = string.Empty;
+
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (!string.Equals(Password, ConfirmPassword, StringComparison.Ordinal))
+            {
+                yield return new ValidationResult(
+                    "The passwords do not match.",
+                    [nameof(ConfirmPassword)]);
+            }
+
+            if (Services.Configuration.InstanceRoot.Problem(InstanceRoot) is { } problem)
+            {
+                yield return new ValidationResult(problem, [nameof(InstanceRoot)]);
+            }
+        }
+    }
+}

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Domain models and interfaces — IBackupStrategy and friends. Deliberately
+    has no project references and no framework dependencies: everything else
+    depends on Core, Core depends on nothing.
+
+    Overrides the solution-wide net10.0-windows default (D9) back to
+    plain net10.0: this project has no Windows-specific dependency, and
+    staying platform-neutral means the analyzer catches it if one creeps in.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>

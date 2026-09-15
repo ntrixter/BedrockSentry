@@ -1,0 +1,47 @@
+@inherits LayoutComponentBase
+
+<div class="page">
+    <div class="sidebar">
+        <NavMenu />
+    </div>
+
+    <main>
+        <div class="top-row px-4">
+            <AuthorizeView>
+                <Authorized>
+                    <span class="signed-in-as">@context.User.Identity?.Name</span>
+                </Authorized>
+            </AuthorizeView>
+
+            <ThemeToggle />
+
+            <AuthorizeView>
+                <Authorized>
+                    <form method="post" action="/account/logout" class="logout-form">
+                        <AntiforgeryToken />
+                        <button type="submit" class="btn btn-link logout-button">Sign out</button>
+                    </form>
+                </Authorized>
+            </AuthorizeView>
+        </div>
+
+        <article class="content px-4">
+            @Body
+        </article>
+
+        <footer class="build-footer px-4">
+            @* Which build is running, without needing a shell on the box. Worth the
+               pixels: "did my update actually land" is otherwise a remote-desktop trip.
+
+               T166 deliberately left this pill unlabelled. It renders the build
+               stamp, the same value the Status page now calls "Build channel" and
+               /healthz calls buildChannel — and it sits next to the build identity
+               with no sibling value to be confused with, which is the whole of what
+               went wrong on the Status page. A label here would be noise in a
+               footer; what mattered was that the two values on one page stopped
+               sharing a word. *@
+            <span>BedrockSentry @BuildInfo.Identity</span>
+            <span class="build-channel">@BuildInfo.Channel</span>
+        </footer>
+    </main>
+</div>

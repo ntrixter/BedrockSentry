@@ -1,0 +1,514 @@
+@* Who is on this one server, who is allowed to be, and what they may do — one
+   table over three sources, because they describe the same people. The allowlist
+   and the operator overrides live here and only here, because Bedrock keeps both
+   files inside each server's own folder (docs/design.md § 7.5, D31). *@
+
+@using BedrockSentry.Core.Players
+@using BedrockSentry.Host.Components.Players
+@using BedrockSentry.Services.Instances
+
+@implements IAsyncDisposable
+
+@inject ServerAccessControl Access
+@inject IPlayerStore Players
+@inject TimeProvider Time
+
+<h3>Players on this server</h3>
+
+<p class="lead">
+    Who may join this server and what they can do. Playtime is this server's own,
+    not the all-time totals on the <a href="players">Players</a> page.
+</p>
+
+@if (fileError is not null)
+{
+    <p class="console-fault">
+        Could not read this server's access files — @fileError
+    </p>
+}
+
+<div class="access-bar">
+    @if (allowlistEnforced)
+    {
+        <span class="state-badge state-running">Allowlist enabled</span>
+        <span class="counts">
+            <b>@rows.Count(r => r.Allowed)</b> of <b>@rows.Count</b> known
+            @(rows.Count == 1 ? "player" : "players") may join
+        </span>
+    }
+    else
+    {
+        <span class="state-badge state-info">Allowlist disabled</span>
+        <span class="counts">
+            Anyone can join. Entries are kept and apply when <code>allow-list</code>
+            is turned on in this server's
+            <a href="@($"instances/{Supervisor.InstanceId}/properties")">properties</a>.
+        </span>
+    }
+</div>
+
+@if (!loaded)
+{
+    <p class="empty-state">Reading this server's players…</p>
+}
+else if (rows.Count == 0)
+{
+    <p class="empty-state">
+        Nobody has connected to this server and nothing is on its allowlist yet.
+    </p>
+}
+else
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th aria-sort="@AriaSort("player")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("player")'>
+                            Player @Caret("player")
+                        </button>
+                    </th>
+                    <th>Allow list</th>
+                    <th>Join if full</th>
+                    <th>Role</th>
+                    <th class="num" aria-sort="@AriaSort("playtime")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("playtime")'>
+                            Playtime @Caret("playtime")
+                        </button>
+                    </th>
+                    <th class="num" aria-sort="@AriaSort("last")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("last")'>
+                            Last seen @Caret("last")
+                        </button>
+                    </th>
+                    <th class="actions"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in Visible())
+                {
+                    <tr @key="row.Xuid ?? row.Gamertag" class="@(row.IsOnline ? "roster-online" : null)">
+                        <td>
+                            @if (row.Xuid is { Length: > 0 } xuid)
+                            {
+                                <a href="@($"players/{xuid}")"><strong>@row.Display</strong></a>
+                                <span class="roster-gamertag">@xuid</span>
+                            }
+                            else
+                            {
+                                <strong>@row.Display</strong>
+                                @* Bedrock fills the XUID in on a first join, and
+                                   permissions.json is keyed on it, so this row's
+                                   role cannot be set until then (D31). *@
+                                <span class="access-note">never joined — no XUID yet</span>
+                            }
+                        </td>
+
+                        <td>
+                            <input type="checkbox" checked="@row.Allowed"
+                                   disabled="@(busy || !row.AllowIsSettable)"
+                                   aria-label="@($"{row.Display} is on the allow list")"
+                                   @onchange="e => SetAllowedAsync(row, (bool?)e.Value ?? false)" />
+                        </td>
+
+                        <td>
+                            @* No console command sets ignoresPlayerLimit, so it is a
+                               stopped-server edit. Disabled rather than hidden, so the
+                               value is still readable while the server runs. *@
+                            <input type="checkbox" checked="@row.IgnoresPlayerLimit"
+                                   disabled="@(busy || !row.Allowed || !row.AllowIsSettable || !ServerIsStopped)"
+                                   aria-label="@($"{row.Display} may join a full server")"
+                                   title="@(ServerIsStopped
+                                       ? null
+                                       : "Bedrock has no console command for this — stop the server to change it")"
+                                   @onchange="e => SetIgnoresLimitAsync(row, (bool?)e.Value ?? false)" />
+                        </td>
+
+                        <td>
+                            <select class="form-select form-select-sm role"
+                                    disabled="@(busy || !row.RoleIsSettable)"
+                                    value="@row.Tier"
+                                    @onchange="e => SetTierAsync(row, e.Value?.ToString())">
+                                <option value="@PermissionTier.Visitor">visitor</option>
+                                <option value="@PermissionTier.Member">member</option>
+                                <option value="@PermissionTier.Operator">operator</option>
+                            </select>
+                        </td>
+
+                        <td class="num">@PlayerFormat.Duration(row.Playtime)</td>
+
+                        <td class="num">
+                            @if (row.Session is { } session)
+                            {
+                                @* The live session length rather than the word "now":
+                                   same cell, same width, and "on for four hours" is
+                                   the fact somebody is actually looking for. *@
+                                <span class="state-badge state-running">@PlayerFormat.Duration(session)</span>
+                            }
+                            else
+                            {
+                                @PlayerFormat.Date(row.LastSeenUtc)
+                            }
+                        </td>
+
+                        <td>
+                            @if (row.IsOnline && !ServerIsStopped)
+                            {
+                                <div class="row-actions">
+                                    <button class="btn btn-sm btn-secondary" disabled="@busy"
+                                            @onclick="() => KickAsync(row)">
+                                        Kick
+                                    </button>
+                                </div>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<div class="provision-controls">
+    <input class="form-control" placeholder="Gamertag, exactly as Xbox spells it"
+           style="max-width: 20rem"
+           value="@newName" @oninput="e => newName = e.Value?.ToString() ?? string.Empty"
+           disabled="@busy" />
+    <button class="btn btn-primary" disabled="@(busy || newName.Trim().Length == 0)"
+            @onclick="AllowAsync">
+        Add to allow list
+    </button>
+    @if (!ServerIsStopped)
+    {
+        <span class="check-detail">
+            Server running — changes go through its console.
+        </span>
+    }
+</div>
+
+@if (message is not null)
+{
+    <p class="@(messageIsFault ? "console-fault" : "check-detail")">@message</p>
+}
+
+@code {
+    [Parameter, EditorRequired] public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    private IReadOnlyList<InstanceAccessRow> rows = [];
+    private IReadOnlyList<AllowlistEntry> allowlist = [];
+    private IReadOnlyList<PermissionEntry> permissions = [];
+    // Off until the file says otherwise, matching BDS's own default. This
+    // started as `true`, which meant an unreadable or not-yet-loaded file
+    // claimed the allowlist was being enforced (`T136`).
+    private bool allowlistEnforced;
+    private string defaultTier = PermissionTier.Member;
+    private string? fileError;
+
+    private string newName = string.Empty;
+    private bool busy;
+    private bool loaded;
+    private string? message;
+    private bool messageIsFault;
+
+    private PeriodicTimer? timer;
+    private CancellationTokenSource? cts;
+    private DateTimeOffset now;
+
+    /// Newest activity first, and online above offline whichever way it sorts —
+    /// an offline row has no session to compare.
+    private string sortKey = "last";
+    private bool descending = true;
+
+    /// The instance the table was filled for. The hosting page re-renders every
+    /// second; refilling on the tick is the bug T22 was.
+    private string? seededFor;
+
+    private bool ServerIsStopped =>
+        Supervisor.Status.State is Core.Instances.InstanceState.Stopped
+            or Core.Instances.InstanceState.Faulted
+            or Core.Instances.InstanceState.Backoff;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (seededFor != Supervisor.InstanceId)
+        {
+            seededFor = Supervisor.InstanceId;
+            newName = string.Empty;
+            message = null;
+            loaded = false;
+
+            await ReloadAsync();
+        }
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        cts = new CancellationTokenSource();
+
+        // Every three seconds, matching the roster this replaced: sessions change
+        // on the timescale of somebody walking away from a keyboard, and both
+        // access files are cheap to stat.
+        timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        _ = PollAsync(cts.Token);
+    }
+
+    private async Task PollAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await timer!.WaitForNextTickAsync(cancellationToken))
+            {
+                if (!busy)
+                {
+                    await ReloadAsync();
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away, or the circuit went.
+        }
+    }
+
+    private string AllowlistPath => AllowlistFile.PathFor(Supervisor.WorkingDirectory);
+    private string PermissionsPath => PermissionsFile.PathFor(Supervisor.WorkingDirectory);
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            allowlist = AllowlistFile.Load(AllowlistPath).Entries;
+            permissions = PermissionsFile.Load(PermissionsPath).Entries;
+
+            var properties = ServerProperties.Read(
+                ServerProperties.PathFor(Supervisor.WorkingDirectory));
+
+            allowlistEnforced = ServerProperties.AllowlistEnforced(properties);
+
+            defaultTier = properties.GetValueOrDefault("default-player-permission-level")
+                is { Length: > 0 } configured
+                ? configured
+                : PermissionTier.Member;
+
+            now = Time.GetUtcNow();
+
+            rows = InstanceAccessView.Build(
+                await Players.ListAsync(Supervisor.InstanceId, now),
+                allowlist,
+                permissions,
+                defaultTier,
+                now);
+
+            fileError = null;
+        }
+        catch (Exception ex)
+        {
+            // Said rather than swallowed: an empty table and a broken database
+            // look identical, and only one of them needs somebody to act.
+            fileError = ex.Message;
+        }
+        finally
+        {
+            loaded = true;
+        }
+    }
+
+    private IEnumerable<InstanceAccessRow> Visible() => sortKey switch
+    {
+        "player" => Order(rows, r => r.Display),
+        "playtime" => Order(rows, r => r.Playtime),
+
+        _ => Order(rows, r => r.LastSeenUtc ?? DateTimeOffset.MinValue),
+    };
+
+    /// Online always above offline, whichever key and whichever direction — an
+    /// offline row has no session, and floating those through the middle of the
+    /// column would be sorting on a value that does not exist.
+    ///
+    /// The pin lives here rather than in each branch (`T132`). It used to be
+    /// written out in the last-seen branch only, so every other key sorted on the
+    /// key alone and filed the online rows alphabetically among people who were
+    /// not there — with a comment above the switch promising the opposite. One
+    /// place to be right is the fix; three places to remember is what broke it.
+    private IOrderedEnumerable<InstanceAccessRow> Order<TKey>(
+        IEnumerable<InstanceAccessRow> source, Func<InstanceAccessRow, TKey> key) =>
+        descending
+            ? source.OrderByDescending(r => r.IsOnline).ThenByDescending(key)
+            : source.OrderByDescending(r => r.IsOnline).ThenBy(key);
+
+    private void SortBy(string key)
+    {
+        if (sortKey == key)
+        {
+            descending = !descending;
+            return;
+        }
+
+        sortKey = key;
+
+        // Names read naturally A–Z; the other two are columns where the
+        // interesting end is the big one.
+        descending = key != "player";
+    }
+
+    private string? Caret(string key) => sortKey == key ? (descending ? "▾" : "▴") : null;
+
+    private string AriaSort(string key) =>
+        sortKey != key ? "none" : descending ? "descending" : "ascending";
+
+    private async Task SetAllowedAsync(InstanceAccessRow row, bool allowed)
+    {
+        await RunAsync(async () =>
+        {
+            // Unticking is the removal — there is no separate Remove button,
+            // because a button beside a checkbox that does the same thing is
+            // the duplication the merge exists to get rid of.
+            var change = allowed
+                ? await Access.AllowAsync(Supervisor, row.Gamertag)
+                : await Access.DisallowAsync(Supervisor, row.Gamertag);
+
+            Report(change);
+        });
+    }
+
+    private async Task SetIgnoresLimitAsync(InstanceAccessRow row, bool value)
+    {
+        // Re-checked here and not only in the markup. A running BDS owns its own
+        // file and rewrites it on any in-game change (D31), so an edit fired from
+        // a render that went stale would be lost at best and would land on top of
+        // the server's own write at worst.
+        if (!ServerIsStopped)
+        {
+            return;
+        }
+
+        await RunAsync(() =>
+        {
+            var file = AllowlistFile.Load(AllowlistPath);
+            file.SetIgnoresPlayerLimit(row.Gamertag, value);
+            file.Save(AllowlistPath);
+
+            message = value
+                ? $"{row.Display} may now join a full server."
+                : $"{row.Display} no longer ignores the player limit.";
+            messageIsFault = false;
+
+            return Task.CompletedTask;
+        });
+    }
+
+    private async Task SetTierAsync(InstanceAccessRow row, string? tier)
+    {
+        if (row.Xuid is not { Length: > 0 } xuid || tier is null || tier == row.Tier)
+        {
+            return;
+        }
+
+        await RunAsync(async () =>
+        {
+            if (tier == PermissionTier.Visitor)
+            {
+                // op/deop only reach two of the three tiers, so visitor is always
+                // a file edit — which a running server would overwrite.
+                if (!ServerIsStopped)
+                {
+                    message =
+                        $"Bedrock has no console command for visitor, so {row.Display} can "
+                        + "only be set to it while the server is stopped.";
+                    messageIsFault = true;
+                    return;
+                }
+
+                var file = PermissionsFile.Load(PermissionsPath);
+                file.Set(xuid, PermissionTier.Visitor);
+                file.Save(PermissionsPath);
+
+                message = $"{row.Display} is now visitor.";
+                messageIsFault = false;
+                return;
+            }
+
+            Report(await Access.SetOperatorAsync(
+                Supervisor, xuid, row.Gamertag, tier == PermissionTier.Operator));
+        });
+    }
+
+    /// <remarks>
+    /// Not routed through <see cref="ServerAccessControl"/>: a kick edits neither
+    /// access file, so there is nothing for that class's read-the-file
+    /// confirmation to check. The confirmation is the row going offline on the
+    /// next poll, which is a fact the page already has.
+    /// </remarks>
+    private async Task KickAsync(InstanceAccessRow row)
+    {
+        await RunAsync(async () =>
+        {
+            await Supervisor.SendCommandAsync($"kick \"{row.Gamertag}\"");
+
+            message = $"Kicked {row.Display}.";
+            messageIsFault = false;
+        });
+    }
+
+    private async Task AllowAsync()
+    {
+        await RunAsync(async () =>
+        {
+            var change = await Access.AllowAsync(Supervisor, newName);
+            Report(change);
+
+            if (change.Changed)
+            {
+                newName = string.Empty;
+            }
+        });
+    }
+
+    private void Report(AccessChange change)
+    {
+        message = change.Detail;
+        messageIsFault = !change.ConfirmedOnDisk;
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            message = ex.Message;
+            messageIsFault = true;
+        }
+        finally
+        {
+            busy = false;
+            await ReloadAsync();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        timer?.Dispose();
+
+        if (cts is not null)
+        {
+            await cts.CancelAsync();
+            cts.Dispose();
+        }
+    }
+}

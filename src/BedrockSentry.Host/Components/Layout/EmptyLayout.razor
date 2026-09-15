@@ -1,0 +1,11 @@
+@inherits LayoutComponentBase
+
+@* Used by sign-in and first-run setup. Those pages are reachable before there is a
+   session, so the navigation sidebar would only offer links that bounce straight
+   back to them. *@
+
+<div class="auth-theme-toggle">
+    <ThemeToggle />
+</div>
+
+@Body

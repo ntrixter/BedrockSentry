@@ -1,0 +1,336 @@
+@page "/"
+@* Interactive because the uptime counter ticks and the instance table has to
+   follow state as it changes. *@
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+
+@using BedrockSentry.Core.Configuration
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Services.Backups
+@using BedrockSentry.Host.Components.Diagnostics
+@using BedrockSentry.Host.Components.Instances
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Services.Diagnostics
+@using BedrockSentry.Services.Instances
+@using Microsoft.Extensions.Options
+
+@inject IOptions<TlsOptions> Tls
+@* Monitor rather than IOptions: the channel and the mode are editable on the
+   Settings page now, and a startup snapshot would have this page contradicting
+   that one until the service restarted. *@
+@inject IOptionsMonitor<UpdateOptions> Update
+@inject ServiceUptime Uptime
+@inject InstanceRegistry Registry
+@inject ProcessSampler Sampler
+@inject BackupHistory Backups
+@inject PendingRemoval Removals
+
+<PageTitle>Status · BedrockSentry</PageTitle>
+
+<h1>Status</h1>
+
+<p class="lead">
+    BedrockSentry itself. Each server has a page of its own under Instances.
+</p>
+
+@* Removing an instance lands here, because its own page stops describing
+   anything the moment it is gone (`T169`). *@
+@if (removed is { } justRemoved)
+{
+    <RemovalNotice Outcome="justRemoved" OnDismiss="() => removed = null" />
+}
+
+<h2>Instances</h2>
+
+@if (instances.Count == 0)
+{
+    <p class="empty-state">
+        No servers yet. <a href="instances">Create one</a>.
+    </p>
+}
+else
+{
+    @* A table rather than the cards this page used to carry. Each instance now has
+       its own page, so the job here is a glance across all of them at once. *@
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Instance</th>
+                    <th>State</th>
+                    <th>Uptime</th>
+                    <th>Version</th>
+                    <th class="num">Memory</th>
+                    <th class="num">CPU</th>
+                    <th class="num">Last backup</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var instance in instances)
+                {
+                    <tr>
+                        <td><a href="@($"instances/{instance.InstanceId}")">@instance.Name</a></td>
+                        <td>
+                            <span class="state-badge state-@instance.State.ToString().ToLowerInvariant()">
+                                @instance.State
+                            </span>
+                            @if (instance.State is InstanceState.Faulted && instance.FaultReason is { } reason)
+                            {
+                                <div class="fault-reason">@reason</div>
+                            }
+                            else if (instance.State is InstanceState.Backoff && instance.NextRetryUtc is { } retry)
+                            {
+                                <div class="check-detail">retrying in @UptimeFormatter.Format(retry - DateTimeOffset.UtcNow)</div>
+                            }
+                        </td>
+                        <td class="num uptime-counter">
+                            @(instance.UptimeAt(DateTimeOffset.UtcNow) is { } up
+                                ? UptimeFormatter.Format(up)
+                                : "—")
+                        </td>
+                        <td class="num">@(instance.ServerVersion ?? "—")</td>
+                        <td class="num" title="@(instance.ProcessId is { } pid ? $"process {pid}" : null)">
+                            @(Usage(instance) is { } used
+                                ? $"{used.WorkingSetBytes / 1024.0 / 1024.0:N0} MB"
+                                : "—")
+                        </td>
+                        <td class="num">
+                            @(Usage(instance)?.CpuPercent is { } cpu ? $"{cpu:0.0}%" : "—")
+                        </td>
+                        <td class="num" title="@(LastBackup(instance)?.ToString("u"))">
+                            @(LastBackup(instance) is { } backedUp
+                                ? UptimeFormatter.Format(DateTimeOffset.UtcNow - backedUp) + " ago"
+                                : "never")
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<h2>Wrapper</h2>
+
+<div class="status-grid">
+    <div class="status-card">
+        @* "Service", not just "Uptime" — the instance table above has uptimes of
+           its own, and the two are easy to confuse at a glance. *@
+        <h2>Service</h2>
+        <dl>
+            <dt>Uptime</dt>
+            <dd class="uptime-counter">@elapsedDisplay</dd>
+            <dt>Started</dt>
+            <dd title="@Uptime.StartedUtc.ToString("u")">
+                @Uptime.StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+            </dd>
+        </dl>
+    </div>
+
+    <div class="status-card">
+        <h2>Build</h2>
+        <dl>
+            <dt>Version</dt>
+            <dd>@BuildInfo.Version</dd>
+            <dt>Commit</dt>
+            <dd>@(string.IsNullOrEmpty(BuildInfo.ShortSha) ? "—" : BuildInfo.ShortSha)</dd>
+            @* T166: both of these said "Channel" and meant different things — this
+               one is the publish-time build stamp, the Updates card below is the
+               operator's update channel. The same word, two facts, eighteen lines
+               apart; it misled two careful readers into citing one as the other.
+               Different labels rather than a tooltip, because a tooltip is not
+               there when somebody is reading a screenshot. *@
+            <dt>Build channel</dt>
+            <dd>@BuildInfo.Channel</dd>
+        </dl>
+    </div>
+
+    <div class="status-card">
+        <h2>Web interface</h2>
+        <dl>
+            <dt>HTTPS port</dt>
+            <dd>@Tls.Value.Port</dd>
+            <dt>Certificate</dt>
+            <dd>@Tls.Value.Source</dd>
+        </dl>
+    </div>
+
+    <div class="status-card">
+        <h2>Updates</h2>
+        <dl>
+            <dt>Update channel</dt>
+            <dd>@Update.CurrentValue.Channel</dd>
+            @* Was the raw enum — "Notify", "Disabled" — while the Settings page said
+               "when told" for the same setting. One phrase now, in Core. *@
+            <dt>Applying</dt>
+            <dd>@UpdateModeText.Applying(Update.CurrentValue.Mode)</dd>
+        </dl>
+    </div>
+</div>
+
+<HostPanel />
+
+<ReadinessChecks />
+
+<SystemChecks />
+
+
+@code {
+    private PeriodicTimer? timer;
+    private CancellationTokenSource? cts;
+
+    // Rendered server-side, so this is already correct on the very first paint
+    // during prerender — the counter starts at the right value rather than at zero
+    // and catching up once the circuit connects.
+    private string elapsedDisplay = string.Empty;
+
+    private IReadOnlyList<InstanceStatus> instances = [];
+
+    /// <summary>
+    /// Sampled once per tick into a dictionary rather than read from the render
+    /// loop.
+    /// </summary>
+    /// <remarks>
+    /// Two reasons. Blazor calls the render fragment more than once per state
+    /// change, and CPU here is a rate — sampling it twice a tick would divide
+    /// one interval's work by a fraction of that interval and report a wild
+    /// number. And reading another process is a syscall, which does not belong
+    /// in markup at all.
+    /// </remarks>
+    private Dictionary<int, ProcessUsage> usage = [];
+
+    /// <summary>
+    /// Last successful backup per instance, refreshed on a slow cadence.
+    /// </summary>
+    /// <remarks>
+    /// Reading a history file every second for a number that changes a few times
+    /// a day is a lot of disk for nothing, and this page already ticks at 1 Hz
+    /// for the uptime counters.
+    /// </remarks>
+    private Dictionary<string, DateTimeOffset> lastBackups = [];
+
+    private DateTimeOffset lastBackupRead;
+
+    private ProcessUsage? Usage(InstanceStatus instance) =>
+        instance.ProcessId is { } pid && usage.TryGetValue(pid, out var used) ? used : null;
+
+    private DateTimeOffset? LastBackup(InstanceStatus instance) =>
+        lastBackups.TryGetValue(instance.InstanceId, out var at) ? at : null;
+
+    /// <summary>The removal this page was navigated to report, if it was.</summary>
+    private InstanceRemovalOutcome? removed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        elapsedDisplay = Uptime.ElapsedDisplay;
+        instances = Registry.Statuses();
+
+        // Only on the live circuit. This page prerenders — the comment in
+        // OnAfterRenderAsync below says so — which means OnInitializedAsync runs
+        // twice, and Take() empties the holder. Read it during the prerender and
+        // the interactive render finds nothing: the notice never appears, with no
+        // error anywhere to say why. Do not drop this guard.
+        if (RendererInfo.IsInteractive)
+        {
+            removed = Removals.Take();
+        }
+
+        // During prerender too, so the first paint carries real numbers rather
+        // than a row of dashes that fill in a second later.
+        SampleProcesses();
+        await ReadBackupsAsync();
+    }
+
+    private void SampleProcesses()
+    {
+        var sampled = new Dictionary<int, ProcessUsage>();
+
+        foreach (var instance in instances)
+        {
+            if (instance.ProcessId is { } pid && Sampler.Sample(pid) is { } used)
+            {
+                sampled[pid] = used;
+            }
+        }
+
+        usage = sampled;
+    }
+
+    private async Task ReadBackupsAsync()
+    {
+        var read = new Dictionary<string, DateTimeOffset>();
+
+        foreach (var instance in instances)
+        {
+            try
+            {
+                if (await Backups.LastSuccessfulUtcAsync(instance.InstanceId) is { } at)
+                {
+                    read[instance.InstanceId] = at;
+                }
+            }
+            catch (IOException)
+            {
+                // An unreadable history file means "we do not know", which the
+                // column already renders. It is not worth failing the status
+                // page over.
+            }
+        }
+
+        lastBackups = read;
+        lastBackupRead = DateTimeOffset.UtcNow;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // OnAfterRender does not run during prerendering, so reaching here means a
+        // live circuit. No need to test the render mode separately.
+        if (!firstRender)
+        {
+            return;
+        }
+
+        cts = new CancellationTokenSource();
+        timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cts.Token))
+            {
+                elapsedDisplay = Uptime.ElapsedDisplay;
+
+                // Re-read every tick rather than subscribing to StatusChanged: the
+                // page already re-renders once a second for the counter, so an event
+                // subscription would add a lifetime to manage and buy nothing anyone
+                // could perceive.
+                instances = Registry.Statuses();
+                SampleProcesses();
+
+                // Every half minute, not every second: this reads a file per
+                // instance for a number that moves a few times a day.
+                if (DateTimeOffset.UtcNow - lastBackupRead > TimeSpan.FromSeconds(30))
+                {
+                    await ReadBackupsAsync();
+                }
+
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away or losing the circuit. Expected.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Without this the loop outlives the circuit and keeps calling
+        // StateHasChanged on a disposed renderer — one leaked timer per page view.
+        if (cts is not null)
+        {
+            await cts.CancelAsync();
+            cts.Dispose();
+        }
+
+        timer?.Dispose();
+    }
+}

@@ -1,0 +1,858 @@
+@page "/settings"
+
+@using BedrockSentry.Core.Configuration
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Core.Packages
+@using BedrockSentry.Core.Security
+@using BedrockSentry.Host.Components.Settings
+@using BedrockSentry.Services.Packages
+@using BedrockSentry.Services.Updates
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.Extensions.Options
+
+@rendermode InteractiveServer
+
+@* Not optional. Two of the three subscriptions below are on singletons that live
+   for the life of the Windows Service, so a circuit that did not unsubscribe
+   would be held for months (`T152`, `T164`). *@
+@implements IDisposable
+
+@inject IOptionsMonitor<UpdateOptions> UpdateConfig
+@inject UpdateSettingsStore UpdateSettings
+@inject UpdateService Updates
+@inject IAdminCredentialService Credentials
+@inject IOptionsMonitor<BdsUpdateOptions> BdsConfig
+@inject BdsUpdateService BdsUpdates
+@inject BdsUpdateSettingsStore BdsSettings
+@inject ServerPackageStore Packages
+
+<PageTitle>Settings · BedrockSentry</PageTitle>
+
+<h1>Settings</h1>
+
+<h2>Wrapper updates</h2>
+
+<div class="update-panel">
+    <dl class="update-facts">
+        <div>
+            <dt>Running</dt>
+            <dd>@BuildInfo.Identity</dd>
+        </div>
+        <div>
+            @* "Update channel", matching the Status page: the build stamp is a
+               different fact and is labelled as such there (T166). *@
+            <dt>Update channel</dt>
+            <dd>@UpdateConfig.CurrentValue.Channel</dd>
+        </div>
+        <div>
+            <dt>Applying</dt>
+            @* Shared with the Status page, which used to render the bare enum. *@
+            <dd>@UpdateModeText.Applying(UpdateConfig.CurrentValue.Mode)</dd>
+        </div>
+        <div>
+            @* Without this the check button below has no visible effect when
+               nothing is newer: the sentence under this panel reads the same
+               before and after. The Bedrock panel has carried this row since
+               milestone 13. *@
+            <dt>Last checked</dt>
+            <dd>
+                @if (Updates.LastCheckedUtc is { } wrapperCheckedAt)
+                {
+                    @wrapperCheckedAt.ToLocalTime().ToString("g")
+                }
+                else
+                {
+                    <text>never</text>
+                }
+            </dd>
+        </div>
+    </dl>
+
+    <div class="update-settings">
+        @* "Update channel", the same wording as the read-only value eight lines above
+           and as the Status page (`T166`). It said "Track branch", which made one fact
+           carry two names on one page - the other half of the defect that entry is
+           about, seen from the side where the word is right and the label is not. *@
+        <label class="field">
+            <span>Update channel</span>
+            <select class="form-select" value="@wrapperChannel" disabled="@wrapperSaving"
+                    @onchange="e => wrapperChannel = Enum.Parse<UpdateChannel>(e.Value?.ToString() ?? nameof(UpdateChannel.Stable))">
+                <option value="@UpdateChannel.Stable">stable — tested, tagged releases</option>
+                <option value="@UpdateChannel.Build">build — the latest in-progress build</option>
+            </select>
+        </label>
+
+        <label class="field">
+            <span>When a build appears</span>
+            <select class="form-select" value="@wrapperMode" disabled="@wrapperSaving"
+                    @onchange="e => wrapperMode = Enum.Parse<UpdateMode>(e.Value?.ToString() ?? nameof(UpdateMode.Notify))">
+                <option value="@UpdateMode.Notify">Tell me — I will apply it</option>
+                <option value="@UpdateMode.Automatic">Apply it automatically</option>
+                <option value="@UpdateMode.Disabled">Do not check at all</option>
+            </select>
+        </label>
+
+        <label class="field">
+            <span>Hours between checks</span>
+            <input class="form-control" type="number" min="1" max="168"
+                   value="@wrapperIntervalHours" disabled="@wrapperSaving"
+                   @onchange="e => wrapperIntervalHours = Clamp(e.Value?.ToString(), 1, 168, 6)" />
+        </label>
+
+        <label class="field">
+            <span>Warn players for (minutes)</span>
+            <input class="form-control" type="number" min="0" max="60"
+                   value="@wrapperWarningMinutes" disabled="@wrapperSaving"
+                   @onchange="e => wrapperWarningMinutes = Clamp(e.Value?.ToString(), 0, 60, 1)" />
+        </label>
+    </div>
+
+    <div class="update-actions">
+        <button class="btn btn-primary" disabled="@(wrapperSaving || !WrapperDirty)"
+                @onclick="SaveWrapperSettingsAsync">
+            @(wrapperSaving ? "Saving…" : "Save")
+        </button>
+
+        @* Named for what it checks, not "Check now": the Bedrock panel a page
+           below has a button with that label asking Mojang about a different
+           thing entirely, and two buttons sharing a word while doing different
+           things is the confusion `D51` is about in another guise (`T163`).
+
+           The throttling that matters is in UpdateService, not in this
+           attribute — the panel binds every interface, so a disabled button is
+           a hint to one browser. *@
+        <button class="btn btn-secondary"
+                disabled="@(wrapperSaving || wrapperChecking || !Updates.SelfUpdateIsActive)"
+                @onclick="CheckWrapperNowAsync">
+            @(wrapperChecking ? "Checking…" : "Check for a BedrockSentry update")
+        </button>
+    </div>
+
+    @if (!Updates.SelfUpdateIsActive)
+    {
+        <p class="field-hint">
+            Self-update is inactive on this install — it is not running from a versioned
+            install directory, so there is nowhere to put a new build.
+        </p>
+    }
+
+    @if (wrapperMessage is not null)
+    {
+        <p class="update-note">@wrapperMessage</p>
+    }
+
+    @if (wrapperError is not null)
+    {
+        <p class="console-fault">@wrapperError</p>
+    }
+
+    <p class="check-detail">
+        Updating BedrockSentry stops the Windows Service, which takes every Bedrock
+        server on this machine down with it. Anyone online is warned and each server
+        is drained and — if it asks for one on its Backups tab — backed up
+        <strong>before</strong> the update begins, so none of that is squeezed into the
+        few seconds Windows allows a service to stop in. Set the warning to 0 on an
+        install nobody plays on.
+    </p>
+</div>
+
+@if (Updates.Available is { } available)
+{
+    <div class="update-available">
+        <p>
+            <strong>@available.Identity</strong> is available on the
+            @available.Channel channel, published @available.PublishedAt.ToLocalTime().ToString("g").
+        </p>
+
+        @if (Updates.IsApplying)
+        {
+            @* The button posts and redirects straight back here, so without this
+               the page would look as though nothing had happened while a
+               countdown ran in the background. *@
+            <p class="update-note">
+                <strong>An update is under way.</strong> Players are being warned and each
+                server is stopping; the service restarts once they are down.
+            </p>
+        }
+        else if (UpdateConfig.CurrentValue.Mode == UpdateMode.Notify)
+        {
+            <form method="post" action="/admin/update/apply">
+                <AntiforgeryToken />
+                <button type="submit" class="btn btn-primary">Install now and restart</button>
+            </form>
+
+            <p class="field-hint">
+                The service stops and restarts. If the new build does not report healthy
+                within @((int)UpdateConfig.CurrentValue.HealthTimeout.TotalSeconds) seconds it is rolled
+                back automatically and this page comes back on the current version.
+            </p>
+        }
+        else if (UpdateConfig.CurrentValue.Mode == UpdateMode.Automatic)
+        {
+            <p class="field-hint">Updates are applied automatically on this install.</p>
+        }
+        else
+        {
+            @* Disabled used to fall into the branch above and claim updates were
+               applied automatically — the exact opposite of the setting. *@
+            <p class="field-hint">
+                Checking is turned off, so this build was seen before it was and will
+                not be applied. Set <strong>When a build appears</strong> above to
+                install it.
+            </p>
+        }
+    </div>
+}
+else
+{
+    <p>No newer build has been seen on the @UpdateConfig.CurrentValue.Channel channel.</p>
+}
+
+@if (Updates.LastFailureReason is { } failure)
+{
+    @* A rolled-back update is otherwise indistinguishable from one that never
+       happened, which is the hardest kind of problem to notice. *@
+    <div class="update-failure" role="alert">
+        <strong>The last update did not succeed.</strong>
+        <p>@failure</p>
+    </div>
+}
+
+<h2>Bedrock update checks</h2>
+
+<p class="lead">
+    How often the wrapper asks Mojang what it is offering. Install-wide, because the
+    feed describes Mojang rather than any one server — what each server <em>does</em>
+    with the answer (follow release or preview, apply by itself or wait to be told,
+    or stay pinned) is on that server's own Configuration tab.
+</p>
+
+<div class="update-panel">
+    <dl class="update-facts">
+        <div>
+            <dt>Checking</dt>
+            <dd>@(bdsChecking ? BdsUpdateSettingsStore.Describe(BdsSchedule()) : "turned off")</dd>
+        </div>
+        <div>
+            <dt>Last checked</dt>
+            <dd>
+                @if (BdsUpdates.LastCheckedUtc is { } checkedAt)
+                {
+                    @checkedAt.ToLocalTime().ToString("g")
+                }
+                else
+                {
+                    <text>never</text>
+                }
+            </dd>
+        </div>
+        <div>
+            <dt>Offering</dt>
+            <dd>
+                @if (BdsUpdates.Latest.Count == 0)
+                {
+                    <span class="check-detail">nothing seen yet</span>
+                }
+                else
+                {
+                    @foreach (var link in BdsUpdates.Latest)
+                    {
+                        <text>@link.Channel @(link.Version?.ToString() ?? link.FileName)</text>
+                        <br />
+                    }
+                }
+            </dd>
+        </div>
+    </dl>
+
+    <div class="update-settings">
+        <label class="field">
+            <span>Check for Bedrock builds</span>
+            @* The value is rendered as a string on purpose (`T117`). Razor treats a
+               bool-valued attribute as a *boolean* attribute — present or absent —
+               so `value="@bdsChecking"` puts no text on the element at all, the
+               select matches neither option and renders blank at selectedIndex -1
+               whatever the setting is. Every other select on this page binds an
+               enum or a string, which is why this was the only one visibly wrong.
+               Do not shorten this back to `@bdsChecking`. *@
+            <select class="form-select" value="@(bdsChecking ? bool.TrueString : bool.FalseString)"
+                    disabled="@bdsSaving"
+                    @onchange="e => bdsChecking = (string?)e.Value == bool.TrueString">
+                <option value="@bool.TrueString">Yes</option>
+                <option value="@bool.FalseString">No — never contact Mojang</option>
+            </select>
+        </label>
+
+        <label class="field">
+            <span>How often</span>
+            <select class="form-select" value="@bdsMode" disabled="@(bdsSaving || !bdsChecking)"
+                    @onchange="e => bdsMode = Enum.Parse<RestartScheduleMode>(e.Value?.ToString() ?? nameof(RestartScheduleMode.EveryNHours))">
+                <option value="@RestartScheduleMode.EveryNHours">Every N hours</option>
+                <option value="@RestartScheduleMode.DailyAt">Once a day, at a set time</option>
+                <option value="@RestartScheduleMode.None">Only on startup and when I ask</option>
+            </select>
+        </label>
+
+        @if (bdsMode == RestartScheduleMode.EveryNHours)
+        {
+            <label class="field">
+                <span>Hours between checks</span>
+                <input class="form-control" type="number" min="1" max="168"
+                       value="@bdsIntervalHours" disabled="@(bdsSaving || !bdsChecking)"
+                       @onchange="e => bdsIntervalHours = Clamp(e.Value?.ToString(), 1, 168, 6)" />
+            </label>
+        }
+        else if (bdsMode == RestartScheduleMode.DailyAt)
+        {
+            <label class="field">
+                <span>Time of day</span>
+                <input class="form-control" type="time" value="@bdsTimeOfDay.ToString("HH\\:mm")"
+                       disabled="@(bdsSaving || !bdsChecking)"
+                       @onchange="e => bdsTimeOfDay = ParseTime(e.Value?.ToString(), bdsTimeOfDay)" />
+            </label>
+        }
+    </div>
+
+    <div class="update-actions">
+        <button class="btn btn-primary" disabled="@(bdsSaving || !BdsScheduleDirty)"
+                @onclick="SaveBdsScheduleAsync">
+            @(bdsSaving ? "Saving…" : "Save")
+        </button>
+
+        @* Reads the saved setting, not the unsaved dropdown: the button asks
+           Mojang, and RefreshAsync refuses while checking is off — silently, so
+           an enabled button here would report "Checked." having contacted
+           nobody. *@
+        <button class="btn btn-secondary"
+                disabled="@(bdsSaving || bdsCheckingNow || !BdsUpdates.CheckingIsEnabled)"
+                @onclick="CheckBdsNowAsync">
+            @(bdsCheckingNow ? "Checking…" : "Check now")
+        </button>
+    </div>
+
+    @if (bdsMessage is not null)
+    {
+        <p class="update-note">@bdsMessage</p>
+    }
+
+    @if (bdsError is not null)
+    {
+        <p class="console-fault">@bdsError</p>
+    }
+
+    <p class="check-detail">
+        A check on service startup always happens, and <strong>Check now</strong> always
+        works — the schedule only controls the timer between them. Bedrock ships every
+        few weeks, so anything faster than a few hours is polling a third party to learn
+        nothing. Changes take effect without restarting the service.
+    </p>
+</div>
+
+<h2>Bedrock builds on this machine</h2>
+
+<p class="lead">
+    Every Bedrock zip the wrapper knows about, in
+    <code>@Packages.Directory</code>. Downloads land here and so does anything you copy
+    in by hand. Installing one onto a server is on that server's Configuration tab —
+    this list is housekeeping, since the zips are shared by every instance.
+</p>
+
+@if (packages.Count == 0)
+{
+    <p class="empty-state">
+        Nothing here yet. The wrapper downloads into this folder, and you can drop a
+        <code>bedrock-server-*.zip</code> in yourself.
+    </p>
+}
+else
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Build</th>
+                    <th>File</th>
+                    <th class="num">Size</th>
+                    <th class="num">Added</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var package in packages)
+                {
+                    <tr>
+                        <td><strong>@package.Display</strong></td>
+                        <td><code>@package.FileName</code></td>
+                        <td class="num">@($"{package.SizeBytes / 1024.0 / 1024.0:0.0} MB")</td>
+                        <td class="num">@package.ModifiedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>
+                            @if (deleteCandidate == package.FileName)
+                            {
+                                <button class="btn btn-sm btn-danger"
+                                        @onclick="() => DeletePackageAsync(package.FileName)">
+                                    Really delete
+                                </button>
+                                <button class="btn btn-sm btn-secondary"
+                                        @onclick="() => deleteCandidate = null">
+                                    Cancel
+                                </button>
+                            }
+                            else
+                            {
+                                <button class="btn btn-sm btn-secondary"
+                                        @onclick="() => deleteCandidate = package.FileName">
+                                    Delete
+                                </button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <p class="check-detail">
+        @($"{packages.Count} build{(packages.Count == 1 ? "" : "s")}, ")
+        @($"{Packages.TotalBytes() / 1024.0 / 1024.0:0.0} MB.")
+        Deleting one removes the zip only. Servers installed from it are untouched —
+        installing copies the files into the instance's own directory, so nothing
+        running depends on the package still being here.
+    </p>
+}
+
+@if (packageError is not null)
+{
+    <p class="console-fault">@packageError</p>
+}
+
+<StorageSettingsPanel />
+
+<ConfigArchivePanel />
+
+<h2>Administrator password</h2>
+
+<p class="lead">
+    Changing it signs every other browser out, here and anywhere else this account
+    is open — the credential carries a stamp that every existing session is checked
+    against.
+</p>
+
+<div class="provision-panel" style="max-width:28rem">
+    <label class="field">
+        <span>Current password</span>
+        <input class="form-control" type="password" autocomplete="current-password"
+               value="@currentPassword"
+               @oninput="e => currentPassword = e.Value?.ToString() ?? string.Empty"
+               disabled="@changingPassword" />
+    </label>
+
+    <label class="field">
+        <span>New password</span>
+        <input class="form-control" type="password" autocomplete="new-password"
+               value="@newPassword"
+               @oninput="e => newPassword = e.Value?.ToString() ?? string.Empty"
+               disabled="@changingPassword" />
+    </label>
+
+    <label class="field">
+        <span>New password again</span>
+        <input class="form-control" type="password" autocomplete="new-password"
+               value="@confirmPassword"
+               @oninput="e => confirmPassword = e.Value?.ToString() ?? string.Empty"
+               disabled="@changingPassword" />
+    </label>
+
+    @if (passwordError is not null)
+    {
+        <p class="console-fault">@passwordError</p>
+    }
+
+    @if (passwordChanged)
+    {
+        <p class="check-detail">
+            <strong>Password changed.</strong> Other sessions have been signed out.
+        </p>
+    }
+
+    <div class="provision-controls">
+        <button class="btn btn-primary" @onclick="ChangePasswordAsync"
+                disabled="@(changingPassword || !CanChangePassword)">
+            @(changingPassword ? "Changing…" : "Change password")
+        </button>
+    </div>
+</div>
+
+<h2>Everything else</h2>
+
+<p class="lead">
+    The <code>server.properties</code> editor is on each instance's own tab, and backup
+    scheduling is on its Backups tab — both are per-server rather than install-wide.
+    Whether a given server follows release or preview, applies builds by itself, or
+    stays pinned is per-instance too, on that instance's Configuration tab.
+    The rest of this page fills in at <strong>milestone 14</strong>.
+</p>
+
+<p>
+    Until then, settings live in
+    <code>%ProgramData%\BedrockSentry\config\bedrocksentry.json</code>. That file is
+    layered over the defaults shipped in the install directory and is never touched by
+    a wrapper update.
+</p>
+
+
+@code {
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    /// <remarks>
+    /// Registrations on the two options monitors, held so Dispose can undo them.
+    /// The third subscription — BdsUpdateService.Refreshed — is a plain event and
+    /// is detached by name.
+    /// </remarks>
+    private IDisposable? wrapperConfigWatch;
+    private IDisposable? bdsConfigWatch;
+
+    private string currentPassword = string.Empty;
+    private string newPassword = string.Empty;
+    private string confirmPassword = string.Empty;
+    private bool changingPassword;
+    private bool passwordChanged;
+    private string? passwordError;
+
+    private UpdateChannel wrapperChannel;
+    private UpdateMode wrapperMode;
+    private int wrapperIntervalHours = 6;
+    private int wrapperWarningMinutes = 1;
+    private bool wrapperSaving;
+    private bool wrapperChecking;
+    private string? wrapperMessage;
+    private string? wrapperError;
+
+    private bool WrapperDirty
+    {
+        get
+        {
+            var current = UpdateConfig.CurrentValue;
+
+            return wrapperChannel != current.Channel
+                || wrapperMode != current.Mode
+                || wrapperIntervalHours != (int)Math.Round(current.CheckInterval.TotalHours)
+                || wrapperWarningMinutes != (int)Math.Round(current.PlayerWarning.TotalMinutes);
+        }
+    }
+
+    private bool bdsChecking = true;
+    private RestartScheduleMode bdsMode = RestartScheduleMode.EveryNHours;
+    private int bdsIntervalHours = 6;
+    private TimeOnly bdsTimeOfDay = new(4, 0);
+    private bool bdsSaving;
+    private bool bdsCheckingNow;
+    private string? bdsMessage;
+    private string? bdsError;
+
+    private IReadOnlyList<ServerPackage> packages = [];
+    private string? deleteCandidate;
+    private string? packageError;
+
+    /// <summary>The schedule the controls currently describe.</summary>
+    private RestartSchedule BdsSchedule() => new()
+    {
+        Mode = bdsMode,
+        IntervalHours = bdsIntervalHours,
+        TimeOfDay = bdsTimeOfDay,
+    };
+
+    /// <remarks>
+    /// This page keeps its Save button, unlike the per-instance panel: an
+    /// interval and a time of day are typed rather than picked, and saving on
+    /// each keystroke would write a schedule of "every 1 hour" on the way to
+    /// "every 12".
+    /// </remarks>
+    private bool BdsScheduleDirty
+    {
+        get
+        {
+            var config = BdsConfig.CurrentValue;
+            var stored = config.ScheduleOrDefault;
+
+            return bdsChecking != config.CheckForUpdates
+                || bdsMode != stored.Mode
+                || bdsIntervalHours != stored.IntervalHours
+                || bdsTimeOfDay != stored.TimeOfDay;
+        }
+    }
+
+    private static int Clamp(string? raw, int min, int max, int fallback) =>
+        int.TryParse(raw, out var value) ? Math.Clamp(value, min, max) : fallback;
+
+    private static TimeOnly ParseTime(string? raw, TimeOnly fallback) =>
+        TimeOnly.TryParse(raw, out var value) ? value : fallback;
+
+    protected override void OnInitialized()
+    {
+        // Once, not per render: this page is not on a timer, but seeding an
+        // editor from stored state on every render is the bug T22 was and the
+        // habit is worth keeping.
+        var wrapper = UpdateConfig.CurrentValue;
+        wrapperChannel = wrapper.Channel;
+        wrapperMode = wrapper.Mode;
+        wrapperIntervalHours = Math.Max(1, (int)Math.Round(wrapper.CheckInterval.TotalHours));
+        wrapperWarningMinutes = Math.Max(0, (int)Math.Round(wrapper.PlayerWarning.TotalMinutes));
+
+        var config = BdsConfig.CurrentValue;
+        var schedule = config.ScheduleOrDefault;
+
+        bdsChecking = config.CheckForUpdates;
+        bdsMode = schedule.Mode;
+        bdsIntervalHours = schedule.IntervalHours;
+        bdsTimeOfDay = schedule.TimeOfDay;
+
+        packages = Packages.List();
+
+        // What rewrites the copy. Three facts on this page are read live from
+        // something that moves behind it, and nothing on this page is on a timer:
+        //
+        //  * the update channel and mode (`T164`) come from an IOptionsMonitor
+        //    that reloads the config file *asynchronously*. The save returns
+        //    before CurrentValue has caught up, and Blazor's own post-handler
+        //    render therefore draws the old channel beside "Saved — tracking
+        //    build". This is `T89`'s family with a value instead of a rule.
+        //  * "Last checked" and "Offering" (`T152`) come from a singleton the
+        //    background checker refreshes on its own timer. Check now only ever
+        //    appeared to work because Blazor re-renders after an @onclick
+        //    handler — nothing was pushing anything at this page.
+        //  * Check now's own disabled state reads BdsUpdates.CheckingIsEnabled,
+        //    which is that same monitor: turning checking on and saving left the
+        //    button greyed out until the reload landed.
+        //  * and the wrapper's own "Last checked" and its Install now block
+        //    (`T163`), because a channel change now starts a check nobody clicked.
+        //    The button's own render happens anyway; this subscription is for the
+        //    check that had no click behind it.
+        //
+        // Without these the page catches up on the next unrelated render, which
+        // is indistinguishable from the setting not having been saved.
+        BdsUpdates.Refreshed += OnBackgroundChange;
+        Updates.Checked += OnBackgroundChange;
+        wrapperConfigWatch = UpdateConfig.OnChange(_ => OnBackgroundChange());
+        bdsConfigWatch = BdsConfig.OnChange(_ => OnBackgroundChange());
+    }
+
+    private void OnBackgroundChange() =>
+        // Fire and forget, with the failure deliberately observed and dropped:
+        // these arrive from a file watcher and a background service, and by the
+        // time one lands the circuit may be gone. Neither caller has anywhere to
+        // report that, and BdsUpdateService already logs a throwing handler.
+        _ = InvokeAsync(StateHasChanged).ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+
+    public void Dispose()
+    {
+        BdsUpdates.Refreshed -= OnBackgroundChange;
+        Updates.Checked -= OnBackgroundChange;
+        wrapperConfigWatch?.Dispose();
+        bdsConfigWatch?.Dispose();
+    }
+
+    private async Task SaveWrapperSettingsAsync()
+    {
+        wrapperSaving = true;
+        wrapperError = null;
+        wrapperMessage = null;
+
+        try
+        {
+            await UpdateSettings.SaveAsync(
+                wrapperChannel,
+                wrapperMode,
+                TimeSpan.FromHours(wrapperIntervalHours),
+                TimeSpan.FromMinutes(wrapperWarningMinutes));
+
+            wrapperMessage =
+                $"Saved — tracking {wrapperChannel.ToString().ToLowerInvariant()}, "
+                + (wrapperWarningMinutes > 0
+                    ? $"warning players for {wrapperWarningMinutes} minute"
+                      + (wrapperWarningMinutes == 1 ? "." : "s.")
+                    : "stopping servers without warning.");
+        }
+        catch (Exception ex)
+        {
+            wrapperError = ex.Message;
+        }
+        finally
+        {
+            wrapperSaving = false;
+        }
+    }
+
+    /// <remarks>
+    /// Every refusal the service can return is a sentence it built, because a
+    /// duration has to be formatted and there are four branches — the kind of rule
+    /// that goes stale quietly when it lives in a page no test can reach.
+    /// </remarks>
+    private async Task CheckWrapperNowAsync()
+    {
+        wrapperChecking = true;
+        wrapperError = null;
+        wrapperMessage = null;
+
+        try
+        {
+            var result = await Updates.CheckNowAsync();
+
+            if (result.Asked)
+            {
+                wrapperMessage = result.Detail;
+            }
+            else
+            {
+                wrapperError = result.Detail;
+            }
+        }
+        finally
+        {
+            wrapperChecking = false;
+        }
+    }
+
+    private async Task SaveBdsScheduleAsync()
+    {
+        bdsSaving = true;
+        bdsError = null;
+        bdsMessage = null;
+
+        try
+        {
+            await BdsSettings.SetScheduleAsync(BdsSchedule(), bdsChecking);
+
+            bdsMessage = bdsChecking
+                ? $"Saved — checking {BdsUpdateSettingsStore.Describe(BdsSchedule())}."
+                : "Saved — the wrapper will not contact Mojang.";
+        }
+        catch (Exception ex)
+        {
+            bdsError = ex.Message;
+        }
+        finally
+        {
+            bdsSaving = false;
+        }
+    }
+
+    private async Task CheckBdsNowAsync()
+    {
+        bdsCheckingNow = true;
+        bdsError = null;
+        bdsMessage = null;
+
+        try
+        {
+            await BdsUpdates.RefreshAsync();
+
+            bdsError = BdsUpdates.LastFailure;
+            bdsMessage = BdsUpdates.LastFailure is null ? "Checked." : null;
+        }
+        catch (Exception ex)
+        {
+            bdsError = ex.Message;
+        }
+        finally
+        {
+            bdsCheckingNow = false;
+        }
+    }
+
+    private async Task DeletePackageAsync(string fileName)
+    {
+        packageError = null;
+        deleteCandidate = null;
+
+        try
+        {
+            Packages.Delete(fileName);
+        }
+        catch (Exception ex)
+        {
+            packageError = ex.Message;
+        }
+
+        packages = Packages.List();
+        await Task.CompletedTask;
+    }
+
+    /// Length checked here and again on submit. This only greys the button —
+    /// the real refusals live in the handler, where they can say why.
+    private bool CanChangePassword =>
+        currentPassword.Length > 0 && newPassword.Length > 0 && confirmPassword.Length > 0;
+
+    private async Task ChangePasswordAsync()
+    {
+        if (changingPassword)
+        {
+            return;
+        }
+
+        changingPassword = true;
+        passwordChanged = false;
+        passwordError = null;
+
+        try
+        {
+            var state = AuthenticationState is null ? null : await AuthenticationState;
+            var username = state?.User.Identity?.Name;
+
+            if (username is not { Length: > 0 })
+            {
+                passwordError = "Could not tell who is signed in. Sign in again and retry.";
+                return;
+            }
+
+            // The signed-in name rather than a typed one, the same as every other
+            // password-confirmed action: this proves the person at the keyboard is
+            // the account already here, not somebody with a stolen session
+            // guessing at a second one.
+            if (Credentials.Verify(username, currentPassword) is CredentialVerification.Failed)
+            {
+                passwordError = "That current password is not right.";
+                return;
+            }
+
+            if (newPassword != confirmPassword)
+            {
+                passwordError = "The two new passwords do not match.";
+                return;
+            }
+
+            if (newPassword.Length < 12)
+            {
+                // This panel is reachable from anywhere the wrapper is, which for
+                // most installs means the internet.
+                passwordError = "Use at least 12 characters.";
+                return;
+            }
+
+            if (newPassword == currentPassword)
+            {
+                passwordError = "That is the password you already have.";
+                return;
+            }
+
+            await Credentials.SetCredentialAsync(username, newPassword);
+
+            passwordChanged = true;
+            currentPassword = string.Empty;
+            newPassword = string.Empty;
+            confirmPassword = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            passwordError = ex.Message;
+        }
+        finally
+        {
+            changingPassword = false;
+        }
+    }
+}

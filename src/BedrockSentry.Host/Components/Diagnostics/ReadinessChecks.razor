@@ -1,0 +1,208 @@
+@* Whether the things BedrockSentry will need later actually work now
+   (docs/design.md § 13). The panel below this one answers "why can nobody connect";
+   this one answers questions that otherwise get asked for the first time at
+   three in the morning, when the thing that needed them has already failed. *@
+
+@implements IDisposable
+
+@using BedrockSentry.Core.Backups
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Services.Diagnostics
+@using BedrockSentry.Services.Instances
+
+@inject InstanceRegistry Registry
+@inject PortInspector Ports
+@inject ReadinessInspector Readiness
+
+<h2>Readiness</h2>
+
+<p class="lead">
+    The things a backup, a firewall fix or a snapshot will need when it runs.
+    Checked now so a failure is a sentence here rather than a mystery later.
+</p>
+
+<div class="prop-panel">
+    @foreach (var item in checks)
+    {
+        <SystemCheckRow Title="@item.Title"
+                        Check="@item.Check"
+                        Applying="@(busy == item.Key)"
+                        Disabled="@(busy is not null)"
+                        Outcome="@Outcome(item)"
+                        OnFix="@(() => FixAsync(item))" />
+    }
+</div>
+
+<p class="console-hint">
+    Rechecked when you reload this page.
+    <button class="btn btn-secondary btn-sm" @onclick="RunAsync" disabled="@(busy is not null || running)">
+        Check again
+    </button>
+</p>
+
+@code {
+    private sealed class Item
+    {
+        public required string Key { get; init; }
+
+        public required string Title { get; init; }
+
+        /// Null while the probe is still out. The row renders either way.
+        public SystemCheck? Check { get; set; }
+
+        public Func<Task<SystemCheckFix>>? Fix { get; init; }
+    }
+
+    private List<Item> checks = [];
+    private string? busy;
+    private bool running;
+    private CancellationTokenSource? cts;
+
+    /// Kept beside the checks rather than on them: a fix re-runs everything,
+    /// which rebuilds the list, and an outcome stored on an Item would vanish at
+    /// the moment it became worth reading.
+    private readonly Dictionary<string, SystemCheckFix> outcomes = [];
+
+    private SystemCheckFix? Outcome(Item item) =>
+        outcomes.TryGetValue(item.Key, out var outcome) ? outcome : null;
+
+    /// <summary>
+    /// Deliberately not <c>OnInitializedAsync</c>, for the reason the panel
+    /// below documents at length: that runs during prerender, so awaiting a
+    /// PowerShell probe there holds back the HTTP response itself.
+    /// </summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            cts = new CancellationTokenSource();
+            await RunAsync();
+        }
+    }
+
+    private async Task RunAsync()
+    {
+        if (running)
+        {
+            return;
+        }
+
+        running = true;
+
+        try
+        {
+            var built = new List<Item>
+            {
+                // Answered synchronously — it is a managed identity read, not a
+                // process launch — but listed first because it explains the
+                // others. A wrapper running without administrator rights makes
+                // every fix on this page fail, each with its own
+                // unrelated-looking error.
+                new()
+                {
+                    Key = "privileges",
+                    Title = ReadinessInspector.PrivilegeTitle,
+                    Check = ReadinessInspector.CheckPrivileges(),
+                },
+                new()
+                {
+                    Key = "vss",
+                    Title = ReadinessInspector.VssTitle,
+                    Fix = () => Readiness.EnableVssAsync(),
+                },
+            };
+
+            // Ports come from the registry and the instance's own file, so they
+            // are known without asking the machine anything slow.
+            foreach (var supervisor in Registry.All.OrderBy(s => s.Definition.Name))
+            {
+                var name = supervisor.Definition.Name;
+
+                // NOT the supervisor's call, and that is deliberate (T151 clause 6).
+                // A person reading this wants to know that two stopped instances
+                // name the same port; a launch does not refuse for that, because a
+                // stopped sibling is not a process. Same PortInspector, same
+                // sentences, different question.
+                var conflicts = Ports.ConflictsToShow(supervisor.InstanceId, supervisor.WorkingDirectory);
+
+                built.Add(new Item
+                {
+                    Key = $"ports:{supervisor.InstanceId}",
+                    Title = ReadinessInspector.PortTitle(name),
+                    Check = ReadinessInspector.CheckPorts(name, conflicts),
+                });
+            }
+
+            // Named before the slow one is answered, so the panel has its shape
+            // from the first paint and the VSS row resolves in place.
+            checks = built;
+            StateHasChanged();
+
+            var vss = await Readiness.ReadVssAsync(cts?.Token ?? CancellationToken.None);
+
+            built.Single(i => i.Key == "vss").Check =
+                ReadinessInspector.CheckVss(vss, AnyVssBackupsConfigured());
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away mid-probe.
+        }
+        finally
+        {
+            running = false;
+        }
+
+        // OnAfterRender does not re-render on its own, so without this the VSS
+        // row would sit on "Checking…" holding an answer it already has.
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Whether anything here would actually use a shadow copy.
+    /// </summary>
+    /// <remarks>
+    /// Changes only the wording, never the state: a disabled VSS is worth
+    /// reporting either way, but "those backups will fail" and "nothing needs
+    /// this yet" are different sentences and only one of them is true.
+    ///
+    /// False until milestone 9 gives <c>BackupSettings</c> a VSS strategy to
+    /// enable. Checking availability before the feature exists is the whole
+    /// point of a readiness panel — finding out the machine cannot do it at all
+    /// is cheaper now than on the night the first snapshot is due.
+    /// </remarks>
+    private static bool AnyVssBackupsConfigured() => false;
+
+    private async Task FixAsync(Item item)
+    {
+        if (busy is not null || item.Fix is null)
+        {
+            return;
+        }
+
+        busy = item.Key;
+
+        try
+        {
+            outcomes[item.Key] = await item.Fix();
+
+            // Re-read rather than assuming the fix worked. A cmdlet can report
+            // success and still leave a machine where policy overrode it, and
+            // the check is the only thing that actually knows.
+            await RunAsync();
+        }
+        catch (Exception ex)
+        {
+            outcomes[item.Key] = new SystemCheckFix(false, ex.Message);
+        }
+        finally
+        {
+            busy = null;
+        }
+    }
+
+    public void Dispose()
+    {
+        cts?.Cancel();
+        cts?.Dispose();
+    }
+}

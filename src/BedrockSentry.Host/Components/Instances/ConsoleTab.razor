@@ -1,0 +1,381 @@
+@* The live console for one instance: output, command input, and the same
+   controls the Status tab carries. *@
+@implements IAsyncDisposable
+
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Services.Instances
+@using Microsoft.AspNetCore.Components.Web
+
+@inject IJSRuntime JS
+
+<InstanceControls Supervisor="Supervisor" />
+
+<div class="console-filters">
+    <span class="console-filter-label">Show</span>
+
+    <label class="field-row">
+        <input type="checkbox" checked="@Filters.ServerOutput"
+               @onchange="e => SetAsync(Filters with { ServerOutput = Ticked(e) })" />
+        <span>Server output</span>
+    </label>
+
+    <label class="field-row">
+        <input type="checkbox" checked="@Filters.Joins"
+               @onchange="e => SetAsync(Filters with { Joins = Ticked(e) })" />
+        <span>Joins</span>
+    </label>
+
+    <label class="field-row">
+        <input type="checkbox" checked="@Filters.Leaves"
+               @onchange="e => SetAsync(Filters with { Leaves = Ticked(e) })" />
+        <span>Leaves</span>
+    </label>
+
+    <label class="field-row">
+        <input type="checkbox" checked="@Filters.Chat"
+               @onchange="e => SetAsync(Filters with { Chat = Ticked(e) })" />
+        <span>Chat</span>
+    </label>
+
+    @* One click for the view this whole feature exists to give: who is on the
+       server and what they are doing, with the machine underneath them out of
+       the way. *@
+    <button type="button" class="btn btn-sm btn-secondary"
+            @onclick="() => SetAsync(Filters.ServerOutput
+                ? ConsoleFilters.PlayersOnly
+                : ConsoleFilters.All)">
+        @(Filters.ServerOutput ? "Players only" : "Show everything")
+    </button>
+</div>
+
+@* Said out loud because the opposite would be a reasonable thing to fear.
+   Hiding chat while a raid is being organised, and finding the transcript has a
+   hole in it, is exactly the kind of thing a toggle like this is assumed to do. *@
+<p class="console-hint" style="margin-top:0">
+    Everything is recorded whatever is ticked here — this only changes the view, and
+    turning a category back on brings back everything that happened while it was off.
+    @if (hidden > 0)
+    {
+        <text><strong>@hidden line@(hidden == 1 ? "" : "s") hidden.</strong></text>
+    }
+    @if (Filters.Chat)
+    {
+        <text>
+            Chat needs the companion pack at milestone 12 — the server prints none of
+            its own, so nothing is classified as chat yet.
+        </text>
+    }
+</p>
+
+@if (gapped)
+{
+    @* D16: output evicted before this page read it. Saying so beats showing a
+       seamless history that is missing the middle. *@
+    <p class="console-gap">
+        Some output was produced faster than this page could read it and has scrolled
+        out of the buffer. The full transcript is on disk.
+    </p>
+}
+
+<div class="console-output" id="console-output">
+    @* Filtered here rather than when the lines are read from the buffer. Doing
+       it at read time would drop the hidden lines on the floor, and turning a
+       category back on would show only what arrived from that moment on — which
+       looks like it works, and quietly loses the history you turned it on for. *@
+    @foreach (var line in lines.Where(Visible))
+    {
+        @if (line.Origin is ConsoleOrigin.Launch)
+        {
+            @* A rule rather than another line. A restart drops hundreds of lines
+               of startup on top of hundreds that look exactly the same, and
+               without a break it is easy to read the previous run's fault as
+               this one's. *@
+            <div class="console-launch">
+                <span class="console-launch-label">
+                    @line.ReceivedUtc.ToLocalTime().ToString("HH:mm:ss") · @line.Message
+                </span>
+            </div>
+        }
+        else
+        {
+            <div class="console-line console-@line.Origin.ToString().ToLowerInvariant() @LevelClass(line) @KindClass(line)">
+                <span class="console-time">@line.ReceivedUtc.ToLocalTime().ToString("HH:mm:ss")</span>
+                @* One character wide and always present, blank where a line has
+                   no mark, so every message starts in the same column. It is
+                   also the half of the scheme that survives being pasted into a
+                   bug report, where the colour does not. *@
+                <span class="console-glyph">@Glyph(line)</span>
+                <span class="console-text">@line.Message</span>
+            </div>
+        }
+    }
+</div>
+
+<div class="console-input">
+    <input @ref="commandInput"
+           @bind="command"
+           @bind:event="oninput"
+           @onkeydown="OnKeyDownAsync"
+           class="form-control"
+           placeholder="@(CanSend ? "Type a server command and press Enter" : "The server is not running")"
+           disabled="@(!CanSend)"
+           autocomplete="off"
+           spellcheck="false" />
+    <button class="btn btn-primary" @onclick="SendAsync" disabled="@(!CanSend)">Send</button>
+</div>
+
+@if (sendError is not null)
+{
+    <p class="console-fault">@sendError</p>
+}
+
+<p class="console-hint">
+    Commands go straight to the server, exactly as typed. Up and down arrows walk
+    your history.
+</p>
+
+@code {
+    /// Bounded independently of the buffer: the buffer holds what the server said,
+    /// this holds what one browser can render before the DOM becomes the bottleneck.
+    private const int MaxRenderedLines = 500;
+
+    [Parameter, EditorRequired]
+    public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    /// Held by the page rather than here so it survives switching instances and
+    /// tabs. A filter that reset every time you looked at another server would
+    /// be worse than no filter.
+    [Parameter]
+    public ConsoleFilters Filters { get; set; } = ConsoleFilters.All;
+
+    [Parameter]
+    public EventCallback<ConsoleFilters> FiltersChanged { get; set; }
+
+    private readonly List<ConsoleLine> lines = [];
+    private long cursor;
+    private bool gapped;
+
+    private string command = string.Empty;
+    private readonly List<string> history = [];
+    private int historyIndex = -1;
+    private ElementReference commandInput;
+    private string? sendError;
+    private bool shouldScroll;
+
+    /// How much is being kept back, so filtering never feels like losing it.
+    private int hidden;
+
+    private PeriodicTimer? timer;
+    private CancellationTokenSource? cts;
+
+    private bool Visible(ConsoleLine line) => Filters.Shows(line);
+
+    private static bool Ticked(ChangeEventArgs e) => e.Value is bool value && value;
+
+    private async Task SetAsync(ConsoleFilters wanted)
+    {
+        Filters = wanted;
+        await FiltersChanged.InvokeAsync(wanted);
+
+        // Unhiding adds lines below the last one visible, so follow them the way
+        // any other new output is followed.
+        shouldScroll = true;
+    }
+
+    private bool CanSend =>
+        Supervisor.Status.State is InstanceState.Running or InstanceState.Starting;
+
+    protected override void OnInitialized() => Pump();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            cts = new CancellationTokenSource();
+
+            // Twice a second: fast enough that typing a command and seeing the
+            // reply feels immediate, slow enough that a chatty server does not
+            // render on every line.
+            timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+            _ = PollAsync(cts.Token);
+
+            // Starts the console at the bottom and begins watching the operator's
+            // own scrolling, which is the only reliable source of "do they want
+            // to follow this". Asking after new output has landed cannot answer
+            // it — the view is by then exactly as far from the bottom as the new
+            // batch is tall.
+            await JS.InvokeVoidAsync("bedrockSentryConsole.attach", "console-output");
+        }
+
+        if (shouldScroll)
+        {
+            shouldScroll = false;
+            await JS.InvokeVoidAsync("bedrockSentryConsole.follow", "console-output");
+        }
+    }
+
+    private async Task PollAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await timer!.WaitForNextTickAsync(cancellationToken))
+            {
+                Pump();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away or losing the circuit.
+        }
+    }
+
+    private void Pump()
+    {
+        var snapshot = Supervisor.Console.Read(cursor);
+        cursor = snapshot.Cursor;
+
+        if (snapshot.Gap)
+        {
+            gapped = true;
+        }
+
+        if (snapshot.Lines.Count == 0)
+        {
+            return;
+        }
+
+        lines.AddRange(snapshot.Lines);
+        if (lines.Count > MaxRenderedLines)
+        {
+            lines.RemoveRange(0, lines.Count - MaxRenderedLines);
+        }
+
+        hidden = Filters.CountHidden(lines);
+
+        shouldScroll = true;
+    }
+
+    private async Task OnKeyDownAsync(KeyboardEventArgs args)
+    {
+        switch (args.Key)
+        {
+            case "Enter":
+                await SendAsync();
+                break;
+
+            // Newest first, the way a shell behaves.
+            case "ArrowUp" when history.Count > 0:
+                historyIndex = historyIndex < 0 ? history.Count - 1 : Math.Max(0, historyIndex - 1);
+                command = history[historyIndex];
+                break;
+
+            case "ArrowDown" when historyIndex >= 0:
+                historyIndex++;
+                if (historyIndex >= history.Count)
+                {
+                    historyIndex = -1;
+                    command = string.Empty;
+                }
+                else
+                {
+                    command = history[historyIndex];
+                }
+
+                break;
+        }
+    }
+
+    private async Task SendAsync()
+    {
+        var text = command.Trim();
+        if (text.Length == 0 || !CanSend)
+        {
+            return;
+        }
+
+        // Cleared before the send, not after: a slow send would otherwise leave the
+        // command sitting in the box looking unsent, inviting a second Enter.
+        command = string.Empty;
+        historyIndex = -1;
+
+        // Consecutive duplicates are noise in a history you navigate by arrow key.
+        if (history.Count == 0 || history[^1] != text)
+        {
+            history.Add(text);
+        }
+
+        try
+        {
+            await Supervisor.SendCommandAsync(text);
+            sendError = null;
+        }
+        catch (Exception ex)
+        {
+            sendError = $"Could not send that command: {ex.Message}";
+        }
+
+        Pump();
+        await commandInput.FocusAsync();
+    }
+
+    /// <summary>
+    /// The one-character mark for a line, or a space.
+    /// </summary>
+    /// <remarks>
+    /// Severity outranks origin, which outranks subject — a warning is a warning
+    /// whoever raised it and whatever it is about. Chat's mark is a quote rather
+    /// than an emoji: emoji are double-width, and one on every chat line knocks
+    /// that line a column out of true with the rest of the console.
+    /// </remarks>
+    private static string Glyph(ConsoleLine line) => line switch
+    {
+        { Level: BdsLogLevel.Error } => "✖",
+        { Level: BdsLogLevel.Warn } => "▲",
+        { Origin: ConsoleOrigin.Stderr } => "✖",
+        { Origin: ConsoleOrigin.Command } => "›",
+        { Origin: ConsoleOrigin.Notice } => "❯",
+        { Origin: ConsoleOrigin.Chat } => "\"",
+        _ => line.Kind switch
+        {
+            ConsoleLineKind.Lifecycle => "●",
+            ConsoleLineKind.PlayerJoined => "→",
+            ConsoleLineKind.PlayerLeft => "←",
+            ConsoleLineKind.Save => "◆",
+            _ => " ",
+        },
+    };
+
+    private static string? LevelClass(ConsoleLine line) => line.Level switch
+    {
+        BdsLogLevel.Warn => "console-warn",
+        BdsLogLevel.Error => "console-error",
+        _ => null,
+    };
+
+    /// Null for Ordinary, so an unrecognised line carries no class at all and
+    /// renders exactly as it did before any of this existed.
+    private static string? KindClass(ConsoleLine line) =>
+        line.Kind switch
+        {
+            ConsoleLineKind.Lifecycle => "console-lifecycle",
+            ConsoleLineKind.PlayerJoined => "console-join",
+            ConsoleLineKind.PlayerLeft => "console-leave",
+            ConsoleLineKind.Save => "console-save",
+            ConsoleLineKind.Housekeeping => "console-noise",
+            _ => null,
+        };
+
+    public async ValueTask DisposeAsync()
+    {
+        // Without this the poll loop outlives the component and calls
+        // StateHasChanged on a disposed renderer — one leaked timer per tab switch.
+        if (cts is not null)
+        {
+            await cts.CancelAsync();
+            cts.Dispose();
+        }
+
+        timer?.Dispose();
+    }
+}

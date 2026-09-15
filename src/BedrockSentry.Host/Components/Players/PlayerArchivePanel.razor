@@ -1,0 +1,128 @@
+@* Export and import (docs/design.md § 7.4). The manual-editing path, so SQLite can stay
+   the only backend without anyone needing a database tool to fix a nickname. *@
+
+@using System.Text
+@using BedrockSentry.Core.Players
+@using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Players
+@using Microsoft.AspNetCore.Components.Forms
+
+@inject PlayerArchive Archive
+@inject InstanceRegistry Registry
+@inject TimeProvider Time
+@inject IJSRuntime JS
+
+<div class="empty-state">
+    <p style="margin-top:0"><strong>Export and import</strong></p>
+    <p>
+        The whole player database as JSON — profiles, sessions, and allowlist and
+        operator state. Edit it in any text editor and import it back.
+    </p>
+
+    @if (RunningInstances > 0)
+    {
+        @* § 7.4 calls this a stop-the-service operation and means it: an export
+           taken now is a snapshot, and importing a stale one writes old sessions
+           back over a database that has moved on. *@
+        <p class="check-detail">
+            <strong>@RunningInstances server@(RunningInstances == 1 ? " is" : "s are") running.</strong>
+            An export taken now is a snapshot of this moment, and importing it later
+            will write these sessions back over whatever has happened since. Stop the
+            servers first if you intend a round trip.
+        </p>
+    }
+
+    <div class="provision-controls">
+        <button class="btn btn-secondary" @onclick="ExportAsync" disabled="@busy">
+            @(exporting ? "Preparing…" : "Export to JSON")
+        </button>
+
+        <InputFile OnChange="ImportAsync" accept=".json" disabled="@busy" />
+    </div>
+
+    @if (error is not null)
+    {
+        <p class="console-fault">@error</p>
+    }
+
+    @if (result is not null)
+    {
+        <p class="check-detail">
+            Imported: @result.ProfilesAdded added, @result.ProfilesUpdated updated,
+            @result.SessionsAdded new session@(result.SessionsAdded == 1 ? "" : "s"),
+            @result.InstanceStateRows allowlist/operator row@(result.InstanceStateRows == 1 ? "" : "s").
+            Nothing was deleted — import only ever adds or updates.
+        </p>
+
+        @foreach (var warning in result.Warnings)
+        {
+            <p class="console-fault">@warning</p>
+        }
+    }
+</div>
+
+@code {
+    /// <summary>Raised after an import so the roster beside this reloads.</summary>
+    [Parameter] public EventCallback OnImported { get; set; }
+
+    private bool exporting;
+    private bool importing;
+    private bool busy => exporting || importing;
+
+    private string? error;
+    private PlayerImportResult? result;
+
+    private int RunningInstances =>
+        Registry.Statuses().Count(s => s.State == Core.Instances.InstanceState.Running);
+
+    private async Task ExportAsync()
+    {
+        exporting = true;
+        error = null;
+        result = null;
+
+        try
+        {
+            var json = await Archive.ExportAsync(Time.GetUtcNow());
+            var name = $"bedrocksentry-players-{Time.GetUtcNow():yyyyMMdd-HHmmss}.json";
+
+            await JS.InvokeVoidAsync(
+                "bedrockSentryDownload", name, Convert.ToBase64String(Encoding.UTF8.GetBytes(json)));
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            exporting = false;
+        }
+    }
+
+    private async Task ImportAsync(InputFileChangeEventArgs args)
+    {
+        importing = true;
+        error = null;
+        result = null;
+
+        try
+        {
+            // 16 MB ceiling. A player database this large would be extraordinary,
+            // and the limit exists so a wrong file cannot be read into memory
+            // whole before anything notices it is wrong.
+            await using var stream = args.File.OpenReadStream(16L * 1024 * 1024);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+
+            result = await Archive.ImportAsync(await reader.ReadToEndAsync());
+            await OnImported.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            error = $"That file could not be imported — {ex.Message}";
+        }
+        finally
+        {
+            importing = false;
+        }
+    }
+}

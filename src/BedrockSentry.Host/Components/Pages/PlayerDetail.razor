@@ -1,0 +1,359 @@
+@page "/players/{Xuid}"
+@* Interactive: the fields here are edited in place and the activity ticks while
+   somebody is online. *@
+@rendermode InteractiveServer
+
+@using BedrockSentry.Core.Players
+@using BedrockSentry.Core.Security
+@using BedrockSentry.Services.Instances
+@using Microsoft.AspNetCore.Components.Authorization
+
+@inject IPlayerStore Players
+@inject InstanceRegistry Registry
+@inject NavigationManager Navigation
+@inject TimeProvider Time
+
+<PageTitle>@(profile?.Display ?? "Player") · BedrockSentry</PageTitle>
+
+@if (loading)
+{
+    <p class="empty-state">Reading the profile…</p>
+}
+else if (profile is null)
+{
+    <h1>Player</h1>
+    <p class="empty-state">
+        No player with XUID <code>@Xuid</code> has ever connected to anything this
+        wrapper manages. <a href="players">Back to Players</a>.
+    </p>
+}
+else
+{
+    <h1>@profile.Display</h1>
+
+    <p class="lead">
+        @if (profile.Display != profile.Gamertag)
+        {
+            <text>Known to the servers as <strong>@profile.Gamertag</strong>. </text>
+        }
+        XUID <code>@profile.Xuid</code>.
+        @if (profile.OnlineOn is { } on)
+        {
+            <text>Online now on <a href="@($"instances/{on}/players")">@NameOf(on)</a>.</text>
+        }
+    </p>
+
+    <div class="status-grid">
+        <div class="status-card">
+            <h2>All time</h2>
+            <dl>
+                <dt>Playtime</dt>
+                <dd>@Duration(profile.TotalPlaytime)</dd>
+
+                <dt>Sessions</dt>
+                <dd>@profile.TotalSessions</dd>
+
+                <dt>First seen</dt>
+                <dd>@Stamp(profile.FirstSeenUtc)</dd>
+
+                <dt>Last seen</dt>
+                <dd>@(profile.OnlineOn is not null ? "now" : Stamp(profile.LastSeenUtc))</dd>
+            </dl>
+        </div>
+    </div>
+
+    <h2>Profile</h2>
+    <p class="lead">
+        These belong to the person rather than to any one server, so they are the
+        same everywhere. The gamertag is not among them — that is whatever the
+        servers last called them, and the wrapper does not overwrite it.
+    </p>
+
+    <label class="field">
+        <span>Nickname</span>
+        <input class="form-control" value="@nickname" @oninput="e => nickname = e.Value?.ToString() ?? string.Empty"
+               placeholder="@profile.Gamertag" disabled="@saving" />
+    </label>
+
+    <label class="field">
+        <span>Notes</span>
+        <textarea class="form-control" rows="3" disabled="@saving"
+                  @oninput="e => notes = e.Value?.ToString() ?? string.Empty">@notes</textarea>
+    </label>
+
+    <label class="field-row">
+        <input type="checkbox" checked="@isAdmin"
+               @onchange="e => isAdmin = (bool?)e.Value ?? false" disabled="@saving" />
+        <span>
+            Wrapper administrator
+            <span class="check-detail">
+                Grants control of BedrockSentry itself through in-game commands, on every
+                instance — there is one wrapper, so this cannot be per-server.
+            </span>
+        </span>
+    </label>
+
+    @if (saveError is not null)
+    {
+        <p class="console-fault">@saveError</p>
+    }
+
+    <div class="provision-controls">
+        <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(saving || !Dirty)">
+            @(saving ? "Saving…" : "Save")
+        </button>
+        @if (saved)
+        {
+            <span class="check-detail">Saved.</span>
+        }
+    </div>
+
+    <h2>Activity per server</h2>
+
+    @if (profile.Instances.Count == 0)
+    {
+        <p class="empty-state">
+            This profile exists but has no sessions — every one it had was on a server
+            whose history has since been erased.
+        </p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Server</th>
+                        <th>Status</th>
+                        <th class="num">Playtime</th>
+                        <th class="num">Sessions</th>
+                        <th class="num">First seen</th>
+                        <th class="num">Last seen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var activity in profile.Instances)
+                    {
+                        <tr class="@(activity.IsOnline ? "roster-online" : null)">
+                            <td><a href="@($"instances/{activity.InstanceId}/players")">@NameOf(activity.InstanceId)</a></td>
+                            <td>
+                                @if (activity.OnlineSince is { } since)
+                                {
+                                    <span class="state-badge state-running">@Duration(now - since)</span>
+                                }
+                                else
+                                {
+                                    <span class="check-detail">offline</span>
+                                }
+                            </td>
+                            <td class="num">@Duration(activity.Playtime)</td>
+                            <td class="num">@activity.SessionCount</td>
+                            <td class="num">@Stamp(activity.FirstSeenUtc)</td>
+                            <td class="num">@(activity.IsOnline ? "now" : Stamp(activity.LastSeenUtc))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <div class="danger-panel">
+        <h3>Erase this player</h3>
+        <p>
+            Removes @profile.Display everywhere — the profile, every session on every
+            server, and any allowlist or operator state. This is the whole person, not
+            one server's history: to clear a single instance, use that instance's
+            Configuration tab instead.
+        </p>
+        <p class="check-detail">
+            @profile.TotalSessions session@(profile.TotalSessions == 1 ? "" : "s")
+            across @profile.Instances.Count server@(profile.Instances.Count == 1 ? "" : "s")
+            will go. They will reappear from scratch if they connect again.
+        </p>
+
+        @if (!erasing)
+        {
+            <p><button class="btn btn-danger" @onclick="() => erasing = true">Erase this player</button></p>
+        }
+        else
+        {
+            @* The password rather than a typed name, matching instance removal:
+               the account that owns the wrapper is the right thing to prove you
+               are before destroying somebody's history. *@
+            <label class="field">
+                <span>Confirm with your BedrockSentry password</span>
+                <input class="form-control" type="password" autocomplete="current-password"
+                       value="@password" @oninput="e => password = e.Value?.ToString() ?? string.Empty"
+                       disabled="@busy" />
+            </label>
+
+            @if (eraseError is not null)
+            {
+                <p class="console-fault">@eraseError</p>
+            }
+
+            <div class="provision-controls">
+                <button class="btn btn-danger" @onclick="EraseAsync"
+                        disabled="@(busy || password.Length == 0)">
+                    @(busy ? "Working…" : $"Erase {profile.Display}")
+                </button>
+                <button class="btn btn-secondary" @onclick="CancelErase" disabled="@busy">Cancel</button>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string Xuid { get; set; } = string.Empty;
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    [Inject]
+    private IAdminCredentialService Credentials { get; set; } = default!;
+
+    private PlayerProfile? profile;
+    private DateTimeOffset now;
+    private bool loading = true;
+
+    private string nickname = string.Empty;
+    private string notes = string.Empty;
+    private bool isAdmin;
+    private bool saving;
+    private bool saved;
+    private string? saveError;
+
+    private bool erasing;
+    private bool busy;
+    private string password = string.Empty;
+    private string? eraseError;
+
+    private bool Dirty =>
+        profile is not null
+        && (Norm(nickname) != (profile.Nickname ?? string.Empty)
+            || Norm(notes) != (profile.Notes ?? string.Empty)
+            || isAdmin != profile.IsWrapperAdmin);
+
+    private static string Norm(string value) => value.Trim();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        loading = true;
+        now = Time.GetUtcNow();
+        profile = await Players.GetAsync(Xuid, now);
+
+        if (profile is not null)
+        {
+            nickname = profile.Nickname ?? string.Empty;
+            notes = profile.Notes ?? string.Empty;
+            isAdmin = profile.IsWrapperAdmin;
+        }
+
+        loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (saving || profile is null)
+        {
+            return;
+        }
+
+        saving = true;
+        saved = false;
+        saveError = null;
+
+        try
+        {
+            if (!await Players.UpdateProfileAsync(profile.Xuid, nickname, notes, isAdmin))
+            {
+                // Erased from another tab, or by an import, between load and save.
+                saveError = "That player is no longer in the database.";
+                return;
+            }
+
+            now = Time.GetUtcNow();
+            profile = await Players.GetAsync(Xuid, now);
+            saved = true;
+        }
+        catch (Exception ex)
+        {
+            saveError = ex.Message;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void CancelErase()
+    {
+        erasing = false;
+        password = string.Empty;
+        eraseError = null;
+    }
+
+    private async Task EraseAsync()
+    {
+        if (busy || profile is null || password.Length == 0)
+        {
+            return;
+        }
+
+        busy = true;
+        eraseError = null;
+
+        try
+        {
+            if (!await PasswordIsRightAsync())
+            {
+                eraseError = "That password is not right.";
+                return;
+            }
+
+            await Players.ForgetPlayerAsync(profile.Xuid);
+
+            // Back to the list: staying here would leave the page describing
+            // somebody who no longer exists.
+            Navigation.NavigateTo("players");
+        }
+        catch (Exception ex)
+        {
+            eraseError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            password = string.Empty;
+        }
+    }
+
+    private async Task<bool> PasswordIsRightAsync()
+    {
+        // The signed-in name rather than a typed one: this proves the person at
+        // the keyboard is the account already here, not a fresh sign-in.
+        var state = AuthenticationState is null ? null : await AuthenticationState;
+        var username = state?.User.Identity?.Name;
+
+        return username is { Length: > 0 }
+            && Credentials.Verify(username, password) is not CredentialVerification.Failed;
+    }
+
+    private string NameOf(string instanceId) =>
+        Registry.All.FirstOrDefault(s =>
+            s.InstanceId.Equals(instanceId, StringComparison.OrdinalIgnoreCase))
+            ?.Definition.Name ?? instanceId;
+
+    private static string Duration(TimeSpan span)
+    {
+        if (span < TimeSpan.FromMinutes(1)) { return "<1m"; }
+        if (span < TimeSpan.FromHours(1)) { return $"{(int)span.TotalMinutes}m"; }
+
+        return span.TotalHours < 24
+            ? $"{(int)span.TotalHours}h {span.Minutes}m"
+            : $"{(int)span.TotalDays}d {span.Hours}h";
+    }
+
+    private static string Stamp(DateTimeOffset? value) =>
+        value is { } at ? at.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "—";
+}

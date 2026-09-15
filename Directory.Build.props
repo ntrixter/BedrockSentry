@@ -1,0 +1,54 @@
+<Project>
+
+  <!--
+    Shared build settings for every BedrockSentry project. Individual project
+    files carry only what makes them different.
+
+    Target framework (D9, resolved): BedrockSentry is a Windows-only product,
+    so `net10.0-windows` is the default here. BedrockSentry.Core overrides
+    back to plain `net10.0` in its own .csproj — it has no Windows dependency,
+    and staying platform-neutral means the analyzer flags any accidental
+    Windows coupling that creeps in there, plus keeps the door open to a
+    future Linux port of the non-Windows-specific parts.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Product>BedrockSentry</Product>
+    <Authors>ntrixter</Authors>
+    <Copyright>Copyright (c) 2026 ntrixter</Copyright>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!--
+      The only version input anyone edits by hand. CI appends the run number to
+      produce e.g. 0.3.0-build.57, and the SDK appends "+<commit sha>" to
+      InformationalVersion on top of that (SourceLink is on by default, so the
+      commit costs nothing). BuildInfo parses the pair back apart at runtime.
+
+      Version answers "which build is this"; the commit answers "is there an
+      update". They are not interchangeable — on the build channel this prefix
+      never moves, so comparing versions alone would never detect an update.
+    -->
+    <VersionPrefix>0.3.0</VersionPrefix>
+
+    <!-- Overridden by CI with -p:BedrockSentryChannel=build|prod. -->
+    <BedrockSentryChannel Condition="'$(BedrockSentryChannel)' == ''">local</BedrockSentryChannel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      An item rather than a property because -p: cannot set items, and this has to
+      survive into the assembly for BuildInfo to read back. Deliberately no build
+      timestamp here: a value that changes on every MSBuild evaluation forces a
+      rebuild between 'build' and 'publish' and defeats reproducible builds.
+    -->
+    <AssemblyMetadata Include="Channel" Value="$(BedrockSentryChannel)" />
+  </ItemGroup>
+
+</Project>

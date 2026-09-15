@@ -1,0 +1,308 @@
+@* Everyone in scope, online and not. Shared by the global players page and each
+   instance's own Players tab, because docs/design.md § 7.3 describes two views over one
+   set of rows rather than two features — the only real difference is that the
+   global view has a server to report and the per-instance view already knows. *@
+
+@using BedrockSentry.Core.Players
+@using BedrockSentry.Services.Instances
+
+@implements IAsyncDisposable
+
+@inject IPlayerStore Players
+@inject InstanceRegistry Registry
+@inject TimeProvider Time
+
+<div class="roster-filters">
+    <label class="field-row">
+        <input type="checkbox" @bind="onlineOnly" @bind:after="StateHasChanged" />
+        Online only
+    </label>
+
+    <span class="check-detail">
+        @if (loaded)
+        {
+            @($"{visibleCount} of {all.Count} {(all.Count == 1 ? "player" : "players")}")
+        }
+    </span>
+</div>
+
+@if (failure is not null)
+{
+    <p class="empty-state">Could not read the player database — @failure</p>
+}
+else if (!loaded)
+{
+    <p class="empty-state">Reading the roster…</p>
+}
+else if (all.Count == 0)
+{
+    <p class="empty-state">
+        @(InstanceId is null
+            ? "Nobody has connected to any server yet. Sessions are recorded from this build onward."
+            : "Nobody has connected to this server yet.")
+    </p>
+}
+else if (visibleCount == 0)
+{
+    <p class="empty-state">
+        @(InstanceId is null
+            ? "Nobody is online on any server right now."
+            : "Nobody is online on this server right now.")
+        Untick <strong>Online only</strong> to see everyone who has played.
+    </p>
+}
+else
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th aria-sort="@AriaSort("player")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("player")'>
+                            Player @Caret("player")
+                        </button>
+                    </th>
+                    @if (InstanceId is null)
+                    {
+                        <th aria-sort="@AriaSort("server")">
+                            <button type="button" class="sort-head" @onclick='() => SortBy("server")'>
+                                Server @Caret("server")
+                            </button>
+                        </th>
+                    }
+                    <th aria-sort="@AriaSort("session")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("session")'>
+                            Session @Caret("session")
+                        </button>
+                    </th>
+                    <th aria-sort="@AriaSort("playtime")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("playtime")'>
+                            Playtime @Caret("playtime")
+                        </button>
+                    </th>
+                    <th aria-sort="@AriaSort("sessions")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("sessions")'>
+                            Sessions @Caret("sessions")
+                        </button>
+                    </th>
+                    <th aria-sort="@AriaSort("first")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("first")'>
+                            First seen @Caret("first")
+                        </button>
+                    </th>
+                    <th aria-sort="@AriaSort("last")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("last")'>
+                            Last seen @Caret("last")
+                        </button>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var player in Visible())
+                {
+                    <tr class="@(player.IsOnline ? "roster-online" : null)">
+                        <td>
+                            <a href="@($"players/{player.Xuid}")">
+                                <strong>@(player.Nickname ?? player.Gamertag)</strong>
+                            </a>
+                            @if (player.Nickname is not null)
+                            {
+                                @* The gamertag stays visible even when a nickname is set:
+                                   it is the name the server's own console uses, so hiding
+                                   it would make the two disagree. *@
+                                <span class="roster-gamertag">@player.Gamertag</span>
+                            }
+                        </td>
+
+                        @if (InstanceId is null)
+                        {
+                            <td>
+                                @if (player.OnlineOn is { } instance)
+                                {
+                                    <a href="@($"instances/{instance}/players")">@NameOf(instance)</a>
+                                }
+                                else
+                                {
+                                    <span class="check-detail">—</span>
+                                }
+                            </td>
+                        }
+
+                        <td class="num">
+                            @if (player.CurrentSession(now) is { } session)
+                            {
+                                <span class="state-badge state-running">@Duration(session)</span>
+                            }
+                            else
+                            {
+                                <span class="check-detail">offline</span>
+                            }
+                        </td>
+
+                        <td class="num">@Duration(player.Playtime)</td>
+                        <td class="num">@player.SessionCount</td>
+                        <td class="num">@Date(player.FirstSeenUtc)</td>
+                        <td class="num">@(player.IsOnline ? "now" : Date(player.LastSeenUtc))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    /// <summary>Null for the global view, which reports which server instead.</summary>
+    [Parameter] public string? InstanceId { get; set; }
+
+    private IReadOnlyList<PlayerSummary> all = [];
+    private PeriodicTimer? timer;
+    private CancellationTokenSource? cts;
+    private bool loaded;
+    private string? failure;
+    private DateTimeOffset now;
+
+    /// Everybody by default. The sort below already answers "who is on right
+    /// now" by putting them at the top, so filtering as well only hid the rest
+    /// of the roster behind a tickbox for no gain.
+    private bool onlineOnly;
+
+    /// Online first by session length, then everyone else by how recently they
+    /// were here. Whoever has been on longest is the person most likely to be
+    /// the reason you opened the page, and the tail is in the order you would
+    /// go looking for it.
+    private string sortKey = "session";
+    private bool descending = true;
+
+    private int visibleCount => onlineOnly ? all.Count(p => p.IsOnline) : all.Count;
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        cts = new CancellationTokenSource();
+
+        // Every three seconds. Sessions change on the timescale of somebody
+        // walking away from a keyboard, so polling harder would cost a query per
+        // viewer per second to move a column that has not changed.
+        timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        _ = PollAsync(cts.Token);
+    }
+
+    private async Task PollAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await timer!.WaitForNextTickAsync(cancellationToken))
+            {
+                await RefreshAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away, or the circuit went.
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            now = Time.GetUtcNow();
+            all = await Players.ListAsync(InstanceId, now);
+            failure = null;
+        }
+        catch (Exception ex)
+        {
+            // Said rather than swallowed: an empty roster and a broken database
+            // look identical, and only one of them needs somebody to act.
+            failure = ex.Message;
+        }
+        finally
+        {
+            loaded = true;
+        }
+    }
+
+    private void SortBy(string key)
+    {
+        if (sortKey == key)
+        {
+            descending = !descending;
+            return;
+        }
+
+        sortKey = key;
+
+        // Names read naturally A–Z; every other column is one where the
+        // interesting end is the big one.
+        descending = key != "player" && key != "server";
+    }
+
+    private IEnumerable<PlayerSummary> Visible()
+    {
+        var rows = onlineOnly ? all.Where(p => p.IsOnline) : all;
+
+        return sortKey switch
+        {
+            "player" => Order(rows, p => p.Nickname ?? p.Gamertag),
+            "server" => Order(rows, p => p.OnlineOn is { } id ? NameOf(id) : string.Empty),
+            "playtime" => Order(rows, p => p.Playtime),
+            "sessions" => Order(rows, p => p.SessionCount),
+            "first" => Order(rows, p => p.FirstSeenUtc),
+            "last" => Order(rows, p => p.LastSeenUtc ?? DateTimeOffset.MinValue),
+
+            // The offline tail falls back to last seen, newest first, which is
+            // the order somebody scanning for a name would expect.
+            _ => Order(rows, p => p.CurrentSession(now) ?? TimeSpan.Zero)
+                    .ThenByDescending(p => p.LastSeenUtc ?? DateTimeOffset.MinValue),
+        };
+    }
+
+    /// Online always above offline, whichever key and whichever direction — an
+    /// offline player has no session length, and floating them into the middle of
+    /// the column would be sorting on a value that does not exist.
+    ///
+    /// The pin lives here rather than in each branch (`T132`). It used to be
+    /// written out in the session-length branch only, so all six other keys sorted
+    /// on the key alone and filed online players among people who were not there,
+    /// under a comment promising the opposite. One place to be right is the fix.
+    private IOrderedEnumerable<PlayerSummary> Order<TKey>(
+        IEnumerable<PlayerSummary> rows, Func<PlayerSummary, TKey> key) =>
+        descending
+            ? rows.OrderByDescending(p => p.IsOnline).ThenByDescending(key)
+            : rows.OrderByDescending(p => p.IsOnline).ThenBy(key);
+
+    private string? Caret(string key) => sortKey == key ? (descending ? "▾" : "▴") : null;
+
+    private string AriaSort(string key) =>
+        sortKey != key ? "none" : descending ? "descending" : "ascending";
+
+    /// The configured name, falling back to the id for an instance that has since
+    /// been removed — its sessions outlive it (D14), so this can be asked about
+    /// something that no longer exists.
+    private string NameOf(string instanceId) =>
+        Registry.All.FirstOrDefault(s =>
+            s.InstanceId.Equals(instanceId, StringComparison.OrdinalIgnoreCase))
+            ?.Definition.Name ?? instanceId;
+
+    private static string Duration(TimeSpan span) => PlayerFormat.Duration(span);
+
+    private static string Date(DateTimeOffset? value) => PlayerFormat.Date(value);
+
+    public async ValueTask DisposeAsync()
+    {
+        timer?.Dispose();
+
+        if (cts is not null)
+        {
+            await cts.CancelAsync();
+            cts.Dispose();
+        }
+    }
+}

@@ -1,0 +1,22 @@
+@* A tab whose shape is decided but whose contents belong to a later milestone.
+
+   An honest placeholder rather than a fake table: showing invented rows would
+   make the page look finished and leave someone waiting for numbers that were
+   never going to appear. *@
+
+<div class="empty-state">
+    <p style="margin-top:0"><strong>@Title</strong></p>
+    <p>@ChildContent</p>
+    <p style="margin-bottom:0">Arrives at <strong>@Milestone</strong>.</p>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = "";
+
+    [Parameter, EditorRequired]
+    public string Milestone { get; set; } = "";
+
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+}

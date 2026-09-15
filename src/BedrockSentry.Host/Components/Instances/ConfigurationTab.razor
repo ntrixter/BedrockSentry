@@ -1,0 +1,1975 @@
+@* BedrockSentry's own settings for one instance — as opposed to Bedrock's,
+   which live on the Server properties tab. *@
+
+@using BedrockSentry.Core.Configuration
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Core.Packages
+@using BedrockSentry.Services.Backups
+@using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Packages
+@using BedrockSentry.Core.Security
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.Extensions.Options
+
+@inject InstanceRegistry Registry
+@inject NavigationManager Navigation
+
+<p class="console-hint">
+    BedrockSentry's settings for this server. Bedrock's own settings are on the
+    <a href="@($"instances/{Supervisor.InstanceId}/properties")">Server properties</a>
+    tab, so it is always clear which of the two you are changing.
+</p>
+
+<h2>Name</h2>
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="settings-row">
+                <label class="field">
+                    <span>What this server is called</span>
+                    <input class="form-control" value="@instanceName" disabled="@busy"
+                           maxlength="60" @onchange="RenameAsync" />
+                </label>
+            </div>
+            @if (nameError is not null)
+            {
+                <div class="prop-check bad">@nameError</div>
+            }
+            else if (nameSaved)
+            {
+                <div class="prop-check ok">Saved.</div>
+            }
+        </div>
+        <div class="prop-doc">
+            @* `T141`: this used to promise a sidebar that carries no instance
+               names, and "every notice this server sends", which read as
+               including in-game ones. No message to a player names an instance —
+               they all say "Server" — and `D51` decided to keep it that way, so
+               the sentence shrank to what is true rather than the notices
+               growing to match it. Saying plainly that players never see it is
+               the question an administrator would otherwise have to test for. *@
+            <p>
+                The name on the Instances page, on the Status page and in this wrapper's
+                own notices. Players never see it — in-game messages always say
+                "Server". Changing it is safe at any time, running or stopped.
+            </p>
+            <span class="prop-allowed">
+                Its identity does not change with it: this server's id is
+                <code>@Supervisor.InstanceId</code>, fixed when it was created. Nothing
+                moves on disk and its player history stays attached to it. The folder is
+                its own setting, just below.
+            </span>
+        </div>
+    </div>
+</div>
+
+<h2>Folder</h2>
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="settings-row">
+                <label class="field">
+                    <span>Where this server lives</span>
+                    <input class="form-control" value="@instanceFolder"
+                           disabled="@(busy || !FolderIsMovable)"
+                           @onchange="OnFolderChangedAsync" />
+                </label>
+            </div>
+            @if (folderError is not null)
+            {
+                <div class="prop-check bad">@folderError</div>
+            }
+            else if (folderMessage is not null)
+            {
+                <div class="@(folderMoveNeeded ? "prop-check" : "prop-check ok")">@folderMessage</div>
+            }
+        </div>
+        <div class="prop-doc">
+            @if (FolderIsMovable)
+            {
+                <p>
+                    The folder holding this server's world, properties and player lists —
+                    point it at any volume. The wrapper re-homes the <em>server</em>, not
+                    the files: move the folder's contents yourself, before or after
+                    changing this, and start it once both are done.
+                </p>
+                <span class="prop-allowed">
+                    The service keeps running throughout; only this server is stopped.
+                    Its backups, history and player data are unaffected — they are keyed
+                    by the server's id, which a move does not change.
+                </span>
+            }
+            else
+            {
+                <p>
+                    <strong>Stop the server to move it.</strong> Its folder cannot change
+                    while it is running — or waiting to restart, which is a start about
+                    to happen.
+                </p>
+            }
+        </div>
+    </div>
+</div>
+
+<h2>Bedrock updates</h2>
+
+<div class="update-panel">
+    <p class="update-headline">@updateStatus?.Detail</p>
+
+    <dl class="update-facts">
+        @* The label follows the server rather than being fixed: a stopped instance
+           described as "Running 1.26.40.8" is wrong twice over once an update has
+           replaced those files with something else (T116). *@
+        <div>
+            <dt>@(ServerIsRunning ? "Running" : "Installed")</dt>
+            <dd>
+                @if (updateStatus?.Installed is { } current)
+                {
+                    @current.ToString()
+
+                    @if (!ServerIsRunning && versionRecord is { Reported: false })
+                    {
+                        <span class="check-detail">installed here, not started yet</span>
+                    }
+                }
+                else
+                {
+                    <span class="check-detail">not reported — start the server once</span>
+                }
+            </dd>
+        </div>
+
+        <div>
+            <dt>Last updated</dt>
+            <dd>
+                @if (versionRecord is { IsAnUpdate: true } changed)
+                {
+                    @changed.FirstSeenUtc.ToLocalTime().ToString("g")
+                    <span class="check-detail">from @changed.PreviousVersion</span>
+                }
+                else if (versionRecord is { } first)
+                {
+                    @* The first sighting is an observation, not an update.
+                       Dating it as one would say every server was "updated"
+                       whenever the wrapper happened to be installed. *@
+                    <text>never, since this wrapper has been watching</text>
+                    <span class="check-detail">
+                        first seen on @first.Version, @first.FirstSeenUtc.ToLocalTime().ToString("g")
+                    </span>
+                }
+                else
+                {
+                    <span class="check-detail">unknown — this server has not run yet</span>
+                }
+            </dd>
+        </div>
+
+        <div>
+            <dt>Last checked</dt>
+            <dd>
+                @if (Updates.LastCheckedUtc is { } checkedAt)
+                {
+                    @checkedAt.ToLocalTime().ToString("g")
+                }
+                else
+                {
+                    <text>never</text>
+                }
+                <span class="check-detail">@CheckCadence</span>
+            </dd>
+        </div>
+    </dl>
+
+    @if (pending is { } scheduled)
+    {
+        <div class="update-pending">
+            @if (scheduled.Failure is { } failure)
+            {
+                <p>
+                    <strong>The automatic update to @scheduled.Version did not run.</strong>
+                    @failure
+                </p>
+                <p class="check-detail">
+                    It will not be retried by itself. Install it from <strong>Bedrock builds</strong>
+                    below once whatever caused this is dealt with.
+                </p>
+                <div class="provision-controls">
+                    <button class="btn btn-secondary" disabled="@updateBusy"
+                            @onclick="CancelPendingAsync">
+                        Dismiss
+                    </button>
+                </div>
+            }
+            else
+            {
+                <p>
+                    <strong>Updating to Minecraft @scheduled.Version
+                    @(Remaining > TimeSpan.Zero
+                        ? $"in {Core.Instances.CountdownMessage.Describe(Remaining)}"
+                        : "now")</strong>
+                    @if (scheduled.PackageFileName is null)
+                    {
+                        <span class="check-detail"> — still downloading</span>
+                    }
+                </p>
+
+                <p class="check-detail">
+                    Anyone online has been told, and is told again as the window closes.
+                    Cancelling leaves this server where it is and does not offer this build
+                    again until BedrockSentry restarts or a newer one appears.
+                </p>
+
+                <div class="provision-controls">
+                    <button class="btn btn-primary" disabled="@updateBusy"
+                            @onclick="ApplyPendingNowAsync">
+                        Apply now
+                    </button>
+                    <button class="btn btn-secondary" disabled="@updateBusy"
+                            @onclick="CancelPendingAsync">
+                        Cancel this update
+                    </button>
+                </div>
+            }
+        </div>
+    }
+
+    <div class="update-actions">
+        @if (updateStatus?.Actionable == true && updateStatus.Available is { } offer)
+        {
+            <button class="btn btn-primary" disabled="@updateBusy"
+                    @onclick="() => UpdateNowAsync(offer)">
+                @(installing ? "Updating…" : $"Update to {offer.Version}")
+            </button>
+            <button class="btn btn-secondary" disabled="@updateBusy"
+                    @onclick="() => DownloadAsync(offer)">
+                @(downloading ? "Downloading…" : "Download only")
+            </button>
+        }
+
+        @* Greyed rather than left to no-op. RefreshAsync returns the cached
+           list when checking is off install-wide and leaves no failure behind,
+           so the button used to report "Checked." having contacted nobody. *@
+        <button class="btn btn-secondary" disabled="@(updateBusy || !Updates.CheckingIsEnabled)"
+                @onclick="CheckNowAsync">
+            @(checkingNow ? "Checking…" : "Check now")
+        </button>
+    </div>
+
+    @if (!Updates.CheckingIsEnabled)
+    {
+        <p class="check-detail">
+            Checking is turned off for the whole install, so nothing here is asked of
+            Mojang. Turn it back on under <a href="settings">Settings</a>.
+        </p>
+    }
+
+    @if (updateStatus?.Actionable == true)
+    {
+        @* Two descriptions, because they are two different operations. Describing
+           the warn-drain-restart-health-gate sequence on a stopped server promised
+           four things that were not going to happen, including the rollback (T116). *@
+        <p class="check-detail">
+            @if (ServerIsRunning)
+            {
+                <text>
+                    <strong>Update</strong> gives anyone online a minute's warning, stops the
+                    server, backs it up if this instance asks for that, replaces the Bedrock
+                    files, and starts it again.
+                </text>
+            }
+            else
+            {
+                <text>
+                    <strong>Update</strong> replaces the Bedrock files where they stand. The
+                    server is stopped, so nothing is warned, stopped or started, and whether
+                    the new build runs is found out when you start it — there is no health
+                    gate and no automatic rollback on this path. The previous files are kept
+                    beside it in case you need them back.
+                </text>
+            }
+            The world, <code>server.properties</code>, the allowlist and the operator list
+            are not touched, and any behaviour or resource pack you added is left alone.
+            @if (ServerIsRunning)
+            {
+                <text>
+                    If the new build does not report itself started within three minutes the
+                    previous one is put back automatically.
+                </text>
+            }
+            <strong>Download only</strong> just fetches the zip — it appears under
+            <a href="#bedrock-builds">Bedrock builds</a> below, ready to install whenever
+            you want.
+        </p>
+    }
+
+    @if (updateMessage is not null)
+    {
+        <p class="update-note">@updateMessage</p>
+    }
+
+    @if (updateError is not null)
+    {
+        <p class="console-fault">@updateError</p>
+    }
+
+    @* Said out loud because it is otherwise a few hundred megabytes appearing in
+       the server's folder with nothing to explain it, and because on a stopped
+       update it is the only thing standing between a build that will not run and
+       having to reinstall the old one by hand (D37). *@
+    @if (keptBuild is { } kept)
+    {
+        <p class="check-detail">
+            The Bedrock files from before
+            @(kept.Taken is { } taken ? $"the update on {taken.ToLocalTime():d MMM yyyy, h:mm tt}" : "the last update")
+            are still here, in <code>@System.IO.Path.GetFileName(kept.Path)</code> —
+            @($"{kept.Bytes / 1024.0 / 1024.0:0.0} MB"). They are the way back if this
+            build turns out not to run. The next update replaces them, so only ever
+            one is kept.
+        </p>
+    }
+
+    @* Saved as each control changes rather than behind a Save button. Everything
+       else on this page applies immediately, and a lone Save among them is a
+       trap: the settings look changed, the page is left, and the edit is gone
+       with nothing having said so. *@
+    <div class="settings-row">
+        <label class="field">
+            <span>When a new build appears</span>
+            <select class="form-select" value="@updateMode" disabled="@updateBusy"
+                    @onchange="OnModeChangedAsync">
+                <option value="@BdsUpdateMode.Notify">Tell me — I will apply it</option>
+                <option value="@BdsUpdateMode.Automatic">Apply it automatically</option>
+                <option value="@BdsUpdateMode.Off">Do not check this server</option>
+            </select>
+        </label>
+
+        @* "Bedrock channel", not "Channel" (`T166`). This is a THIRD meaning of that
+           word: BuildInfo.Channel is the wrapper's publish-time build stamp,
+           UpdateOptions.Channel is which branch the wrapper updates itself from, and
+           this is Release-or-Preview for bedrock_server.exe. Three facts, one word,
+           and this is the one an administrator edits. *@
+        <label class="field">
+            <span>Bedrock channel</span>
+            <select class="form-select" value="@updateChannel" disabled="@updateBusy"
+                    @onchange="OnChannelChangedAsync">
+                <option value="@BdsChannel.Release">Release</option>
+                <option value="@BdsChannel.Preview">Preview</option>
+            </select>
+        </label>
+
+        <label class="field">
+            <span>Pin to a version</span>
+            <select class="form-select" value="@updatePin" disabled="@updateBusy"
+                    @onchange="OnPinChangedAsync">
+                <option value="">Not pinned — follow the @updateChannel channel</option>
+                @foreach (var choice in PinChoices)
+                {
+                    <option value="@choice.Version">@choice.Label</option>
+                }
+            </select>
+        </label>
+
+        @if (updateMode == BdsUpdateMode.Automatic)
+        {
+            <label class="field">
+                <span>Wait this many minutes first</span>
+                <input class="form-control" type="number" min="0" max="10080"
+                       value="@updateDelayMinutes" disabled="@updateBusy"
+                       @onchange="OnDelayChangedAsync" />
+            </label>
+        }
+    </div>
+
+    @if (updateMode == BdsUpdateMode.Automatic && updatePin.Trim().Length == 0)
+    {
+        <p class="check-detail">
+            <strong>This server's own schedule.</strong> When a build appears players are
+            told at once, @CountdownCadence, and the server takes it with the same
+            drain, backup and health-gated rollback <strong>Update now</strong> uses.
+            Set it to 0 to apply as soon as a build is seen. Nobody controls when Mojang
+            publishes, so how much warning your players get is the part worth choosing.
+            You can still call any pending update off before it runs.
+        </p>
+    }
+
+    @if (updateChannel == BdsChannel.Preview)
+    {
+        <p class="check-detail">
+            <strong>Preview servers are unjoinable from the retail game.</strong>
+            Everyone connecting needs the Minecraft Preview client.
+        </p>
+    }
+
+    @if (updatePin.Trim().Length > 0)
+    {
+        <p class="check-detail">
+            <strong>A pin holds this server where it is; it does not install anything.</strong>
+            Nothing is offered or applied while it stands, whatever the mode above says.
+            To move to a particular build, install it from the list below.
+        </p>
+
+        @if (PinnedAwayFromRunning is { } onBuild)
+        {
+            @* Worth saying out loud. A pin reads like "put me on this version",
+               and choosing one the server is not on looks like it did nothing —
+               because holding a server still is all it can do. *@
+            <p class="console-fault">
+                This server is running <strong>@onBuild</strong>, not the pinned
+                @updatePin.Trim(). It will stay on @onBuild until you install
+                another build.
+            </p>
+        }
+    }
+
+    <p class="check-detail">
+        When the wrapper asks Mojang is install-wide — the feed describes Mojang, not
+        any one server — and is set on the <a href="settings">Settings</a> page.
+        Currently @CheckCadence.
+    </p>
+</div>
+
+<h2 id="bedrock-builds">Bedrock builds</h2>
+
+<p class="lead">
+    Every Bedrock zip in the package store, whichever way it got there — downloaded by
+    the wrapper or dropped into <code>@Packages.Directory</code> by hand. Installing one
+    puts it on <strong>@Supervisor.Definition.Name</strong> only; other servers keep the
+    build they are on.
+</p>
+
+@if (packages.Count == 0)
+{
+    <p class="empty-state">
+        Nothing in the package store yet. Use <strong>Download only</strong> above, or
+        copy a <code>bedrock-server-*.zip</code> into <code>@Packages.Directory</code>.
+    </p>
+}
+else
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Build</th>
+                    <th>File</th>
+                    <th class="num">Size</th>
+                    <th class="num">Added</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var package in packages)
+                {
+                    <tr>
+                        <td>
+                            <strong>@package.Display</strong>
+                            @if (IsRunning(package))
+                            {
+                                <span class="pill pill-ok">@InstalledHere</span>
+                            }
+                        </td>
+                        <td><code>@package.FileName</code></td>
+                        <td class="num">@($"{package.SizeBytes / 1024.0 / 1024.0:0.0} MB")</td>
+                        <td class="num">@package.ModifiedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>
+                            <button class="btn btn-sm btn-secondary" disabled="@updateBusy"
+                                    @onclick="() => BeginInstall(package)">
+                                Install
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (installCandidate is { } candidate)
+    {
+        <div class="danger-panel">
+            <h3>Install @candidate.Display on @Supervisor.Definition.Name</h3>
+
+            <p>
+                @if (Supervisor.Status.State == Core.Instances.InstanceState.Running)
+                {
+                    <text>
+                        Anyone online gets a minute's warning, then the server stops, the
+                        Bedrock files are replaced and it starts again.
+                    </text>
+                }
+                else
+                {
+                    <text>
+                        The server is stopped, so the Bedrock files are replaced where they
+                        stand and nothing is started — you will find out whether this build
+                        runs when you start it.
+                    </text>
+                }
+                The world, <code>server.properties</code>, the allowlist and the operator
+                list are not touched, and any pack you added is left alone.
+            </p>
+
+            @if (IsADowngrade(candidate))
+            {
+                @* The one case where the safety net does not help. The health gate
+                   catches a build that will not start; it cannot catch a build that
+                   starts and then refuses the world, which is what Bedrock does when
+                   the world was last saved by a newer version. *@
+                <p class="console-fault">
+                    <strong>This is older than @updateStatus?.Installed, which this server is
+                    @(ServerIsRunning ? "running" : "on").</strong>
+                    Bedrock refuses to load a world that was last saved by a newer version, so
+                    an older build may start cleanly and then reject your world. Take a backup
+                    first, and expect to go back up again if it does.
+                </p>
+            }
+
+            @if (installError is not null)
+            {
+                <p class="console-fault">@installError</p>
+            }
+
+            <div class="provision-controls">
+                <button class="btn btn-danger" disabled="@updateBusy"
+                        @onclick="() => InstallAsync(candidate)">
+                    @(installing ? "Installing…" : $"Install {candidate.Display}")
+                </button>
+                <button class="btn btn-secondary" disabled="@updateBusy"
+                        @onclick="() => installCandidate = null">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    }
+}
+
+<h2>Startup</h2>
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="field-row">
+                <input type="checkbox" id="auto-start" checked="@autoStart"
+                       @onchange="ToggleAutoStartAsync" disabled="@busy" />
+                <label for="auto-start">Start automatically with the service</label>
+            </div>
+            @if (autoStartError is not null)
+            {
+                <div class="prop-check bad">@autoStartError</div>
+            }
+            else if (autoStartSaved)
+            {
+                <div class="prop-check ok">Saved.</div>
+            }
+        </div>
+        <div class="prop-doc">
+            <p>
+                Whether this server comes up when BedrockSentry's Windows Service starts —
+                on a reboot, after an update, or when the service is restarted by hand.
+            </p>
+            <span class="prop-allowed">
+                Off does not stop it now, and does not stop the crash watchdog restarting it
+                if it falls over. Use Stop for that.
+            </span>
+        </div>
+    </div>
+</div>
+
+<h2>Scheduled restarts</h2>
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="settings-row">
+                <label class="field">
+                    <span>Restart this server</span>
+                    <select class="form-select" value="@scheduleMode" disabled="@busy"
+                            @onchange="OnScheduleModeChangedAsync">
+                        <option value="@RestartScheduleMode.None">Never</option>
+                        <option value="@RestartScheduleMode.EveryNHours">Every so many hours</option>
+                        <option value="@RestartScheduleMode.EveryNMinutes">Every so many minutes</option>
+                        <option value="@RestartScheduleMode.DailyAt">Once a day, at a set time</option>
+                    </select>
+                </label>
+
+                @if (scheduleMode == RestartScheduleMode.EveryNHours)
+                {
+                    <label class="field narrow">
+                        <span>Hours apart</span>
+                        <input class="form-control" type="number" min="1" max="168"
+                               value="@scheduleHours" disabled="@busy"
+                               @onchange="OnScheduleHoursChangedAsync" />
+                    </label>
+                }
+                else if (scheduleMode == RestartScheduleMode.EveryNMinutes)
+                {
+                    <label class="field narrow">
+                        <span>Minutes apart</span>
+                        <input class="form-control" type="number" min="1" max="10080"
+                               value="@scheduleMinutes" disabled="@busy"
+                               @onchange="OnScheduleMinutesChangedAsync" />
+                    </label>
+                }
+                else if (scheduleMode == RestartScheduleMode.DailyAt)
+                {
+                    <label class="field narrow">
+                        <span>At</span>
+                        <input class="form-control" type="time"
+                               value="@scheduleTime.ToString("HH\\:mm")" disabled="@busy"
+                               @onchange="OnScheduleTimeChangedAsync" />
+                    </label>
+                }
+
+                @if (scheduleMode != RestartScheduleMode.None)
+                {
+                    <label class="field narrow">
+                        <span>Warn players</span>
+                        <input class="form-control" type="number" min="0" max="720"
+                               value="@scheduleWarningMinutes" disabled="@busy"
+                               @onchange="OnScheduleWarningChangedAsync" />
+                    </label>
+                }
+            </div>
+
+            @if (scheduleError is not null)
+            {
+                <div class="prop-check bad">@scheduleError</div>
+            }
+            else if (scheduleSaved)
+            {
+                <div class="prop-check ok">Saved.</div>
+            }
+        </div>
+        <div class="prop-doc">
+            @if (scheduleMode == RestartScheduleMode.None)
+            {
+                <p>
+                    Nothing restarts this server on a clock. The crash watchdog below still
+                    brings it back if it falls over — this is only about planned restarts.
+                </p>
+            }
+            else
+            {
+                @* A zero lead has to be said as silence, not as a duration. `CountdownMessage.Describe`
+                   floors at "1 second" so a warning fired a few milliseconds late never announces
+                   zero — right for a live `say` line, wrong for describing a lead that is genuinely
+                   nothing, which is what made this paragraph contradict the help text below it
+                   (`T125`). Written the positive way round because `<` is the one character a Razor
+                   condition is better off without. *@
+                @if (WarningLead > TimeSpan.Zero)
+                {
+                    <p>
+                        @ScheduleDescription(), warning anyone online
+                        @Core.Instances.CountdownMessage.Describe(WarningLead) beforehand and again
+                        as the time closes, then stopping and starting it the same way
+                        <strong>Restart</strong> does — drain, backup-on-shutdown if this server
+                        asks for one, then back up.
+                    </p>
+                }
+                else
+                {
+                    <p>
+                        @ScheduleDescription(), without telling anyone online first, then stopping
+                        and starting it the same way <strong>Restart</strong> does — drain,
+                        backup-on-shutdown if this server asks for one, then back up.
+                    </p>
+                }
+                <span class="prop-allowed">
+                    An interval is counted from this server's last start, not from midnight,
+                    so restarting it by hand does not earn it a second restart minutes later.
+                    A time of day is this machine's local time. Zero warning stops without
+                    telling anybody, which is the right answer for a server nobody plays on.
+                </span>
+            }
+        </div>
+    </div>
+</div>
+
+<h2>Crash watchdog</h2>
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="settings-row">
+                <label class="field narrow">
+                    <span>Give up after</span>
+                    <input class="form-control" type="number" min="0" max="100"
+                           value="@watchdogFailures" disabled="@busy"
+                           @onchange="OnWatchdogFailuresChangedAsync" />
+                </label>
+                <label class="field narrow">
+                    <span>First retry (seconds)</span>
+                    <input class="form-control" type="number" min="1" max="3600"
+                           value="@watchdogInitialSeconds" disabled="@busy"
+                           @onchange="OnWatchdogInitialChangedAsync" />
+                </label>
+                <label class="field narrow">
+                    <span>Longest wait (minutes)</span>
+                    <input class="form-control" type="number" min="1" max="1440"
+                           value="@watchdogMaxMinutes" disabled="@busy"
+                           @onchange="OnWatchdogMaxChangedAsync" />
+                </label>
+                <label class="field narrow">
+                    <span>Each wait times</span>
+                    <input class="form-control" type="number" min="1" max="10" step="0.5"
+                           value="@watchdogMultiplier" disabled="@busy"
+                           @onchange="OnWatchdogMultiplierChangedAsync" />
+                </label>
+                <label class="field narrow">
+                    <span>Stable after (minutes)</span>
+                    <input class="form-control" type="number" min="1" max="1440"
+                           value="@watchdogStableMinutes" disabled="@busy"
+                           @onchange="OnWatchdogStableChangedAsync" />
+                </label>
+            </div>
+
+            @if (watchdogError is not null)
+            {
+                <div class="prop-check bad">@watchdogError</div>
+            }
+            else if (watchdogSaved)
+            {
+                <div class="prop-check ok">Saved.</div>
+            }
+        </div>
+        <div class="prop-doc">
+            <p>
+                What happens when <code>bedrock_server.exe</code> exits without being asked
+                to. @WatchdogLadder
+            </p>
+            <span class="prop-allowed">
+                <strong>Give up after</strong> is the count of consecutive failures before
+                the wrapper stops trying and leaves the server faulted for somebody to look
+                at; <b>0</b> means it never gives up, which will crash-loop a genuinely
+                broken server forever. The counter resets once the server has run for
+                <strong>stable after</strong> without dying, so a server that falls over
+                once a week never accumulates its way to the limit.
+            </span>
+        </div>
+    </div>
+</div>
+
+<h2 class="danger-heading">Danger zone</h2>
+
+@* The removal report used to render here, under Danger zone on a page describing
+   a server that had just stopped existing. It is on the Status page now, which is
+   where a removal sends you (`T169`). *@
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <button class="btn btn-secondary" @onclick="() => Open(Mode.Retire)" disabled="@busy">
+                Retire this instance
+            </button>
+        </div>
+        <div class="prop-doc">
+            <p>
+                Stops managing it. Nothing on disk is touched and its player history is
+                kept and stays attributable to the name <strong>@Supervisor.Definition.Name</strong>.
+            </p>
+            <span class="prop-allowed">
+                Reversible: it appears under <strong>Retired</strong> at the bottom of the
+                <a href="instances">Instances</a> page, and one button brings it back —
+                stopped, and managed again without a service restart.
+            </span>
+        </div>
+    </div>
+
+    <div class="prop">
+        <div class="prop-edit">
+            <button class="btn btn-danger" @onclick="() => Open(Mode.Remove)" disabled="@busy">
+                Remove this instance…
+            </button>
+        </div>
+        <div class="prop-doc">
+            <p>
+                Takes it out of BedrockSentry entirely, with a choice about what happens to
+                its files and its player history.
+            </p>
+            <span class="prop-allowed">Not reversible.</span>
+        </div>
+    </div>
+</div>
+
+@if (mode is not Mode.None)
+{
+    <div class="danger-panel">
+        <h3>
+            @(mode is Mode.Retire
+                ? $"Retire {Supervisor.Definition.Name}?"
+                : $"Remove {Supervisor.Definition.Name}?")
+        </h3>
+
+        @if (Supervisor.Status.State is not (InstanceState.Stopped or InstanceState.Faulted))
+        {
+            <p class="prop-check warn">
+                This server is @Supervisor.Status.State.ToString().ToLowerInvariant(). It will be
+                shut down first — anyone playing on it will be disconnected.
+            </p>
+        }
+
+        @if (mode is Mode.Remove)
+        {
+            <div class="field-row">
+                <input type="checkbox" id="delete-files" @bind="deleteFiles" disabled="@busy" />
+                <label for="delete-files">
+                    Delete the server files and the world
+                </label>
+            </div>
+            <p class="check-detail">
+                Everything under <code>@Supervisor.WorkingDirectory</code> — the Bedrock binaries,
+                <code>worlds/</code>, the allowlist and operator lists — plus this instance's console
+                transcripts. Leave it unticked to keep the folder exactly as it is and only have
+                BedrockSentry forget about it.
+            </p>
+
+            <div class="field-row">
+                <input type="checkbox" id="forget-players" @bind="forgetPlayers" disabled="@busy" />
+                <label for="forget-players">
+                    Erase this instance's player history
+                </label>
+            </div>
+            <p class="check-detail">
+                @* Said plainly rather than left to be discovered: an option that
+                   silently does nothing is worse than one that says it will. *@
+                @(playerRecords > 0
+                    ? $"{playerRecords} records are stored for this instance."
+                    : "Nothing is stored for this instance yet, so there is nothing to erase.")
+                Profiles are global, so a player who has also played on another server keeps
+                their profile and the rest of their history.
+            </p>
+
+            <div class="field-row">
+                <input type="checkbox" id="delete-backups" @bind="deleteBackups" disabled="@busy" />
+                <label for="delete-backups">
+                    Delete this instance's backups
+                </label>
+            </div>
+            <p class="check-detail">
+                @* Said as a count and a size on purpose. The world is somewhere the
+                   administrator can picture; the backup folder is somewhere they never
+                   browse, so "are you sure" means nothing without the number (D39). *@
+                @if (backupCount > 0)
+                {
+                    <text>
+                        @backupCount @(backupCount == 1 ? "backup" : "backups"),
+                        @FormatSize(backupBytes), under <code>@BackupFolder</code>.
+                        Leave it unticked and they stay there after the server is gone —
+                        nothing else lists or prunes them. Ticking it is the one choice here
+                        with no way back: it takes the safety backups too, which are what you
+                        would restore from if this removal turns out to be a mistake.
+                    </text>
+                }
+                else
+                {
+                    <text>
+                        Nothing has been backed up for this instance, so there is nothing to
+                        delete either way.
+                    </text>
+                }
+            </p>
+        }
+
+        @* The password, not a "type the name to confirm" box. This is the one
+           action in the wrapper that can destroy a world, and the account
+           that owns the wrapper is the right thing to prove you are. *@
+        @* The password comes off only when an administrator has hand-edited the
+           config to say so, and the waiver is shown here as well as logged at
+           startup — a weakened check that is only visible in a log is one nobody
+           notices is still on (`T172`). *@
+        @if (Confirm.PasswordRequired)
+        {
+            <label class="field">
+                <span>Confirm with your BedrockSentry password</span>
+                <input class="form-control" type="password" autocomplete="current-password"
+                       value="@password" @oninput="OnPasswordInput" disabled="@busy" />
+            </label>
+        }
+        else
+        {
+            <p class="prop-check warn">@DestructiveConfirmPolicy.Waiver</p>
+        }
+
+        @if (error is not null)
+        {
+            <p class="console-fault">@error</p>
+        }
+
+        <div class="provision-controls">
+            <button class="btn @(mode is Mode.Remove ? "btn-danger" : "btn-primary")"
+                    @onclick="ConfirmAsync" disabled="@(busy || !ConfirmIsPossible)">
+                @if (busy)
+                {
+                    <text>Working…</text>
+                }
+                else if (mode is Mode.Retire)
+                {
+                    <text>Retire @Supervisor.Definition.Name</text>
+                }
+                else
+                {
+                    <text>Remove @Supervisor.Definition.Name</text>
+                }
+            </button>
+            <button class="btn btn-secondary" @onclick="Cancel" disabled="@busy">Cancel</button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    [Inject]
+    private IAdminCredentialService Credentials { get; set; } = default!;
+
+    [Inject]
+    private PendingRemoval Removals { get; set; } = default!;
+
+    [Inject]
+    private DestructiveConfirmPolicy Confirm { get; set; } = default!;
+
+    [Inject]
+    private IInstancePlayerData PlayerData { get; set; } = default!;
+
+    [Inject]
+    private WorldRestorer Restorer { get; set; } = default!;
+
+    [Inject]
+    private ISentryPaths Paths { get; set; } = default!;
+
+    [Inject]
+    private BdsUpdateService Updates { get; set; } = default!;
+
+    [Inject]
+    private ServerVersionLog Versions { get; set; } = default!;
+
+    [Inject]
+    private BdsUpdateInstaller Installer { get; set; } = default!;
+
+    [Inject]
+    private ServerPackageStore Packages { get; set; } = default!;
+
+    [Inject]
+    private IOptionsMonitor<BdsUpdateOptions> BdsUpdateConfig { get; set; } = default!;
+
+    [Inject]
+    private BdsAutoUpdater AutoUpdates { get; set; } = default!;
+
+    [Inject]
+    private TimeProvider Clock { get; set; } = default!;
+
+    private BdsUpdateStatus? updateStatus;
+    private ServerVersionRecord? versionRecord;
+    private bool checkingNow;
+    private BdsUpdateMode updateMode;
+    private BdsChannel updateChannel;
+    private string updatePin = string.Empty;
+    private int updateDelayMinutes = 30;
+    private PendingBdsUpdate? pending;
+    private bool updateBusy;
+    private bool downloading;
+    private bool installing;
+    private string? updateMessage;
+    private string? updateError;
+
+    private IReadOnlyList<ServerPackage> packages = [];
+    private ServerPackage? installCandidate;
+    private string? installError;
+
+    /// The previous Bedrock files, when an update has left a copy behind (D37).
+    private KeptBuild? keptBuild;
+
+    /// Whether the server is actually up, which several bits of wording depend on.
+    private bool ServerIsRunning =>
+        Supervisor.Status.State is InstanceState.Running or InstanceState.Starting;
+
+    /// How the build this server is on gets labelled, in the builds table and the
+    /// pin list. Both said "running here" whatever the server was doing.
+    private string InstalledHere => ServerIsRunning ? "running here" : "installed here";
+
+    /// Seeded once per instance, not per render — the page above ticks every
+    /// second, and re-seeding on the tick is the bug T22 was.
+    private string? updateSeededFor;
+
+    /// <summary>How often the wrapper asks Mojang, in the administrator's words.</summary>
+    private string CheckCadence
+    {
+        get
+        {
+            var config = BdsUpdateConfig.CurrentValue;
+
+            return config.CheckForUpdates
+                ? BdsUpdateSettingsStore.Describe(config.ScheduleOrDefault)
+                : "checking is turned off install-wide";
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (updateSeededFor != Supervisor.InstanceId)
+        {
+            updateSeededFor = Supervisor.InstanceId;
+
+            var settings = Supervisor.Definition.ServerUpdate;
+            updateMode = settings.Mode;
+            updateChannel = settings.Channel;
+            updatePin = settings.PinnedVersion;
+            updateDelayMinutes = settings.AutoApplyDelayMinutes;
+            updateMessage = null;
+            updateError = null;
+            installCandidate = null;
+            installError = null;
+
+            SeedManagement();
+        }
+
+        // Outside the guard on purpose: this is live state, and the countdown
+        // has to tick down on the page's own 1 Hz render rather than freezing at
+        // whatever it said when the tab was opened.
+        pending = AutoUpdates.PendingFor(Supervisor.InstanceId);
+
+        // All cheap, and the whole point of the panel: these read what the
+        // checker, the supervisor and the store have already recorded rather
+        // than going to the network or the server.
+        updateStatus = Updates.StatusFor(Supervisor);
+        versionRecord = Versions.Read(Supervisor.InstanceId);
+        packages = Packages.List();
+
+        // One directory listing; the expensive part, the folder's size, is cached
+        // by the installer because a kept build never changes once written.
+        keptBuild = Installer.KeptBuildFor(Supervisor.WorkingDirectory);
+
+        autoStart = Supervisor.Definition.AutoStart;
+    }
+
+    /// <summary>
+    /// Persists the three update settings.
+    /// </summary>
+    /// <remarks>
+    /// Called from each control's own change event rather than from a Save
+    /// button. Every other control on this page — the auto-start checkbox
+    /// directly below — applies immediately, and one group that does not is
+    /// worse than either convention consistently applied: the page looks
+    /// changed, gets navigated away from, and the edit is gone with nothing
+    /// having said so. Reported as "the Bedrock updates section keeps resetting
+    /// itself".
+    /// </remarks>
+    private async Task SaveUpdateSettingsAsync()
+    {
+        updateBusy = true;
+        updateError = null;
+        updateMessage = null;
+
+        try
+        {
+            await Registry.SetServerUpdateAsync(Supervisor.InstanceId, new BdsUpdateSettings
+            {
+                Mode = updateMode,
+                Channel = updateChannel,
+                PinnedVersion = updatePin.Trim(),
+                AutoApplyDelayMinutes = updateDelayMinutes,
+            });
+
+            updateMessage = "Saved.";
+
+            // The channel, the mode and the pin all change what this server
+            // should be told, so the headline is re-read rather than left
+            // describing the previous setting.
+            updateStatus = Updates.StatusFor(Supervisor);
+        }
+        catch (Exception ex)
+        {
+            updateError = ex.Message;
+
+            // Back to what is actually stored. Leaving the controls showing a
+            // value the config file does not hold would put the page right back
+            // in the state this whole change exists to remove — displaying a
+            // setting that silently reverts on the next visit.
+            var stored = Supervisor.Definition.ServerUpdate;
+            updateMode = stored.Mode;
+            updateChannel = stored.Channel;
+            updatePin = stored.PinnedVersion;
+            updateDelayMinutes = stored.AutoApplyDelayMinutes;
+        }
+        finally
+        {
+            updateBusy = false;
+        }
+    }
+
+    private TimeSpan Remaining => pending?.RemainingAt(Clock.GetUtcNow()) ?? TimeSpan.Zero;
+
+    /// <summary>
+    /// The countdown this delay produces, described rather than listed.
+    /// </summary>
+    /// <remarks>
+    /// It used to enumerate every point. That read fine when the ladder went
+    /// 30 → 15 → 5, and became a wall of thirteen intervals once notices moved
+    /// to every five minutes — the explainer has to say what the pattern is, not
+    /// recite it.
+    /// </remarks>
+    private string CountdownCadence
+    {
+        get
+        {
+            var points = BdsUpdateCountdown
+                .PointsFor(TimeSpan.FromMinutes(Math.Max(0, updateDelayMinutes)))
+                .ToList();
+
+            if (points.Count < 2)
+            {
+                return "and that is the only notice there is room for";
+            }
+
+            if (points[0] <= TimeSpan.FromMinutes(5))
+            {
+                return "then once a minute";
+            }
+
+            var opener = points[0] > TimeSpan.FromHours(1)
+                ? "then at longer intervals until an hour out, every five minutes from there"
+                : "then every five minutes";
+
+            return $"{opener} and once a minute for the last five";
+        }
+    }
+
+    private async Task OnDelayChangedAsync(ChangeEventArgs e)
+    {
+        // Clamped rather than refused. A week is already far past any sensible
+        // answer, and a negative delay is just zero said awkwardly.
+        updateDelayMinutes = int.TryParse(e.Value?.ToString(), out var minutes)
+            ? Math.Clamp(minutes, 0, 10080)
+            : Supervisor.Definition.ServerUpdate.AutoApplyDelayMinutes;
+
+        await SaveUpdateSettingsAsync();
+    }
+
+    private async Task CancelPendingAsync()
+    {
+        AutoUpdates.Cancel(Supervisor.InstanceId);
+        pending = null;
+        updateMessage = "The scheduled update was called off.";
+        await Task.CompletedTask;
+    }
+
+    private async Task ApplyPendingNowAsync()
+    {
+        AutoUpdates.ApplyNow(Supervisor.InstanceId);
+        pending = AutoUpdates.PendingFor(Supervisor.InstanceId);
+        updateMessage =
+            "Applying now — the server will warn anyone online, stop and come back on the new build.";
+        await Task.CompletedTask;
+    }
+
+    private async Task OnModeChangedAsync(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<BdsUpdateMode>(e.Value?.ToString(), out var mode))
+        {
+            updateMode = mode;
+            await SaveUpdateSettingsAsync();
+        }
+    }
+
+    private async Task OnChannelChangedAsync(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<BdsChannel>(e.Value?.ToString(), out var channel))
+        {
+            updateChannel = channel;
+            await SaveUpdateSettingsAsync();
+        }
+    }
+
+    private async Task OnPinChangedAsync(ChangeEventArgs e)
+    {
+        updatePin = e.Value?.ToString() ?? string.Empty;
+        await SaveUpdateSettingsAsync();
+    }
+
+    /// <summary>A version this server could be pinned to, and how to label it.</summary>
+    private sealed record PinChoice(string Version, string Label);
+
+    /// <summary>
+    /// The builds worth offering as a pin: what this server is running, plus
+    /// everything in the package store.
+    /// </summary>
+    /// <remarks>
+    /// This was a free-text box, which gave no hint of the format, accepted
+    /// "latest" and "asdf" as readily as a version, and told you nothing about
+    /// whether what you typed existed anywhere — a pin is a freeze, so any
+    /// non-empty string behaves identically and the box looked inert.
+    /// <para>
+    /// A stored pin the store no longer holds is still listed. A
+    /// <c>&lt;select&gt;</c> whose value matches no option renders as its first
+    /// one, so dropping it would show "Not pinned" over a config file that says
+    /// otherwise — the panel lying about the setting it exists to show.
+    /// </para>
+    /// </remarks>
+    private IEnumerable<PinChoice> PinChoices
+    {
+        get
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var choices = new List<(Version? Sort, PinChoice Choice)>();
+
+            void Add(string? text, Version? sort, string note)
+            {
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return;
+                }
+
+                var value = text.Trim();
+
+                // First mention wins, so a build that is both running and in the
+                // store is labelled with the more useful of the two facts.
+                if (!seen.Add(value))
+                {
+                    return;
+                }
+
+                if (sort is null)
+                {
+                    Version.TryParse(value, out sort);
+                }
+
+                choices.Add((sort, new PinChoice(value, $"{value} — {note}")));
+            }
+
+            Add(updateStatus?.Installed?.ToString(), updateStatus?.Installed, InstalledHere);
+
+            foreach (var package in packages)
+            {
+                Add(package.VersionText, package.Version, "in the package store");
+            }
+
+            Add(updatePin, null, "not in the package store");
+
+            // Newest first; anything whose version would not parse sorts last
+            // rather than jumbling the ones that did.
+            return choices.OrderByDescending(c => c.Sort).Select(c => c.Choice);
+        }
+    }
+
+    /// <summary>
+    /// The running build, when it is known and is not the one pinned.
+    /// </summary>
+    private string? PinnedAwayFromRunning
+    {
+        get
+        {
+            var pin = updatePin.Trim();
+
+            if (pin.Length == 0 || updateStatus?.Installed is not { } running)
+            {
+                return null;
+            }
+
+            return string.Equals(running.ToString(), pin, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : running.ToString();
+        }
+    }
+
+    /// <summary>True when this package is the build the server reported running.</summary>
+    private bool IsRunning(ServerPackage package) =>
+        package.Version is not null && package.Version == updateStatus?.Installed;
+
+    /// <summary>True when installing this package would move the server backwards.</summary>
+    private bool IsADowngrade(ServerPackage package) =>
+        package.Version is { } offered
+        && updateStatus?.Installed is { } installed
+        && offered < installed;
+
+    private void BeginInstall(ServerPackage package)
+    {
+        installCandidate = package;
+        installError = null;
+        updateMessage = null;
+        updateError = null;
+    }
+
+    /// <summary>
+    /// Installs a package from the store, whatever its version.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not gated on being newer than what is installed. Reinstalling
+    /// the current build is how somebody repairs a damaged install, and going
+    /// back a version is the manual rollback <c>docs/design.md</c> § 11 already names —
+    /// so both go through the one path that warns players, keeps the world and
+    /// puts the previous binaries back if the new ones will not start. The
+    /// hazard a downgrade carries that the health gate cannot catch is stated on
+    /// the confirmation rather than used as a reason to refuse.
+    /// </remarks>
+    private async Task InstallAsync(ServerPackage package)
+    {
+        updateBusy = true;
+        installing = true;
+        installError = null;
+
+        try
+        {
+            var result = await Installer.ApplyAsync(
+                Supervisor, package, BdsUpdateInstaller.PromptWarnings);
+
+            installCandidate = null;
+            updateError = result.RolledBack ? result.Detail : null;
+            updateMessage = result.RolledBack ? null : result.Detail;
+        }
+        catch (Exception ex)
+        {
+            installError = ex.Message;
+        }
+        finally
+        {
+            installing = false;
+            updateBusy = false;
+            updateStatus = Updates.StatusFor(Supervisor);
+            versionRecord = Versions.Read(Supervisor.InstanceId);
+            packages = Packages.List();
+        }
+    }
+
+    /// <summary>
+    /// Asks Mojang now rather than waiting for the interval.
+    /// </summary>
+    /// <remarks>
+    /// Wanted for the obvious reason — a build has just been announced and
+    /// nobody wants to wait six hours — and for a less obvious one: it is the
+    /// only way to find out that the feed is unreachable at a moment of your
+    /// choosing, rather than discovering it the next time an update matters.
+    /// </remarks>
+    private async Task CheckNowAsync()
+    {
+        updateBusy = true;
+        checkingNow = true;
+        updateError = null;
+        updateMessage = null;
+
+        try
+        {
+            await Updates.RefreshAsync();
+
+            updateStatus = Updates.StatusFor(Supervisor);
+            updateMessage = Updates.LastFailure is null ? "Checked." : null;
+            updateError = Updates.LastFailure;
+        }
+        catch (Exception ex)
+        {
+            updateError = ex.Message;
+        }
+        finally
+        {
+            checkingNow = false;
+            updateBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Downloads if needed, then applies — the whole thing behind one button,
+    /// because "download" and "install" as two clicks is a state an operator can
+    /// be interrupted in the middle of.
+    /// </summary>
+    private async Task UpdateNowAsync(BdsDownload offer)
+    {
+        updateBusy = true;
+        installing = true;
+        updateError = null;
+        updateMessage = null;
+
+        try
+        {
+            var package = await Updates.DownloadAsync(offer);
+
+            // The short countdown, not the instance's fifteen-minute one: the
+            // person who clicked this is at the keyboard waiting.
+            var result = await Installer.ApplyAsync(
+                Supervisor, package, BdsUpdateInstaller.PromptWarnings);
+
+            updateMessage = result.Detail;
+
+            // A rollback is not an error — it is the safety net doing its job —
+            // but it is not a success either, and the page should not read like
+            // one.
+            updateError = result.RolledBack ? result.Detail : null;
+            updateMessage = result.RolledBack ? null : result.Detail;
+        }
+        catch (Exception ex)
+        {
+            updateError = ex.Message;
+        }
+        finally
+        {
+            installing = false;
+            updateBusy = false;
+            updateStatus = Updates.StatusFor(Supervisor);
+            versionRecord = Versions.Read(Supervisor.InstanceId);
+        }
+    }
+
+    private async Task DownloadAsync(BdsDownload offer)
+    {
+        updateBusy = true;
+        downloading = true;
+        updateError = null;
+        updateMessage = null;
+
+        try
+        {
+            var package = await Updates.DownloadAsync(offer);
+
+            updateMessage =
+                $"{package.FileName} is in the package store and has not been installed. "
+                + "It is under Bedrock builds below — press Install there when you are ready.";
+
+            // So the row the message points at is actually there. Without this
+            // the page says "it is below" and the table has not been re-read
+            // until the next tick.
+            packages = Packages.List();
+        }
+        catch (Exception ex)
+        {
+            updateError = ex.Message;
+        }
+        finally
+        {
+            // Both flags. Resetting only updateBusy left the button enabled but
+            // still reading "Downloading…" for the rest of the session, which
+            // read as a download that never finished.
+            downloading = false;
+            updateBusy = false;
+        }
+    }
+
+    private enum Mode
+    {
+        None,
+        Retire,
+        Remove,
+    }
+
+    private Mode mode = Mode.None;
+    private bool autoStart;
+
+    private string instanceName = string.Empty;
+    private bool nameSaved;
+    private string? nameError;
+
+    private string instanceFolder = string.Empty;
+    private string? folderMessage;
+    private string? folderError;
+    private bool folderMoveNeeded;
+
+    private RestartScheduleMode scheduleMode;
+    private int scheduleHours = 12;
+    private int scheduleMinutes = 30;
+    private TimeOnly scheduleTime = new(5, 0);
+    private int scheduleWarningMinutes = 15;
+    private bool scheduleSaved;
+    private string? scheduleError;
+
+    private int watchdogFailures = 3;
+    private int watchdogInitialSeconds = 10;
+    private int watchdogMaxMinutes = 5;
+    private double watchdogMultiplier = 3;
+    private int watchdogStableMinutes = 2;
+    private bool watchdogSaved;
+    private string? watchdogError;
+    private bool autoStartSaved;
+    private string? autoStartError;
+
+    private bool deleteFiles;
+    private bool forgetPlayers;
+    private bool deleteBackups;
+    private int backupCount;
+    private long backupBytes;
+    private int playerRecords;
+
+    private string password = string.Empty;
+    private string? error;
+    private bool busy;
+
+    /// <summary>
+    /// Fills the name, schedule and watchdog controls from what the service is
+    /// actually running with.
+    /// </summary>
+    /// <remarks>
+    /// Called only on an instance switch, like the update settings above and for
+    /// the same reason: the hosting page re-renders every second, and re-seeding
+    /// on the tick would fight a half-typed name back to what is stored (T22).
+    /// </remarks>
+    private void SeedManagement()
+    {
+        instanceName = Supervisor.Definition.Name;
+        nameSaved = false;
+        nameError = null;
+
+        instanceFolder = Supervisor.WorkingDirectory;
+        folderMessage = null;
+        folderError = null;
+        folderMoveNeeded = false;
+
+        var schedule = Supervisor.Definition.RestartSchedule;
+        scheduleMode = schedule.Mode;
+        scheduleHours = schedule.IntervalHours;
+        scheduleMinutes = schedule.IntervalMinutes;
+        scheduleTime = schedule.TimeOfDay;
+        scheduleWarningMinutes = (int)Math.Round(LeadOf(schedule).TotalMinutes);
+        scheduleSaved = false;
+        scheduleError = null;
+
+        var watchdog = Supervisor.Definition.Watchdog;
+        watchdogFailures = watchdog.MaxConsecutiveFailures;
+        watchdogInitialSeconds = Math.Max(1, (int)Math.Round(watchdog.InitialBackoff.TotalSeconds));
+        watchdogMaxMinutes = Math.Max(1, (int)Math.Round(watchdog.MaxBackoff.TotalMinutes));
+        watchdogMultiplier = watchdog.BackoffMultiplier;
+        watchdogStableMinutes = Math.Max(1, (int)Math.Round(watchdog.StableAfter.TotalMinutes));
+        watchdogSaved = false;
+        watchdogError = null;
+    }
+
+    /// <summary>
+    /// How much notice a stored schedule gives, as one number.
+    /// </summary>
+    /// <remarks>
+    /// The config file holds a list of warning points, but the thing an
+    /// administrator is actually choosing is how long players get — the points
+    /// follow from it, exactly as the Bedrock update delay's do. The longest
+    /// point is that lead, so a hand-written list still reads back sensibly here;
+    /// editing the control replaces the list with the ladder's own points, which
+    /// the doc beside it says out loud rather than doing quietly.
+    /// </remarks>
+    private static TimeSpan LeadOf(RestartSchedule schedule)
+    {
+        var points = schedule.WarningsOrDefault;
+
+        return points.Count > 0 ? points.Max() : TimeSpan.Zero;
+    }
+
+    private TimeSpan WarningLead => TimeSpan.FromMinutes(Math.Max(0, scheduleWarningMinutes));
+
+    /// <summary>
+    /// The warning points a lead of <see cref="WarningLead"/> implies.
+    /// </summary>
+    /// <remarks>
+    /// Derived from the one number rather than configured beside it, exactly as
+    /// the Bedrock update delay's countdown is, so a fifteen-minute warning
+    /// cannot be configured inside a five-minute window. The last call is
+    /// appended the way a stop's own countdown appends it, because this list is
+    /// what the stop is handed.
+    /// <para>
+    /// A zero lead writes a single zero-length point rather than an empty list.
+    /// The configuration system emits no keys for an empty JSON array, which
+    /// makes it indistinguishable from the property being absent — so "warn
+    /// nobody" would come back from the next service start as the fifteen-minute
+    /// default, which is the opposite of what was asked for. Zero-length points
+    /// are filtered out when the countdown is planned, leaving no warnings and no
+    /// lead (see <c>RestartSchedule.Warnings</c>).
+    /// </para>
+    /// </remarks>
+    private List<TimeSpan> WarningPoints()
+    {
+        if (WarningLead <= TimeSpan.Zero)
+        {
+            return [TimeSpan.Zero];
+        }
+
+        var points = CountdownLadder.PointsFor(WarningLead).ToList();
+
+        if (WarningLead > CountdownLadder.LastCall)
+        {
+            points.Add(CountdownLadder.LastCall);
+        }
+
+        return points;
+    }
+
+    /// <summary>The backoff sequence the current settings produce, in words.</summary>
+    /// <remarks>
+    /// Computed in `Core` so a unit test can reach it. This used to build the
+    /// sentence here, rounding through `CountdownMessage.Describe` and always
+    /// printing four rungs — both wrong, and both invisible to the suite
+    /// (`T140`).
+    /// </remarks>
+    private string WatchdogLadder => Core.Instances.WatchdogLadder.Describe(BuiltWatchdog());
+
+    private WatchdogOptions BuiltWatchdog() => new()
+    {
+        MaxConsecutiveFailures = watchdogFailures,
+        InitialBackoff = TimeSpan.FromSeconds(watchdogInitialSeconds),
+        MaxBackoff = TimeSpan.FromMinutes(watchdogMaxMinutes),
+        BackoffMultiplier = watchdogMultiplier,
+        StableAfter = TimeSpan.FromMinutes(watchdogStableMinutes),
+    };
+
+    private bool FolderIsMovable =>
+        Supervisor.Status.State is Core.Instances.InstanceState.Stopped
+            or Core.Instances.InstanceState.Faulted;
+
+    private async Task OnFolderChangedAsync(ChangeEventArgs e)
+    {
+        var wanted = e.Value?.ToString() ?? string.Empty;
+        var previous = Supervisor.WorkingDirectory;
+
+        busy = true;
+        folderError = null;
+        folderMessage = null;
+        folderMoveNeeded = false;
+
+        try
+        {
+            var ready = await Registry.SetWorkingDirectoryAsync(Supervisor.InstanceId, wanted);
+            instanceFolder = Path.GetFullPath(wanted.Trim());
+
+            // Two honest outcomes, said apart: a folder that already holds the
+            // server is done; an empty one still needs the files walked over,
+            // and starting before that would just be a crash with extra steps.
+            if (ready)
+            {
+                folderMessage = "Done — the server starts from here now.";
+            }
+            else
+            {
+                folderMoveNeeded = true;
+                folderMessage =
+                    $"Pinned. Now move everything from {previous} into {instanceFolder}, "
+                    + "then start the server.";
+            }
+        }
+        catch (Exception ex)
+        {
+            instanceFolder = Supervisor.WorkingDirectory;
+            folderError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task RenameAsync(ChangeEventArgs e)
+    {
+        var wanted = e.Value?.ToString() ?? string.Empty;
+
+        busy = true;
+        nameError = null;
+        nameSaved = false;
+
+        try
+        {
+            await Registry.RenameAsync(Supervisor.InstanceId, wanted);
+            instanceName = Supervisor.Definition.Name;
+            nameSaved = true;
+        }
+        catch (Exception ex)
+        {
+            // Back to what is stored rather than left showing a name the config
+            // file does not hold.
+            instanceName = Supervisor.Definition.Name;
+            nameError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Persists the schedule as each control changes, the way everything else on
+    /// this page does.
+    /// </summary>
+    private async Task SaveScheduleAsync()
+    {
+        busy = true;
+        scheduleError = null;
+        scheduleSaved = false;
+
+        try
+        {
+            var schedule = new RestartSchedule
+            {
+                Mode = scheduleMode,
+                IntervalHours = scheduleHours,
+                IntervalMinutes = scheduleMinutes,
+                TimeOfDay = scheduleTime,
+
+                Warnings = WarningPoints(),
+            };
+
+            await Registry.SetRestartScheduleAsync(Supervisor.InstanceId, schedule);
+            scheduleSaved = true;
+        }
+        catch (Exception ex)
+        {
+            scheduleError = ex.Message;
+            SeedManagement();
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task OnScheduleModeChangedAsync(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<RestartScheduleMode>(e.Value?.ToString(), out var mode))
+        {
+            scheduleMode = mode;
+            await SaveScheduleAsync();
+        }
+    }
+
+    private async Task OnScheduleHoursChangedAsync(ChangeEventArgs e)
+    {
+        scheduleHours = Clamp(e, 1, 168, scheduleHours);
+        await SaveScheduleAsync();
+    }
+
+    private async Task OnScheduleMinutesChangedAsync(ChangeEventArgs e)
+    {
+        scheduleMinutes = Clamp(e, 1, 10080, scheduleMinutes);
+        await SaveScheduleAsync();
+    }
+
+    private async Task OnScheduleTimeChangedAsync(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var time))
+        {
+            scheduleTime = time;
+            await SaveScheduleAsync();
+        }
+    }
+
+    private async Task OnScheduleWarningChangedAsync(ChangeEventArgs e)
+    {
+        scheduleWarningMinutes = Clamp(e, 0, 720, scheduleWarningMinutes);
+        await SaveScheduleAsync();
+    }
+
+    private async Task SaveWatchdogAsync()
+    {
+        busy = true;
+        watchdogError = null;
+        watchdogSaved = false;
+
+        try
+        {
+            await Registry.SetWatchdogAsync(Supervisor.InstanceId, BuiltWatchdog());
+            watchdogSaved = true;
+        }
+        catch (Exception ex)
+        {
+            watchdogError = ex.Message;
+            SeedManagement();
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task OnWatchdogFailuresChangedAsync(ChangeEventArgs e)
+    {
+        watchdogFailures = Clamp(e, 0, 100, watchdogFailures);
+        await SaveWatchdogAsync();
+    }
+
+    private async Task OnWatchdogInitialChangedAsync(ChangeEventArgs e)
+    {
+        watchdogInitialSeconds = Clamp(e, 1, 3600, watchdogInitialSeconds);
+        await SaveWatchdogAsync();
+    }
+
+    private async Task OnWatchdogMaxChangedAsync(ChangeEventArgs e)
+    {
+        watchdogMaxMinutes = Clamp(e, 1, 1440, watchdogMaxMinutes);
+        await SaveWatchdogAsync();
+    }
+
+    private async Task OnWatchdogMultiplierChangedAsync(ChangeEventArgs e)
+    {
+        watchdogMultiplier = double.TryParse(e.Value?.ToString(), out var value)
+            ? Math.Clamp(value, 1, 10)
+            : watchdogMultiplier;
+
+        await SaveWatchdogAsync();
+    }
+
+    private async Task OnWatchdogStableChangedAsync(ChangeEventArgs e)
+    {
+        watchdogStableMinutes = Clamp(e, 1, 1440, watchdogStableMinutes);
+        await SaveWatchdogAsync();
+    }
+
+    /// <summary>
+    /// Clamped rather than refused, matching the update delay above: a number
+    /// past either end is a typo, and the nearest legal value is what was meant.
+    /// </summary>
+    private static int Clamp(ChangeEventArgs e, int min, int max, int fallback) =>
+        int.TryParse(e.Value?.ToString(), out var value) ? Math.Clamp(value, min, max) : fallback;
+
+    private async Task ToggleAutoStartAsync(ChangeEventArgs e)
+    {
+        var wanted = e.Value is bool value && value;
+
+        busy = true;
+        autoStartError = null;
+        autoStartSaved = false;
+
+        try
+        {
+            await Registry.SetAutoStartAsync(Supervisor.InstanceId, wanted);
+            autoStart = wanted;
+            autoStartSaved = true;
+        }
+        catch (Exception ex)
+        {
+            // Left showing what is actually configured, not what was clicked.
+            autoStart = Supervisor.Definition.AutoStart;
+            autoStartError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task Open(Mode wanted)
+    {
+        mode = wanted;
+        password = string.Empty;
+        error = null;
+        deleteFiles = false;
+        forgetPlayers = false;
+        deleteBackups = false;
+
+        playerRecords = await PlayerData.CountAsync(Supervisor.InstanceId);
+
+        var backups = Restorer.ListBackups(Supervisor.InstanceId);
+        backupCount = backups.Count;
+        backupBytes = backups.Sum(b => b.SizeBytes);
+    }
+
+    /// <summary>Where this instance's archives live, for the removal dialog to name.</summary>
+    private string BackupFolder => Path.Combine(Paths.Backups, Supervisor.InstanceId);
+
+    private static string FormatSize(long bytes) => bytes switch
+    {
+        >= 1024L * 1024 * 1024 => $"{bytes / 1024d / 1024 / 1024:0.#} GB",
+        >= 1024L * 1024        => $"{bytes / 1024d / 1024:0.#} MB",
+        >= 1024                => $"{bytes / 1024d:0.#} KB",
+        _                      => $"{bytes} B",
+    };
+
+    private void Cancel()
+    {
+        mode = Mode.None;
+        password = string.Empty;
+        error = null;
+    }
+
+    private void OnPasswordInput(ChangeEventArgs e)
+    {
+        password = e.Value?.ToString() ?? string.Empty;
+        error = null;
+    }
+
+    private async Task ConfirmAsync()
+    {
+        if (busy || !ConfirmIsPossible)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+
+        try
+        {
+            if (!await PasswordIsRightAsync())
+            {
+                error = "That password is not right.";
+                return;
+            }
+
+            if (mode is Mode.Retire)
+            {
+                await Registry.RetireAsync(Supervisor.InstanceId);
+
+                // Instances, not Status, and the difference is deliberate: a retired
+                // instance is listed under Retired at the bottom of that page and one
+                // button brings it back, so that is where somebody who just retired
+                // one wants to be. A removed instance is nowhere, which is why the
+                // branch below goes elsewhere. Do not make these two agree.
+                Navigation.NavigateTo("instances");
+                return;
+            }
+
+            var done = await Registry.RemoveAsync(
+                Supervisor.InstanceId, new RemoveInstanceRequest(deleteFiles, forgetPlayers, deleteBackups));
+
+            // Status, because this page has just stopped describing anything — the
+            // supervisor is out of the registry and the tab strip above is rendering a
+            // server that no longer exists (`T169`). Not "instances": a bare
+            // /instances redirects to the *first remaining* instance, which would drop
+            // somebody onto another server's console straight after a destructive act.
+            //
+            // The report goes with them. It is the only thing that names the directory
+            // left on disk when "delete the files" was unticked, which is an ordinary
+            // choice — see InstanceRemovalOutcome's own summary.
+            Removals.Post(done);
+            Navigation.NavigateTo("");
+            return;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            password = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Whether the confirm button can act. Both the attribute and the handler ask
+    /// this one property — a disabled button is a hint, and the handler is the
+    /// rule.
+    /// </summary>
+    private bool ConfirmIsPossible => Confirm.MayConfirm(password);
+
+    /// <remarks>
+    /// Both halves moved into <c>DestructiveConfirmPolicy</c>: this page and the Backups
+    /// tab each had their own copy, and a test could reach neither. Reading the signed-in
+    /// name is still the page's job, because only a component has the authentication
+    /// state.
+    /// </remarks>
+    private async Task<bool> PasswordIsRightAsync()
+    {
+        var state = AuthenticationState is null ? null : await AuthenticationState;
+
+        return Confirm.Accepts(state?.User.Identity?.Name, password);
+    }
+
+    /// <remarks>
+    /// Built from the editor's own fields rather than from the stored definition,
+    /// so the summary describes what the controls currently say — including before
+    /// a change has been saved. The wording itself is
+    /// <see cref="RestartSchedule.Describe"/>, shared with the Status card, which
+    /// had drifted out of step with this switch (`T126`).
+    /// </remarks>
+    private string ScheduleDescription()
+    {
+        var schedule = new RestartSchedule
+        {
+            Mode = scheduleMode,
+            IntervalHours = scheduleHours,
+            IntervalMinutes = scheduleMinutes,
+            TimeOfDay = scheduleTime,
+        };
+
+        return scheduleMode == RestartScheduleMode.None
+            ? "Never restarts on a schedule"
+            : $"Restarts {schedule.Describe()}";
+    }
+}

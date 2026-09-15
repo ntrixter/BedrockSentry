@@ -1,0 +1,170 @@
+@page "/backups"
+@* Interactive: sizes and last-backup ages are read from disk on load. *@
+@rendermode InteractiveServer
+
+@using BedrockSentry.Core.Backups
+@using BedrockSentry.Services.Backups
+@using BedrockSentry.Services.Instances
+
+@inject InstanceRegistry Registry
+@inject BackupHistory History
+
+<PageTitle>Backups · BedrockSentry</PageTitle>
+
+<h1>Backups</h1>
+
+<p class="lead">
+    Coverage and storage across every instance. Running one, and choosing which
+    strategies run, is on each instance's own Backups tab.
+</p>
+
+@if (rows is null)
+{
+    <p class="empty-state">Reading backup history…</p>
+}
+else if (rows.Count == 0)
+{
+    <p class="empty-state">No instances are configured.</p>
+}
+else
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Instance</th>
+                    <th>Last backup</th>
+                    <th>Outcome</th>
+                    <th class="num">Archives</th>
+                    <th class="num">On disk</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in rows)
+                {
+                    <tr>
+                        <td><a href="@($"instances/{row.InstanceId}/backups")">@row.Name</a></td>
+                        <td class="num">
+                            @(row.Last is { } last ? last.StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "never")
+                        </td>
+                        <td>
+                            @if (row.Last is not { } record)
+                            {
+                                <span class="check-detail">—</span>
+                            }
+                            else
+                            {
+                                @* The same BackupRecord.Outcome() the instance tab
+                                   uses, so the two pages cannot disagree about what
+                                   a record means (T158). *@
+                                var outcome = record.Outcome();
+                                <span class="@outcome.Severity.BadgeClass()">@outcome.Label</span>
+                            }
+                        </td>
+                        <td class="num">@row.ArchiveCount</td>
+                        <td class="num">@Size(row.ArchiveBytes)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (freeSpace is { } free)
+    {
+        @* The number worth watching: a schedule quietly filling a disk is the
+           most common way an installation like this dies. *@
+        <p class="check-detail">
+            @Size(free) free on the volume backups land on.
+        </p>
+    }
+}
+
+@code {
+    private sealed record Row(
+        string InstanceId, string Name, BackupRecord? Last, int ArchiveCount, long ArchiveBytes);
+
+    private IReadOnlyList<Row>? rows;
+    private long? freeSpace;
+
+    /// <summary>
+    /// The size of an archive that may already be gone.
+    /// </summary>
+    /// <remarks>
+    /// Retention prunes <c>backup-*.zip</c> out of the same directory this page
+    /// enumerates, so a backup finishing while the page renders can delete a
+    /// file between the enumeration and this read — and <see cref="FileInfo.Length"/>
+    /// throws for a file that has gone, where the date properties merely return
+    /// a sentinel. A pruned archive counts as nothing rather than taking the
+    /// page down with it.
+    /// </remarks>
+    private static long SizeOf(FileInfo file)
+    {
+        try
+        {
+            return file.Length;
+        }
+        catch (FileNotFoundException)
+        {
+            return 0;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return 0;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var built = new List<Row>();
+
+        foreach (var supervisor in Registry.All)
+        {
+            var records = await History.ReadAsync(supervisor.InstanceId);
+
+            var directory = History.DirectoryFor(supervisor.InstanceId);
+            var archives = Directory.Exists(directory)
+                ? Directory.EnumerateFiles(directory, "backup-*.zip").Select(f => new FileInfo(f)).ToList()
+                : [];
+
+            built.Add(new Row(
+                supervisor.InstanceId,
+                supervisor.Definition.Name,
+                records.Count == 0 ? null : records[^1],
+                archives.Count,
+                archives.Sum(SizeOf)));
+        }
+
+        rows = built;
+
+        try
+        {
+            var anyDirectory = built
+                .Select(r => History.DirectoryFor(r.InstanceId))
+                .FirstOrDefault(Directory.Exists);
+
+            if (anyDirectory is not null)
+            {
+                freeSpace = new DriveInfo(Path.GetPathRoot(anyDirectory)!).AvailableFreeSpace;
+            }
+        }
+        catch (IOException)
+        {
+            // No free-space figure beats a page that will not load.
+        }
+    }
+
+    // T158. One place decides what a record reads as, because there were two —
+    // this page and the all-instances Backups page each had their own
+    // Skipped / Succeeded / else ladder, and neither can be reached by the test
+    // suite. The words and the severity come from BackupRecord.Outcome(); this
+    // only maps severity to the stylesheet's class.
+    private static string Size(long bytes)
+    {
+        // if-chain rather than relational patterns: Razor reads a leading "<"
+        // inside a code block as markup and refuses to compile the file.
+        if (bytes is 0) { return "—"; }
+        if (bytes / 1024.0 / 1024.0 is var mb && mb >= 1024) { return $"{mb / 1024.0:0.00} GB"; }
+        if (bytes >= 1024 * 1024) { return $"{bytes / 1024.0 / 1024.0:0.0} MB"; }
+        return $"{bytes / 1024.0:0.0} KB";
+    }
+}

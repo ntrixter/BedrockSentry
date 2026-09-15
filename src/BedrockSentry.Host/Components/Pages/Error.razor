@@ -1,0 +1,30 @@
+@page "/Error"
+@using System.Diagnostics
+@attribute [AllowAnonymous]
+
+<PageTitle>Error · BedrockSentry</PageTitle>
+
+<h1 class="text-danger">Something went wrong</h1>
+
+<p>
+    The wrapper hit an unhandled error while processing that request. Details are in
+    the Windows event log under the <code>BedrockSentry</code> source, and in the
+    wrapper's own log files.
+</p>
+
+@if (ShowRequestId)
+{
+    <p><strong>Request ID:</strong> <code>@RequestId</code></p>
+}
+
+@code {
+    [CascadingParameter]
+    private HttpContext? HttpContext { get; set; }
+
+    private string? RequestId { get; set; }
+
+    private bool ShowRequestId => !string.IsNullOrEmpty(RequestId);
+
+    protected override void OnInitialized() =>
+        RequestId = Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+}

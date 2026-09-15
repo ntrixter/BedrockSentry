@@ -1,0 +1,728 @@
+@* Bedrock's own settings, documented by Bedrock's own file. *@
+
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Services.Instances
+
+@inject PortInspector Ports
+
+<div class="prop-toolbar">
+    <span class="prop-path"><code>@path</code></span>
+    <span class="prop-toolbar-spacer"></span>
+
+    <div class="prop-modes" role="group">
+        <button class="btn btn-secondary @(mode == Mode.Form ? "active" : null)"
+                @onclick="() => SwitchTo(Mode.Form)" disabled="@busy">Form</button>
+        <button class="btn btn-secondary @(mode == Mode.Text ? "active" : null)"
+                @onclick="() => SwitchTo(Mode.Text)" disabled="@busy">Text</button>
+    </div>
+
+    @* Always enabled, because "show me what is actually in the file" is a
+       reasonable thing to want even when nothing has been typed. *@
+    <button class="btn btn-secondary" @onclick="ReloadAsync" disabled="@busy">
+        @(Dirty ? "Reload from file (discards changes)" : "Reload from file")
+    </button>
+    <button class="btn btn-primary" @onclick="SaveAsync" disabled="@(busy || !Dirty)">
+        @(busy ? "Saving…" : "Save")
+    </button>
+</div>
+
+@if (document is null)
+{
+    <p class="empty-state">Reading @ServerProperties.FileName…</p>
+}
+else if (document.Properties.Count == 0 && mode == Mode.Form)
+{
+    <p class="empty-state">
+        There is no <code>@ServerProperties.FileName</code> in
+        <code>@Supervisor.WorkingDirectory</code> yet. It arrives with the server —
+        install one from the Status tab and this fills in.
+    </p>
+}
+else
+{
+    @if (staleOnDisk)
+    {
+        <p class="prop-stale">
+            <strong>This file has changed on disk</strong> since the page read it —
+            edited by hand, or by the server itself. Reload before saving, or your
+            save writes over whatever changed.
+        </p>
+    }
+
+    @if (saveError is not null)
+    {
+        <p class="console-fault">@saveError</p>
+    }
+    else if (saved)
+    {
+        <p class="prop-saved">
+            Saved.
+            @if (Supervisor.Status.State is InstanceState.Running)
+            {
+                <text>Restart the server to apply it.</text>
+            }
+        </p>
+    }
+
+    @if (mode == Mode.Text)
+    {
+        <p class="prop-explainer prop-explainer-warn">
+            <strong>The file, as it is.</strong> Nothing here is checked — not values, not
+            ports, not spelling. It is the right tool for a setting BDS accepts but does
+            not ship in the file, and for fixing something the form cannot express.
+            Switching back to Form re-reads what you have typed.
+        </p>
+
+        <textarea class="form-control prop-text" rows="28" spellcheck="false"
+                  value="@text" @oninput="OnTextInput" disabled="@busy"></textarea>
+    }
+    else
+    {
+        <p class="prop-explainer">
+            <strong>These descriptions come out of your own file.</strong> Bedrock ships
+            <code>@ServerProperties.FileName</code> with an explanation and an allowed-values
+            line beside every setting, so BedrockSentry reads those rather than carrying its
+            own copy. They stay right when Mojang changes a default, and a setting added in a
+            future release arrives documented on the day you install it.
+        </p>
+
+        <p class="console-hint">
+            Saving writes the file. <strong>The server has to be restarted for anything here to
+            take effect</strong> — nothing is applied to a running world.
+        </p>
+
+        <div class="prop-search">
+            <input class="form-control" type="search" placeholder="Search settings…"
+                   value="@search" @oninput="OnSearchInput" />
+            @if (Searching)
+            {
+                <span class="check-detail">@Matches.Count of @document.Properties.Count settings</span>
+                <button class="btn btn-secondary btn-sm" @onclick="ClearSearch">Clear</button>
+            }
+        </div>
+
+        @if (Searching && Matches.Count == 0)
+        {
+            <p class="empty-state">
+                Nothing matches <code>@search</code>. Settings BDS accepts but does not write
+                into the file will not be here — add one below, or use the Text view.
+            </p>
+        }
+
+        @foreach (var group in Grouped())
+        {
+            <h2 class="prop-group">
+                @group.Name
+                @if (group.Name == OtherGroup && !Searching)
+                {
+                    <span class="prop-group-count">@group.Properties.Count settings</span>
+                    <button class="btn btn-secondary btn-sm" @onclick="() => showOther = !showOther">
+                        @(showOther ? "Hide" : "Show all")
+                    </button>
+                }
+            </h2>
+
+            @* Collapsed by default so the page opens on what people actually
+               change — but never collapsed while searching, or a search would
+               silently miss most of the file. *@
+            @if (group.Name != OtherGroup || showOther || Searching)
+            {
+                <div class="prop-panel">
+                    @foreach (var property in group.Properties)
+                    {
+                        <div class="prop">
+                            <div class="prop-edit">
+                                <label class="prop-key" for="@FieldId(property)">
+                                    @property.Key
+                                    @if (!IsEnabled(property))
+                                    {
+                                        <span class="prop-flag">not set</span>
+                                    }
+                                </label>
+
+                                @if (IsEnabled(property))
+                                {
+                                    @switch (property.Editor)
+                                    {
+                                        case ServerPropertyEditor.Boolean:
+                                        case ServerPropertyEditor.Choice:
+                                            <select class="form-select" id="@FieldId(property)"
+                                                    value="@Value(property)"
+                                                    @onchange="e => Edit(property, e.Value?.ToString())">
+                                                @foreach (var choice in Options(property))
+                                                {
+                                                    <option value="@choice">@choice</option>
+                                                }
+                                            </select>
+                                            break;
+
+                                        case ServerPropertyEditor.Number:
+                                            <input class="form-control" type="number" id="@FieldId(property)"
+                                                   min="@property.Minimum" max="@property.Maximum"
+                                                   step="@(property.IsInteger ? "1" : "any")"
+                                                   value="@Value(property)"
+                                                   @onchange="e => Edit(property, e.Value?.ToString())" />
+                                            break;
+
+                                        default:
+                                            <input class="form-control" id="@FieldId(property)"
+                                                   value="@Value(property)"
+                                                   @onchange="e => Edit(property, e.Value?.ToString())" />
+                                            break;
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="prop-unset">
+                                        <code>@(property.Value.Length == 0 ? "(empty)" : property.Value)</code>
+                                        <button class="btn btn-secondary btn-sm" @onclick="() => Enable(property)">
+                                            Set it
+                                        </button>
+                                    </div>
+                                }
+
+                                @foreach (var note in Notes(property))
+                                {
+                                    <div class="prop-check @note.Kind">@note.Text</div>
+                                }
+                            </div>
+
+                            <div class="prop-doc">
+                                @if (property.Description is { } description)
+                                {
+                                    <p>@description</p>
+                                }
+                                @if (property.AllowedValues is { } allowed)
+                                {
+                                    <span class="prop-allowed">Allowed: @allowed</span>
+                                }
+                                @if (property.DocumentedDefault is { } documented)
+                                {
+                                    <span class="prop-allowed">Default: @documented</span>
+                                }
+                                @if (Advice(property) is { } advice)
+                                {
+                                    <p class="prop-advice">@advice</p>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        }
+
+        <h2 class="prop-group">Add a setting</h2>
+        <div class="prop-panel">
+            @* BDS accepts settings it does not write into the file — it asks for
+               emit-server-telemetry on every startup, and there is no line for it
+               to appear on. Without this the only way to add one is by hand. *@
+            <div class="prop">
+                <div class="prop-edit">
+                    <div class="prop-add">
+                        <input class="form-control" placeholder="emit-server-telemetry"
+                               value="@newKey" @oninput="e => newKey = e.Value?.ToString() ?? string.Empty" />
+                        <span class="prop-equals">=</span>
+                        <input class="form-control" placeholder="false"
+                               value="@newValue" @oninput="e => newValue = e.Value?.ToString() ?? string.Empty" />
+                        <button class="btn btn-secondary" @onclick="Add" disabled="@(!CanAdd)">Add</button>
+                    </div>
+                    @if (addError is not null)
+                    {
+                        <div class="prop-check bad">@addError</div>
+                    }
+                </div>
+                <div class="prop-doc">
+                    <p>
+                        For settings Bedrock accepts but does not ship a line for. It asks for
+                        <code>emit-server-telemetry</code> in the console on every start, for
+                        instance, and there is nothing in the file for it to appear beside.
+                    </p>
+                    <span class="prop-allowed">
+                        Added at the bottom of the file, undocumented — there is no description
+                        to read, because the file has none to give.
+                    </span>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    private const string OtherGroup = "Everything else";
+
+    private enum Mode
+    {
+        Form,
+        Text,
+    }
+
+    /// Presentation only — which settings people reach for first. Anything not
+    /// listed still appears, under "Everything else", so a setting Mojang adds
+    /// later is never hidden by this table being out of date.
+    private static readonly (string Name, string[] Keys)[] Groups =
+    [
+        ("Identity and access", [
+            "server-name", "max-players", "allow-list", "online-mode",
+            "default-player-permission-level", "player-idle-timeout",
+        ]),
+        ("Network", [
+            "server-port", "server-portv6", "enable-lan-visibility", "transport",
+            "server-ip", "server-udp-ports",
+        ]),
+        ("World and gameplay", [
+            "level-name", "level-seed", "gamemode", "force-gamemode", "difficulty",
+            "allow-cheats", "allow-player-joining", "texturepack-required",
+            "chat-restriction", "disable-player-interaction",
+        ]),
+        ("Performance", [
+            "view-distance", "tick-distance", "max-threads",
+            "client-side-chunk-generation-enabled", "server-build-radius-ratio",
+            "compression-threshold", "compression-algorithm",
+        ]),
+    ];
+
+    private sealed record Note(string Kind, string Text);
+
+    private ServerPropertiesDocument? document;
+    private string path = string.Empty;
+
+    /// Only the settings actually edited, so an untouched file is written back
+    /// byte for byte rather than reformatted by a save that changed nothing.
+    private readonly Dictionary<string, string> edits = new(StringComparer.OrdinalIgnoreCase);
+
+    /// Commented-out settings the administrator has chosen to turn on.
+    private readonly HashSet<string> enabled = new(StringComparer.OrdinalIgnoreCase);
+
+    /// Set when the document's own lines were changed rather than a value being
+    /// pending — adding a setting, or coming back from the text view. The edit
+    /// is already in the document, so there is nothing in `edits` to notice it by.
+    private bool documentChanged;
+
+    private Mode mode = Mode.Form;
+    private string text = string.Empty;
+
+    private string search = string.Empty;
+    private bool showOther;
+
+    private string newKey = string.Empty;
+    private string newValue = string.Empty;
+    private string? addError;
+
+    private bool busy;
+    private bool saved;
+    private string? saveError;
+
+    /// The file's last-write time when it was read, so an edit made underneath
+    /// the page can be noticed rather than silently overwritten.
+    private DateTime loadedAtUtc;
+    private bool staleOnDisk;
+
+    private bool Dirty => edits.Count > 0 || enabled.Count > 0 || documentChanged;
+
+    private bool Searching => search.Trim().Length > 0;
+
+    private bool CanAdd => newKey.Trim().Length > 0;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Loaded once per instance, not per render: the page ticks every second
+        // and re-reading the file that often would fight with an edit in progress.
+        if (document is null)
+        {
+            await ReloadAsync();
+            return;
+        }
+
+        // Cheap enough to do on the tick, and it is the whole point of noticing:
+        // a hand edit or a server rewrite should surface while the page is open,
+        // not the next time somebody happens to reload it.
+        staleOnDisk = File.Exists(path) && File.GetLastWriteTimeUtc(path) != loadedAtUtc;
+    }
+
+    private async Task ReloadAsync()
+    {
+        path = ServerProperties.PathFor(Supervisor.WorkingDirectory);
+        document = await ServerPropertiesDocument.LoadAsync(path);
+        text = string.Join(Environment.NewLine, document.Lines);
+
+        loadedAtUtc = File.Exists(path) ? File.GetLastWriteTimeUtc(path) : default;
+        staleOnDisk = false;
+
+        edits.Clear();
+        enabled.Clear();
+        documentChanged = false;
+        addError = null;
+        saveError = null;
+        saved = false;
+    }
+
+    /// <summary>
+    /// Moves between the two views, carrying the working state across rather than
+    /// discarding it. A mode switch that quietly threw away what you had typed
+    /// would make the text view a trap.
+    /// </summary>
+    private void SwitchTo(Mode wanted)
+    {
+        if (mode == wanted || document is null)
+        {
+            return;
+        }
+
+        if (wanted == Mode.Text)
+        {
+            // Pending edits become part of the document, since from here on the
+            // text is what gets saved.
+            foreach (var property in document.Properties)
+            {
+                if (IsEnabled(property) && (edits.ContainsKey(property.Key) || enabled.Contains(property.Key)))
+                {
+                    document.Set(property.Key, Value(property));
+                    documentChanged = true;
+                }
+            }
+
+            edits.Clear();
+            enabled.Clear();
+            text = string.Join(Environment.NewLine, document.Lines);
+        }
+        else
+        {
+            document = ServerPropertiesDocument.Parse(TextLines());
+        }
+
+        mode = wanted;
+        saved = false;
+        saveError = null;
+    }
+
+    private string[] TextLines() =>
+        text.ReplaceLineEndings("\n").Split('\n');
+
+    private void OnTextInput(ChangeEventArgs e)
+    {
+        text = e.Value?.ToString() ?? string.Empty;
+        documentChanged = true;
+        saved = false;
+        saveError = null;
+    }
+
+    private void OnSearchInput(ChangeEventArgs e) => search = e.Value?.ToString() ?? string.Empty;
+
+    private void ClearSearch() => search = string.Empty;
+
+    /// <summary>Settings matching the search box, or all of them when it is empty.</summary>
+    private IReadOnlyList<ServerProperty> Matches
+    {
+        get
+        {
+            var all = document!.Properties;
+            var term = search.Trim();
+
+            if (term.Length == 0)
+            {
+                return all;
+            }
+
+            // Descriptions and allowed values are searched too, not just names.
+            // Half the value of a search here is finding the setting whose name
+            // you cannot remember — "idle", "chunks", "xbox".
+            return [.. all.Where(p =>
+                Contains(p.Key, term)
+                || Contains(p.Description, term)
+                || Contains(p.AllowedValues, term)
+                || Contains(p.Value, term))];
+        }
+    }
+
+    private static bool Contains(string? haystack, string needle) =>
+        haystack is not null && haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+    private void Add()
+    {
+        addError = null;
+
+        var key = newKey.Trim();
+        var value = newValue.Trim();
+
+        if (key.Length == 0 || document is null)
+        {
+            return;
+        }
+
+        if (key.Contains('=') || key.Any(char.IsWhiteSpace))
+        {
+            addError = "A setting name cannot contain spaces or an equals sign.";
+            return;
+        }
+
+        if (document.Find(key) is { } existing)
+        {
+            // Turning on a setting the file already documents is the Set it
+            // button's job, and doing it here would skip the documentation.
+            addError = existing.IsSet
+                ? $"{key} is already in the file — it is above, under its own heading."
+                : $"{key} is already in the file, commented out. Use \"Set it\" beside it.";
+            return;
+        }
+
+        document.Set(key, value);
+        documentChanged = true;
+        newKey = string.Empty;
+        newValue = string.Empty;
+        saved = false;
+    }
+
+    private IEnumerable<(string Name, IReadOnlyList<ServerProperty> Properties)> Grouped()
+    {
+        var remaining = Matches.ToList();
+
+        foreach (var (name, keys) in Groups)
+        {
+            var members = keys
+                .Select(key => remaining.FirstOrDefault(
+                    p => p.Key.Equals(key, StringComparison.OrdinalIgnoreCase)))
+                .Where(p => p is not null)
+                .Select(p => p!)
+                .ToList();
+
+            if (members.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (var member in members)
+            {
+                remaining.Remove(member);
+            }
+
+            yield return (name, members);
+        }
+
+        if (remaining.Count > 0)
+        {
+            yield return (OtherGroup, remaining);
+        }
+    }
+
+    private static string FieldId(ServerProperty property) => $"prop-{property.Key}";
+
+    private bool IsEnabled(ServerProperty property) => property.IsSet || enabled.Contains(property.Key);
+
+    private void Enable(ServerProperty property)
+    {
+        enabled.Add(property.Key);
+        saved = false;
+    }
+
+    private string Value(ServerProperty property) =>
+        edits.TryGetValue(property.Key, out var edited) ? edited : property.Value;
+
+    /// The documented choices, plus whatever the file actually holds when that
+    /// is not one of them — so an unrecognised value is visible rather than
+    /// silently rewritten to the first option the moment the page renders.
+    private IEnumerable<string> Options(ServerProperty property)
+    {
+        var current = Value(property);
+
+        if (!property.Choices.Contains(current, StringComparer.OrdinalIgnoreCase))
+        {
+            yield return current;
+        }
+
+        foreach (var choice in property.Choices)
+        {
+            yield return choice;
+        }
+    }
+
+    private void Edit(ServerProperty property, string? value)
+    {
+        edits[property.Key] = value ?? string.Empty;
+        saved = false;
+        saveError = null;
+    }
+
+    /// <summary>
+    /// What is worth saying about this setting's current value: refusals first,
+    /// then advisories.
+    /// </summary>
+    private IEnumerable<Note> Notes(ServerProperty property)
+    {
+        if (!IsEnabled(property))
+        {
+            yield break;
+        }
+
+        var value = Value(property);
+
+        if (property.Reject(value) is { } rejection)
+        {
+            yield return new Note("bad", $"{property.Key} {rejection}.");
+            yield break;
+        }
+
+        if (property.Warn(value) is { } warning)
+        {
+            yield return new Note("warn", $"Outside what the file documents — {warning}.");
+        }
+
+        foreach (var note in PortNotes(property, value))
+        {
+            yield return note;
+        }
+    }
+
+    private IEnumerable<Note> PortNotes(ServerProperty property, string value)
+    {
+        // enable-lan-visibility deliberately gets no port note. Bedrock does
+        // take 19132 and 19133 whenever it is on, but the instance that loses
+        // that race soft-fails and runs regardless, so it is a start-order
+        // question (D24) rather than a reason to reject a saved value — and
+        // rejecting it blocked the one setting every instance after the first
+        // needed turned on.
+        if (property.Key is not ("server-port" or "server-portv6") || !int.TryParse(value, out var wanted))
+        {
+            yield break;
+        }
+
+        // Sockets this instance's own process holds are excluded by the
+        // inspector, by owning process id, so a running server is never
+        // reported as colliding with itself.
+        var conflicts = Ports.Check(Supervisor.InstanceId, wanted);
+
+        if (conflicts.Count == 0)
+        {
+            var held = value == property.Value && Supervisor.Status.State is InstanceState.Running;
+
+            yield return new Note("ok", held ? $"Port {wanted} is this server's." : $"Port {wanted} is free.");
+            yield break;
+        }
+
+        foreach (var conflict in conflicts)
+        {
+            yield return new Note("bad", PortConflictText.Line(conflict));
+        }
+    }
+
+    /// Things the file does not say but the wrapper has learned. Kept apart from
+    /// the file's own text so it is always clear which is which.
+    private string? Advice(ServerProperty property) => property.Key switch
+    {
+        "enable-lan-visibility" =>
+            "Off stops the server advertising itself. It still answers a ping, but without the "
+            + "name, version and player count the client reads from the reply — so it cannot be "
+            + "found or joined at all, while the wrapper still shows it running. Leave it on. "
+            + "Bedrock does grab 19132 and 19133 whenever it is on, whatever server-port says, "
+            + "but only the first server started gets them — the rest carry on with their own "
+            + "ports. That matters only to a server whose own port is 19132, which has to start "
+            + "before the others. See D24.",
+
+        // The file says "content errors" without saying what content is, and BDS
+        // mentions the setting on every startup, so the obvious reading is that
+        // something is being hidden. It is not: with no add-ons installed these
+        // stay silent.
+        "content-log-console-output-enabled" or "content-log-file-enabled" or "content-log-level" =>
+            "\"Content\" means add-ons — behaviour and resource packs. These control where "
+            + "errors from scripts, malformed manifests and broken pack references go. A "
+            + "vanilla server with no add-ons has nothing to report, which is why they ship "
+            + "off; turn the console one on while installing a pack that is not working.",
+
+        _ => null,
+    };
+
+    private async Task SaveAsync()
+    {
+        if (busy || document is null)
+        {
+            return;
+        }
+
+        busy = true;
+        saveError = null;
+        saved = false;
+
+        try
+        {
+            if (mode == Mode.Text)
+            {
+                // Unchecked on purpose. The text view exists for the cases the
+                // form cannot express, and a validator that only understood the
+                // form would refuse exactly those.
+                await ServerPropertiesDocument.Parse(TextLines()).SaveAsync(path);
+            }
+            else if (!await ApplyFormAsync())
+            {
+                return;
+            }
+
+            Supervisor.Console.Append(
+                ConsoleOrigin.Notice,
+                $"{ServerProperties.FileName} updated from the web interface; "
+                + "restart the server to apply it");
+
+            await ReloadAsync();
+            saved = true;
+        }
+        catch (Exception ex)
+        {
+            saveError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    /// <summary>Validates and writes the form's edits. False when nothing was written.</summary>
+    private async Task<bool> ApplyFormAsync()
+    {
+        // Everything is checked before anything is written. A save that applied
+        // the good half and reported the rest would leave the file in a state
+        // nobody chose.
+        var refusals = new List<string>();
+
+        foreach (var property in document!.Properties)
+        {
+            if (!IsEnabled(property))
+            {
+                continue;
+            }
+
+            var value = Value(property);
+
+            if (property.Reject(value) is { } rejection)
+            {
+                refusals.Add($"{property.Key} {rejection}");
+                continue;
+            }
+
+            foreach (var note in PortNotes(property, value).Where(n => n.Kind == "bad"))
+            {
+                refusals.Add(note.Text.TrimEnd('.'));
+            }
+        }
+
+        if (refusals.Count > 0)
+        {
+            saveError = "Nothing was saved. " + string.Join("; ", refusals) + ".";
+            return false;
+        }
+
+        foreach (var property in document.Properties)
+        {
+            // Enabled-but-unedited counts as a change: turning a commented
+            // setting on is the edit, even when its value stays as shipped.
+            if (IsEnabled(property)
+                && (edits.ContainsKey(property.Key) || enabled.Contains(property.Key)))
+            {
+                document.Set(property.Key, Value(property));
+            }
+        }
+
+        await document.SaveAsync(path);
+        return true;
+    }
+}

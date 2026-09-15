@@ -1,0 +1,189 @@
+@* Start / Stop / Restart for one instance.
+
+   Its own component because it appears on both the Status and Console tabs.
+   Someone watching output should not have to leave the output to restart the
+   thing producing it, and someone on Status should not have to go and find a
+   console to stop a server. Two copies of these three buttons would drift. *@
+
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Services.Instances
+@using Microsoft.Extensions.Options
+
+@inject IOptions<InstanceOptions> Options
+@inject OrphanCleanup Orphans
+
+<div class="console-toolbar">
+    <span class="state-badge state-@Status.State.ToString().ToLowerInvariant()">@Status.State</span>
+
+    @if (Status.ProcessId is { } pid)
+    {
+        <span class="console-meta">pid @pid</span>
+    }
+
+    <span class="console-spacer"></span>
+
+    @* Disabled by state rather than hidden, so the buttons do not move around
+       underneath a cursor as the server changes state. *@
+    <button class="btn btn-sm btn-secondary" @onclick="StartAsync"
+            disabled="@(busy || !Supervisor.IsProvisioned || Status.State is not (InstanceState.Stopped or InstanceState.Faulted))">
+        Start
+    </button>
+    @* Enabled on Faulted, unlike Restart (T184). RefusedStartRetry's rule names
+       pressing Stop on a faulted instance as "I know, leave it down" and refuses to
+       re-check after it — and this is the only Stop affordance in the app, so while
+       it was disabled here that documented gesture could not be made at all, and the
+       only cancel inside the two-minute re-check window was the auto-start toggle: a
+       persistent config change that also alters what happens at the next boot.
+
+       Safe because StopAsync takes its no-process branch for a faulted instance —
+       cancel the lifetime, await the monitor, move to Stopped. No drain, no kill.
+       Stopped stays disabled, where Stop really is a no-op. *@
+    <button class="btn btn-sm btn-secondary" @onclick="StopAsync"
+            disabled="@(busy || Status.State is InstanceState.Stopped)">
+        Stop
+    </button>
+    <button class="btn btn-sm btn-secondary" @onclick="RestartAsync"
+            disabled="@(busy || Status.State is InstanceState.Stopped or InstanceState.Faulted)">
+        Restart
+    </button>
+</div>
+
+@* D56. Only rendered when there is one, so the ordinary case is unchanged — a
+   banner that is usually absent is read when it appears. The wording, and the
+   decision not to kill anything without being asked, are in Core. *@
+@if (orphans.Count > 0)
+{
+    <div class="console-fault">
+        <p>@OrphanText.Found(orphans, Supervisor.Definition.Name)</p>
+        @foreach (var orphan in orphans)
+        {
+            <p>
+                <button class="btn btn-sm btn-secondary" @onclick="() => EndAsync(orphan)" disabled="@busy">
+                    End PID @orphan.ProcessId
+                </button>
+                <span class="console-meta">@orphan.ExecutablePath</span>
+            </p>
+        }
+    </div>
+}
+
+@if (outcome is not null)
+{
+    <p class="console-meta">@outcome</p>
+}
+
+@if (error is not null)
+{
+    <p class="console-fault">@error</p>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    private bool busy;
+    private string? error;
+    private string? outcome;
+
+    private IReadOnlyList<OrphanedServer> orphans = [];
+
+    private InstanceStatus Status => Supervisor.Status;
+
+    /// Looked for on load rather than on the page's tick: walking the process
+    /// table once a second to answer a question that is almost always "none"
+    /// would cost real work to render nothing. Refreshed after a start is
+    /// refused and after one is ended, which are the two moments it changes.
+    protected override void OnInitialized() => Refresh();
+
+    private void Refresh()
+    {
+        try
+        {
+            orphans = Orphans.Find(Supervisor);
+        }
+        catch (Exception ex)
+        {
+            // The banner is a warning, not a control surface. Failing to look
+            // must not take the Start button down with it.
+            error = ex.Message;
+            orphans = [];
+        }
+    }
+
+    private async Task EndAsync(OrphanedServer orphan)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+        outcome = null;
+
+        try
+        {
+            outcome = (await Orphans.TerminateAsync(Supervisor, orphan)).Detail;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            Refresh();
+        }
+    }
+
+    private Task StartAsync() => RunAsync(s => s.StartAsync());
+
+    private Task StopAsync() => RunAsync(s => s.StopAsync(ManualStop()));
+
+    private Task RestartAsync() => RunAsync(s => s.RestartAsync(ManualStop()));
+
+    /// <summary>
+    /// A manual stop still warns whoever is online, with the same short lead a
+    /// service stop gets. Whoever pressed the button is usually standing next to
+    /// the problem; the players are not.
+    /// </summary>
+    private GracefulStopRequest ManualStop()
+    {
+        var options = Options.Value;
+        var warning = options.ServiceStopWarning;
+
+        return new GracefulStopRequest(
+            StopReason.Manual,
+            warning,
+            warning > TimeSpan.Zero ? [warning] : [],
+            options.ShutdownDrainBudget);
+    }
+
+    private async Task RunAsync(Func<InstanceSupervisor, Task> action)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+
+        try
+        {
+            await action(Supervisor);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+
+            // A refused start is exactly when an orphan is worth showing, and
+            // the refusal is what sent the operator here.
+            Refresh();
+        }
+    }
+}

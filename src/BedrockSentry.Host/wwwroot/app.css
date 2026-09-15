@@ -1,0 +1,1540 @@
+/* ---------------------------------------------------------------------------
+   Theme
+
+   Both themes are driven from one attribute pair on <html>, written server-side
+   from a cookie before the page is sent. That ordering is the whole point: a
+   theme applied by script after load means every navigation flashes the wrong
+   colours first, which looks broken on a panel someone keeps open all day.
+
+   data-bs-theme drives Bootstrap 5.3's own dark mode from the same switch, so
+   form controls, buttons and borders follow without being restyled by hand.
+   --------------------------------------------------------------------------- */
+
+:root,
+:root[data-theme="dark"] {
+    --sentry-bg: #10151c;
+    --sentry-surface: #182029;
+    --sentry-surface-raised: #1e2732;
+    --sentry-border: #2a3542;
+    --sentry-text: #dfe6ee;
+    --sentry-text-muted: #8b9bb0;
+    --sentry-accent: #57ad6c;
+    --sentry-link: #6db3e8;
+
+    /* The sidebar stays dark in both themes. Its icons are white data-URI SVGs
+       that cannot inherit a colour, so a light sidebar would need every icon
+       re-encoded. A persistently dark rail is also a normal admin-console look
+       rather than an oversight. */
+    --sentry-sidebar: linear-gradient(180deg, #131a23 0%, #0b1016 100%);
+    --sentry-topbar: #182029;
+
+    --sentry-danger-bg: #2a1616;
+    --sentry-danger-border: #6d2b2b;
+    --sentry-danger-text: #f2b8b8;
+    --sentry-accent-wash: rgba(87, 173, 108, 0.10);
+
+    --sentry-ok-bg: rgba(87, 173, 108, 0.18);
+    --sentry-ok-text: #7cc98f;
+    --sentry-warn-bg: rgba(214, 160, 60, 0.18);
+    --sentry-warn-text: #e0b062;
+
+    /* Informative, not an alert. A state that is simply set one way rather than
+       the other gets this; amber and red stay for the ones that want somebody. */
+    --sentry-info-bg: rgba(109, 179, 232, 0.16);
+    --sentry-info-text: #8cc4ee;
+
+    /* Console content colours. A third axis under origin and level: what a line
+       is about, rather than who said it or how bad it is. Green is arrivals
+       alone — wrapper notices used to hold it and now carry a wash and a rule
+       instead, which says "not the server" more clearly than a hue ever did. */
+    --console-lifecycle: #79cfe3;
+    --console-join: #5fd68a;
+    --console-leave: #8fa9c9;
+    --console-save: #b49ae2;
+    --console-noise: #59636f;
+}
+
+:root[data-theme="light"] {
+    --sentry-bg: #ffffff;
+    --sentry-surface: #ffffff;
+    --sentry-surface-raised: #f8f9fa;
+    --sentry-border: #dee2e6;
+    --sentry-text: #212529;
+    --sentry-text-muted: #6c757d;
+    --sentry-accent: #2f7a41;
+    --sentry-link: #006bb7;
+
+    --sentry-sidebar: linear-gradient(180deg, #3b4653 0%, #2c353f 100%);
+    --sentry-topbar: #f7f7f7;
+
+    --sentry-danger-bg: #fdf0f0;
+    --sentry-danger-border: #e6b8b8;
+    --sentry-danger-text: #8b2c2c;
+    --sentry-accent-wash: rgba(47, 122, 65, 0.08);
+
+    --sentry-ok-bg: rgba(47, 122, 65, 0.12);
+    --sentry-ok-text: #256234;
+    --sentry-warn-bg: rgba(166, 110, 7, 0.14);
+    --sentry-warn-text: #8a5a06;
+    --sentry-info-bg: rgba(0, 107, 183, 0.10);
+    --sentry-info-text: #0a5182;
+
+    /* Darkened for contrast on white rather than reused from the dark theme —
+       the dark values are chosen to glow on #10151c and wash out here. */
+    --console-lifecycle: #0a6a80;
+    --console-join: #1a7a42;
+    --console-leave: #3f5f85;
+    --console-save: #5b3da4;
+    --console-noise: #9aa3ad;
+}
+
+html, body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    background-color: var(--sentry-bg);
+    color: var(--sentry-text);
+}
+
+a, .btn-link {
+    color: var(--sentry-link);
+}
+
+.btn-primary {
+    color: #fff;
+    background-color: #1b6ec2;
+    border-color: #1861ac;
+}
+
+.btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {
+    box-shadow: 0 0 0 0.1rem var(--sentry-bg), 0 0 0 0.25rem #258cfb;
+}
+
+.content {
+    padding-top: 1.1rem;
+}
+
+h1:focus {
+    outline: none;
+}
+
+.valid.modified:not([type=checkbox]) {
+    outline: 1px solid #26b050;
+}
+
+.invalid {
+    outline: 1px solid #e50000;
+}
+
+.validation-message {
+    color: #ef7676;
+}
+
+:root[data-theme="light"] .validation-message {
+    color: #e50000;
+}
+
+.blazor-error-boundary {
+    background: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTYiIGhlaWdodD0iNDkiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiIG92ZXJmbG93PSJoaWRkZW4iPjxkZWZzPjxjbGlwUGF0aCBpZD0iY2xpcDAiPjxyZWN0IHg9IjIzNSIgeT0iNTEiIHdpZHRoPSI1NiIgaGVpZ2h0PSI0OSIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCNjbGlwMCkiIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0yMzUgLTUxKSI+PHBhdGggZD0iTTI2My41MDYgNTFDMjY0LjcxNyA1MSAyNjUuODEzIDUxLjQ4MzcgMjY2LjYwNiA1Mi4yNjU4TDI2Ny4wNTIgNTIuNzk4NyAyNjcuNTM5IDUzLjYyODMgMjkwLjE4NSA5Mi4xODMxIDI5MC41NDUgOTIuNzk1IDI5MC42NTYgOTIuOTk2QzI5MC44NzcgOTMuNTEzIDI5MSA5NC4wODE1IDI5MSA5NC42NzgyIDI5MSA5Ny4wNjUxIDI4OS4wMzggOTkgMjg2LjYxNyA5OUwyNDAuMzgzIDk5QzIzNy45NjMgOTkgMjM2IDk3LjA2NTEgMjM2IDk0LjY3ODIgMjM2IDk0LjM3OTkgMjM2LjAzMSA5NC4wODg2IDIzNi4wODkgOTMuODA3MkwyMzYuMzM4IDkzLjAxNjIgMjM2Ljg1OCA5Mi4xMzE0IDI1OS40NzMgNTMuNjI5NCAyNTkuOTYxIDUyLjc5ODUgMjYwLjQwNyA1Mi4yNjU4QzI2MS4yIDUxLjQ4MzcgMjYyLjI5NiA1MSAyNjMuNTA2IDUxWk0yNjMuNTg2IDY2LjAxODNDMjYwLjczNyA2Ni4wMTgzIDI1OS4zMTMgNjcuMTI0NSAyNTkuMzEzIDY5LjMzNyAyNTkuMzEzIDY5LjYxMDIgMjU5LjMzMiA2OS44NjA4IDI1OS4zNzEgNzAuMDg4N0wyNjEuNzk1IDg0LjAxNjEgMjY1LjM4IDg0LjAxNjEgMjY3LjgyMSA2OS43NDc1QzI2Ny44NiA2OS43MzA5IDI2Ny44NzkgNjkuNTg3NyAyNjcuODc5IDY5LjMxNzkgMjY3Ljg3OSA2Ny4xMTgyIDI2Ni40NDggNjYuMDE4MyAyNjMuNTg2IDY2LjAxODNaTTI2My41NzYgODYuMDU0N0MyNjEuMDQ5IDg2LjA1NDcgMjU5Ljc4NiA4Ny4zMDA1IDI1OS43ODYgODkuNzkyMSAyNTkuNzg2IDkyLjI4MzcgMjYxLjA0OSA5My41Mjk1IDI2My41NzYgOTMuNTI5NSAyNjYuMTE2IDkzLjUyOTUgMjY3LjM4NyA5Mi4yODM3IDI2Ny4zODcgODkuNzkyMSAyNjcuMzg3IDg3LjMwMDUgMjY2LjExNiA4Ni4wNTQ3IDI2My41NzYgODYuMDU0N1oiIGZpbGw9IiNGRkU1MDAiIGZpbGwtcnVsZT0iZXZlbm9kZCIvPjwvZz48L3N2Zz4=) no-repeat 1rem/1.8rem, #b32121;
+    padding: 1rem 1rem 1rem 3.7rem;
+    color: white;
+}
+
+    .blazor-error-boundary::after {
+        content: "An error has occurred."
+    }
+
+.darker-border-checkbox.form-check-input {
+    border-color: #929292;
+}
+
+.form-floating > .form-control-plaintext::placeholder, .form-floating > .form-control::placeholder {
+    color: var(--bs-secondary-color);
+    text-align: end;
+}
+
+.form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
+    text-align: start;
+}
+
+/* ---------------------------------------------------------------------------
+   BedrockSentry
+   A server control panel, not a consumer app: dense, calm, and readable at a
+   glance on a screen someone is only looking at because something needs doing.
+   --------------------------------------------------------------------------- */
+
+/* Theme toggle, in the top row beside the sign-out button. */
+
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    margin-right: 0.5rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.25rem;
+    background: transparent;
+    color: var(--sentry-text-muted);
+    cursor: pointer;
+}
+
+.theme-toggle:hover {
+    color: var(--sentry-text);
+    border-color: var(--sentry-text-muted);
+}
+
+/* Show the icon of the theme you would switch *to*, not the one you are in. */
+:root[data-theme="dark"] .theme-icon-moon,
+:root[data-theme="light"] .theme-icon-sun {
+    display: none;
+}
+
+/* Sign-in and first-run setup, which render without the navigation shell. */
+
+.auth-shell {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    padding: 2rem 1rem;
+    background: var(--sentry-bg);
+}
+
+.auth-card {
+    width: 100%;
+    max-width: 26rem;
+    padding: 2rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.5rem;
+    background: var(--sentry-surface);
+    color: var(--sentry-text);
+}
+
+:root[data-theme="light"] .auth-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.auth-card-wide {
+    max-width: 34rem;
+}
+
+.auth-card h1 {
+    margin: 0 0 0.25rem;
+    font-size: 1.5rem;
+    letter-spacing: -0.01em;
+}
+
+.auth-subtitle {
+    margin-bottom: 1.5rem;
+    color: var(--sentry-text-muted);
+}
+
+/* The exception is in the selector rather than after it, and that is the whole
+   fix. This was `.auth-card label`, which is a class PLUS an element and therefore
+   out-ranks the bare `.auth-remember` below - so the checkbox row's "opt out" set
+   display:flex and lost, the label stayed a block, and the box rendered above its
+   own label. The operator reported it from the live panel.
+
+   The same fight was had once before in this file. `.checkbox-row` sat beside
+   `.provision-panel label` reaching for `display: flex !important` for exactly this
+   reason, and it was dead - in the stylesheet, referenced by no component. Deleted
+   in the same pass as this comment, because dead CSS encoding the worse of two
+   answers is how the next author finds it and copies it. Scoping the rule that
+   CLAIMS the row is the version that needs no !important, and it fails loudly if the
+   class is ever renamed, where an out-specified opt-out fails silently. */
+.auth-card label:not(.auth-remember) {
+    display: block;
+    margin-bottom: 0.75rem;
+}
+
+.auth-card label:not(.auth-remember) > span {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.875rem;
+    color: var(--sentry-text-muted);
+}
+
+/* D58, the "keep me signed in" row: box and label on one line. */
+.auth-remember {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+}
+
+/* Only the colour. display and margin were here to fight the rule above, which no
+   longer matches this row - and a flex item is blockified anyway, so they were two
+   more statements of a rule nothing enforced. */
+.auth-remember > span {
+    color: var(--sentry-text);
+}
+
+.auth-hint {
+    margin: 0 0 1rem;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    color: var(--sentry-text-muted);
+}
+
+.auth-submit {
+    width: 100%;
+    margin-top: 0.5rem;
+}
+
+.auth-error {
+    margin-bottom: 1rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--sentry-danger-border);
+    border-radius: 0.25rem;
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+}
+
+.auth-build {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--sentry-text-muted);
+}
+
+.field-hint {
+    margin: -0.5rem 0 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.setup-notice {
+    margin-top: 1rem;
+    padding: 1rem;
+    border-left: 3px solid var(--sentry-accent);
+    background: var(--sentry-accent-wash);
+}
+
+.setup-command {
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.25rem;
+    background: var(--sentry-bg);
+    border: 1px solid var(--sentry-border);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.875rem;
+    overflow-x: auto;
+}
+
+/* Signed-in chrome. */
+
+.signed-in-as {
+    margin-right: auto;
+    color: var(--sentry-text-muted);
+    font-size: 0.875rem;
+}
+
+.logout-form {
+    display: inline;
+}
+
+.logout-button {
+    padding: 0;
+    font-size: 0.875rem;
+    text-decoration: none;
+}
+
+.build-footer {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+    border-top: 1px solid var(--sentry-border);
+    color: var(--sentry-text-muted);
+    font-size: 0.75rem;
+}
+
+.build-channel {
+    padding: 0.0625rem 0.375rem;
+    border-radius: 0.75rem;
+    background: var(--sentry-surface-raised);
+    border: 1px solid var(--sentry-border);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+/* Status page. */
+
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0 2rem;
+}
+
+.status-card {
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface);
+}
+
+.status-card h2 {
+    margin: 0 0 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+}
+
+.status-card dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25rem 1rem;
+    margin: 0;
+    font-size: 0.9375rem;
+}
+
+.status-card dt {
+    font-weight: 400;
+    color: var(--sentry-text-muted);
+}
+
+.status-card dd {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+
+/* Instance cards reuse the status card, so h3 has to match the h2 above it. */
+.status-card h3 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0 0 0.75rem;
+    font-size: 0.9375rem;
+    font-weight: 600;
+}
+
+.state-badge {
+    padding: 0.125rem 0.5rem;
+    border-radius: 1rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: var(--sentry-border);
+    color: var(--sentry-text-muted);
+}
+
+/* Only three states are colour-coded. Running is the one an administrator scans
+   for, and faulted is the one they must not miss — D15's give-up rule is
+   deliberately loud, and a badge that blends in would undo that. Everything else
+   stays neutral so the two that matter still stand out. */
+.state-badge.state-running {
+    background: var(--sentry-ok-bg);
+    color: var(--sentry-ok-text);
+}
+
+.state-badge.state-backoff {
+    background: var(--sentry-warn-bg);
+    color: var(--sentry-warn-text);
+}
+
+/* The warn palette again, under a name that is not an instance state: a backup
+   that worked but whose save resume was never confirmed is a warning about a
+   backup, not a server in Backoff (T158). */
+.state-badge.state-warning {
+    background: var(--sentry-warn-bg);
+    color: var(--sentry-warn-text);
+}
+
+.state-badge.state-faulted {
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+}
+
+.state-badge.state-info {
+    background: var(--sentry-info-bg);
+    color: var(--sentry-info-text);
+}
+
+.fault-reason {
+    color: var(--sentry-danger-text);
+}
+
+.empty-state {
+    padding: 1rem 1.25rem;
+    border: 1px dashed var(--sentry-border);
+    border-radius: 0.375rem;
+    color: var(--sentry-text-muted);
+}
+
+.uptime-counter {
+    /* Tabular figures so the seconds ticking over does not shift the layout. */
+    font-variant-numeric: tabular-nums;
+}
+
+.milestone-list {
+    color: var(--sentry-text-muted);
+}
+
+/* Update status, on the settings page. */
+
+.update-available {
+    margin: 1rem 0;
+    padding: 1rem 1.25rem;
+    border-left: 3px solid var(--sentry-accent);
+    background: var(--sentry-accent-wash);
+}
+
+/* A neutral, dismissible report at the top of a page. Deliberately not
+   .update-failure, which is the danger palette, and not .update-available, whose
+   name means something else entirely. Introduced for the removal report the Status
+   page shows (`T169`).
+
+   The justification here used to be "a completed removal is not a failure", full
+   stop. That was true when this panel could only report success, and `T176` then
+   added an arm that reports irreversible data loss — which arrived in muted grey
+   with role="status", politely, because the comment covered the branches it was
+   written for and silently inherited the one added later (`T186`, the same shape as
+   `T188`). So the sentence stands only for a removal that COMPLETED; the loss rule
+   below is the arm it does not cover. */
+
+.page-notice {
+    margin: 1rem 0 1.5rem;
+    padding: 1rem 1.25rem;
+    border-left: 3px solid var(--sentry-accent);
+    background: var(--sentry-accent-wash);
+}
+
+/* The same notice when part of what the operator asked to delete is already gone.
+   Muted body text is right for a list of things that went to plan and wrong for the
+   one line in this product that says world data was lost, so the list un-mutes here
+   as well as the frame changing. Driven by InstanceRemovalOutcome.AnythingLost, which
+   is true only for the PartlyDeleted arm — Refused means nothing was touched, and
+   alarming somebody about an intact folder would be `T176` in the mirror.
+
+   TWO CLASSES IN THE SELECTOR, AND PLACED AFTER .page-notice, BOTH ON PURPOSE (`T189`).
+   This shipped in build.88 as a bare `.page-notice-loss` sitting 31 lines ABOVE
+   .page-notice — equal specificity, later wins, and .page-notice's `border-left`
+   SHORTHAND resets border-left-color rather than leaving it alone. So the frame never
+   changed: a probe carrying both classes computed identical to one carrying only
+   .page-notice. role="alert" and the un-muted list were unaffected and did work,
+   which is what made it look applied. RemovalNoticeStyleTests pins both guards now.
+   It was written above because it groups conceptually with .milestone-list, and that
+   is exactly how a rule meant to opt OUT of a base style ends up out-ranked BY it —
+   the same shape as the .auth-card label fix. Specificity makes order irrelevant;
+   the placement makes it obvious. Do not collapse either back, and do not reach for
+   !important — RemovalNoticeStyleTests pins both halves. */
+
+.page-notice.page-notice-loss {
+    border-left-color: var(--sentry-danger-border);
+    background: var(--sentry-danger-bg);
+}
+
+.page-notice-loss .milestone-list {
+    color: var(--sentry-text);
+}
+
+.page-notice p {
+    margin: 0;
+}
+
+.page-notice ul {
+    margin: 0.5rem 0 0.75rem;
+}
+
+.update-failure {
+    margin: 1rem 0;
+    padding: 1rem 1.25rem;
+    border-left: 3px solid var(--sentry-danger-border);
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+}
+
+.update-failure p {
+    margin: 0.5rem 0 0;
+}
+
+.auth-theme-toggle {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 10;
+}
+
+/* ---------------------------------------------------------------------------
+   Console
+
+   A log viewer people leave open, so it optimises for scanning rather than
+   decoration: monospaced, dense, and quiet until something is actually wrong.
+   --------------------------------------------------------------------------- */
+
+.instance-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.instance-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.75rem;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 0.25rem 0.25rem 0 0;
+    color: var(--sentry-text-muted);
+    text-decoration: none;
+}
+
+.instance-tab:hover {
+    color: var(--sentry-text);
+}
+
+.instance-tab.is-active {
+    border-color: var(--sentry-border);
+    background: var(--sentry-surface);
+    color: var(--sentry-text);
+    margin-bottom: -1px;
+}
+
+.state-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--sentry-text-muted);
+}
+
+.state-dot.state-running { background: var(--sentry-ok-text); }
+.state-dot.state-backoff { background: var(--sentry-warn-text); }
+.state-dot.state-faulted { background: var(--sentry-danger-text); }
+
+.console-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.console-spacer {
+    flex: 1;
+}
+
+.console-meta {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.console-fault,
+.console-gap {
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+}
+
+.console-fault {
+    border: 1px solid var(--sentry-danger-border);
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+}
+
+.console-gap {
+    border: 1px solid var(--sentry-border);
+    background: var(--sentry-warn-bg);
+    color: var(--sentry-warn-text);
+}
+
+.console-output {
+    height: 60vh;
+    overflow-y: auto;
+    padding: 0.75rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem 0.375rem 0 0;
+    background: var(--sentry-bg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.console-line {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0 0.4rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Exactly one character, never wrapping, so the message column is straight
+   whether or not a line has a mark. Colour is never the only channel carrying
+   meaning here — the mark says the same thing in a screenshot, in a paste, and
+   to anyone who cannot separate the greens from the blues. */
+.console-glyph {
+    flex: none;
+    width: 1ch;
+    text-align: center;
+    white-space: pre;
+    user-select: none;
+}
+
+.console-time {
+    flex: none;
+    color: var(--sentry-text-muted);
+    /* Tabular figures so the timestamp column does not shimmer as it updates. */
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+}
+
+.console-text {
+    flex: 1;
+}
+
+/* What we sent and what we said about it, distinguished from what the server
+   said — an operator reading back an incident needs to tell them apart. */
+.console-command .console-text,
+.console-command .console-glyph {
+    color: var(--sentry-link);
+}
+
+/* A filled bar for a count against a ceiling — players online against
+   max-players on the instance Status tab.
+
+   The fill clamps at 100% and the number beside it does not. Bedrock's allow
+   list has a "join if full" flag whose whole purpose is to let somebody past the
+   maximum, so over-capacity is a real state rather than an error: the bar says
+   "full", the label says 13 / 10, and neither lies. A bar allowed past its track
+   would overflow the card; a number clamped to the maximum would hide a player.
+   .meter-full is a separate colour because "at capacity" is worth seeing without
+   reading the digits. */
+.meter {
+    display: block;
+    height: 0.5rem;
+    width: 100%;
+    max-width: 12rem;
+    border-radius: 0.25rem;
+    background: var(--sentry-border);
+    overflow: hidden;
+}
+
+.meter i {
+    display: block;
+    height: 100%;
+    background: var(--sentry-accent);
+}
+
+.meter i.meter-full {
+    background: var(--sentry-warn-text, var(--sentry-accent));
+}
+
+.meter-label {
+    display: inline-block;
+    margin-top: 0.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* The wrapper's own voice, set apart by a rule down its left edge. It was a
+   tinted band as well, which read as a highlight on the text rather than a
+   margin beside it; the rule alone still says "this line is not from the
+   server" without colouring the line's background. */
+.console-notice {
+    box-shadow: inset 2px 0 0 var(--sentry-accent);
+}
+
+.console-notice .console-text,
+.console-notice .console-glyph {
+    color: var(--sentry-accent);
+}
+
+/* Content classes. Below origin in the cascade on purpose: a line the wrapper
+   sent, or one BDS flagged, is that first and whatever it is about second. */
+.console-lifecycle .console-text,
+.console-lifecycle .console-glyph {
+    color: var(--console-lifecycle);
+}
+
+.console-lifecycle .console-text {
+    font-weight: 600;
+}
+
+.console-join .console-text,
+.console-join .console-glyph {
+    color: var(--console-join);
+}
+
+.console-leave .console-text,
+.console-leave .console-glyph {
+    color: var(--console-leave);
+}
+
+.console-save .console-text,
+.console-save .console-glyph {
+    color: var(--console-save);
+}
+
+/* Dimmed, not filtered. The moment AutoCompaction matters is the moment it
+   stops appearing, and a hidden line cannot show anybody that. */
+.console-noise .console-text,
+.console-noise .console-glyph {
+    color: var(--console-noise);
+}
+
+.console-stderr .console-text,
+.console-stderr .console-glyph,
+.console-line.console-error .console-text,
+.console-line.console-error .console-glyph {
+    color: var(--sentry-danger-text);
+}
+
+.console-line.console-warn .console-text,
+.console-line.console-warn .console-glyph {
+    color: var(--sentry-warn-text);
+}
+
+.console-input {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    border: 1px solid var(--sentry-border);
+    border-top: none;
+    border-radius: 0 0 0.375rem 0.375rem;
+    background: var(--sentry-surface);
+}
+
+.console-input input {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.console-hint {
+    margin-top: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+/* Shown when an instance is configured but has no server unpacked into it. A
+   setup step, not an error, so it reads as an invitation rather than a fault. */
+.provision-panel {
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface);
+}
+
+.provision-panel h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+}
+
+.provision-controls {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    max-width: 32rem;
+}
+
+.provision-panel label {
+    display: block;
+    max-width: 32rem;
+    margin-bottom: 0.75rem;
+}
+
+.provision-panel label > span {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.875rem;
+    color: var(--sentry-text-muted);
+}
+
+/* Second-level tabs, inside the instance tab box.
+
+   Deliberately not a second boxed strip: two identical rows stacked leaves it
+   ambiguous which one a click is changing. This one reads as subordinate — no
+   box, just a marked item and a rule beneath. */
+.sub-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    padding: 0.75rem 0.875rem 0;
+    margin-bottom: 1.25rem;
+    border: 1px solid var(--sentry-border);
+    border-top: none;
+    background: var(--sentry-surface);
+}
+
+.sub-tab {
+    padding: 0 0 0.5rem;
+    border-bottom: 2px solid transparent;
+    color: var(--sentry-text-muted);
+    font-size: 0.9375rem;
+    text-decoration: none;
+}
+
+.sub-tab:hover {
+    color: var(--sentry-text);
+    text-decoration: none;
+}
+
+.sub-tab.active {
+    color: var(--sentry-text);
+    border-bottom-color: var(--sentry-accent);
+}
+
+/* The instance strip gained a button, so it needs to look like the links. */
+/* The pair of strip actions, pushed to the end together. The `margin-left: auto`
+   is here and not on the buttons: on each button, in a flex row, both absorb a
+   share of the free space and end up spread across the strip instead of sitting
+   side by side. */
+.instance-tab-actions {
+    display: flex;
+    gap: 0.25rem;
+    margin-left: auto;
+}
+
+.instance-tab-new {
+    border: 1px solid transparent;
+    border-bottom: none;
+    background: none;
+    font: inherit;
+    color: var(--sentry-link);
+    cursor: pointer;
+}
+
+.instance-tab.active,
+.instance-tab.is-active {
+    border-color: var(--sentry-border);
+    background: var(--sentry-surface);
+    color: var(--sentry-text);
+    margin-bottom: -1px;
+}
+
+/* Tables, for the status roll-up and the lists that arrive with milestones 5-10. */
+
+.table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    margin-bottom: 1.5rem;
+}
+
+.table-wrap table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9375rem;
+}
+
+.table-wrap th,
+.table-wrap td {
+    padding: 0.5rem 0.875rem;
+    text-align: left;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.table-wrap th {
+    background: var(--sentry-surface);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+}
+
+.table-wrap tbody tr:last-child td { border-bottom: none; }
+
+.table-wrap td.num {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Shown beside a nickname rather than replaced by it: the gamertag is the name
+   the server's own console uses, and hiding it makes the two disagree. */
+.roster-gamertag {
+    display: block;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.roster-filters {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.7rem;
+}
+
+/* The whole header is the control, so the hit target matches what looks
+   clickable rather than being a word inside it. */
+.table-wrap th .sort-head {
+    font: inherit;
+    font-size: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    white-space: nowrap;
+}
+
+.table-wrap th .sort-head:hover { color: var(--sentry-text); }
+.table-wrap th .sort-head:focus-visible {
+    outline: 2px solid var(--sentry-accent);
+    outline-offset: 2px;
+    border-radius: 0.15rem;
+}
+
+/* A quiet wash rather than a colour: on a list where most rows are offline, the
+   online ones should read as a group without turning the table into a warning. */
+.table-wrap tr.roster-online td { background: var(--sentry-accent-wash); }
+
+.check-detail {
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+}
+
+/* ---------------------------------------------------------------------------
+   server.properties editor
+
+   Two columns: the control on the left, the file's own documentation on the
+   right. The documentation is the point — it is why this page can cover every
+   setting Bedrock has without the wrapper carrying a list of its own — so it
+   gets real space rather than a tooltip.
+   --------------------------------------------------------------------------- */
+
+.prop-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.prop-toolbar-spacer { flex: 1 1 auto; }
+
+.prop-path {
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+}
+
+.prop-explainer {
+    border-left: 3px solid var(--sentry-accent);
+    background: var(--sentry-accent-wash);
+    padding: 0.75rem 1rem;
+    border-radius: 0 6px 6px 0;
+}
+
+.prop-saved {
+    color: var(--sentry-ok-text);
+    background: var(--sentry-ok-bg);
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+}
+
+.prop-group {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.prop-group-count {
+    font-size: 0.8125rem;
+    font-weight: 400;
+    color: var(--sentry-text-muted);
+}
+
+.prop-panel {
+    border: 1px solid var(--sentry-border);
+    background: var(--sentry-surface);
+    border-radius: 8px;
+    padding: 0.25rem 1rem;
+}
+
+.prop {
+    display: grid;
+    grid-template-columns: minmax(16rem, 22rem) 1fr;
+    gap: 1.5rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.prop:last-child { border-bottom: none; }
+
+.prop-edit { min-width: 0; }
+
+.prop-key {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.875rem;
+    margin-bottom: 0.35rem;
+    overflow-wrap: anywhere;
+}
+
+.prop-flag {
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+    border: 1px solid var(--sentry-border);
+}
+
+.prop-unset {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.prop-check {
+    margin-top: 0.4rem;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.prop-check.ok { color: var(--sentry-ok-text); }
+.prop-check.warn { color: var(--sentry-warn-text); }
+.prop-check.bad { color: var(--sentry-danger-text); }
+
+.prop-doc {
+    min-width: 0;
+    font-size: 0.875rem;
+    color: var(--sentry-text-muted);
+}
+
+.prop-doc p { margin: 0 0 0.35rem; }
+
+.prop-allowed {
+    display: block;
+    font-size: 0.8125rem;
+    opacity: 0.85;
+}
+
+.prop-advice {
+    margin-top: 0.5rem !important;
+    border-left: 2px solid var(--sentry-border);
+    padding-left: 0.6rem;
+}
+
+/* One column on narrow screens: a 16rem control beside a paragraph does not
+   fit a phone, and shrinking the input to make it fit is worse than stacking. */
+@media (max-width: 60rem) {
+    .prop {
+        grid-template-columns: 1fr;
+        gap: 0.6rem;
+    }
+}
+
+/* Mode switch, search, the text view, and the add-a-setting row. */
+
+.prop-modes { display: flex; }
+
+.prop-modes .btn:first-child {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.prop-modes .btn:last-child {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    margin-left: -1px;
+}
+
+.prop-modes .btn.active {
+    background: var(--sentry-accent);
+    border-color: var(--sentry-accent);
+    color: #fff;
+}
+
+.prop-search {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.prop-search input { max-width: 24rem; }
+
+.prop-stale {
+    border-left: 3px solid var(--sentry-warn-text);
+    background: var(--sentry-warn-bg);
+    color: var(--sentry-warn-text);
+    padding: 0.75rem 1rem;
+    border-radius: 0 6px 6px 0;
+}
+
+.prop-explainer-warn {
+    border-left-color: var(--sentry-warn-text);
+    background: var(--sentry-warn-bg);
+}
+
+.prop-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+}
+
+.prop-add {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.prop-add input { flex: 1 1 9rem; min-width: 0; }
+
+.prop-equals {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--sentry-text-muted);
+}
+
+/* A run boundary in the console.
+
+   A restart drops hundreds of lines of startup on top of hundreds that look
+   exactly the same. Without a break across the page it is genuinely hard to
+   tell which run you are reading — and easy to diagnose the previous one's
+   fault as this one's. */
+.console-launch {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.9rem 0 0.5rem;
+    color: var(--sentry-accent);
+}
+
+.console-launch::before,
+.console-launch::after {
+    content: "";
+    flex: 1 1 auto;
+    border-top: 1px solid var(--sentry-accent);
+    opacity: 0.45;
+}
+
+/* Narrower than the rules either side of it, so the eye lands on the rule and
+   the label answers "which run?" only once it has. */
+.console-launch-label {
+    flex: 0 0 auto;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+/* The first line in the box should not push itself down from the top edge. */
+.console-output > .console-launch:first-child { margin-top: 0; }
+
+/* The danger zone on an instance's Configuration tab. */
+
+.danger-heading { color: var(--sentry-danger-text); }
+
+.danger-panel {
+    border: 1px solid var(--sentry-danger-border);
+    background: var(--sentry-danger-bg);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    max-width: 46rem;
+}
+
+.danger-panel h3 { margin-top: 0; }
+
+.danger-panel .field { margin-top: 1rem; }
+
+.danger-panel .field-row { margin-top: 0.75rem; }
+
+/* Sits directly under its checkbox, indented to the label rather than the box,
+   so it reads as an explanation of that choice and not as the next one. */
+.danger-panel .check-detail {
+    margin: 0.25rem 0 0 1.6rem;
+    max-width: 42rem;
+}
+
+.inline-dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.3rem 1rem;
+    margin: 0;
+}
+
+.inline-dl dt { color: var(--sentry-text-muted); }
+.inline-dl dd { margin: 0; }
+
+/* Host checks: a dot for the state, so a row reads before it is read. */
+
+.check-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.check-state {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: var(--sentry-text-muted);
+}
+
+.check-state.check-good { background: var(--sentry-ok-text); }
+.check-state.check-missing { background: var(--sentry-warn-text); }
+.check-state.check-unknown { background: var(--sentry-text-muted); }
+
+/* Still waiting on the answer. Visibly different from "unknown", which is a
+   verdict — this one resolves on its own in a moment. */
+.check-state.check-running {
+    background: var(--sentry-text-muted);
+    animation: check-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes check-pulse {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .check-state.check-running { animation: none; opacity: 0.5; }
+}
+
+.check-bad { color: var(--sentry-danger-text); }
+
+/* In-game chat, and the switch that hides it. */
+
+.console-filters {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+}
+
+.console-filters .field-row { margin: 0; }
+
+/* Names the row without repeating "show" on every box in it. */
+.console-filter-label {
+    font-size: 0.8125rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--sentry-text-muted);
+}
+
+/* Distinct from server output at a glance: an administrator scanning a startup
+   for a fault should be able to skip conversation without reading it. The mark
+   is a quote in the glyph gutter rather than an emoji before the text — emoji
+   are double-width, and one on every chat line knocked that line a column out
+   of true with everything around it. */
+.console-chat .console-text,
+.console-chat .console-glyph {
+    color: var(--sentry-link);
+}
+
+/* ---------------------------------------------------------------------------
+   Bedrock updates panel
+
+   Its own layout rather than the server.properties editor's. That editor's
+   `.prop` is a two-column grid — control on the left, documentation on the
+   right — and every direct child becomes a cell in it, so a panel built from
+   a paragraph, a definition list, three button rows and four explainers had
+   its content dealt alternately into a 22rem column and a wide one.
+
+   The facts row had the matching problem one level down: `.status-grid` is
+   `repeat(auto-fit, minmax(15rem, 1fr))` with auto flow, meant for whole
+   `.status-card` blocks. Filled with bare <dt>/<dd> children it laid every
+   term and every value out as its own cell across as many columns as fit —
+   which is how "Last checked" ended up beside the previous fact's value and
+   its own timestamp ended up on the next row.
+   --------------------------------------------------------------------------- */
+
+.update-panel {
+    border: 1px solid var(--sentry-border);
+    background: var(--sentry-surface);
+    border-radius: 8px;
+    padding: 1.25rem;
+    max-width: 60rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.update-panel > * { margin: 0; }
+
+.update-headline {
+    font-size: 1.0625rem;
+    line-height: 1.5;
+}
+
+/* Each fact is one cell containing its own term and value, so a value that
+   wraps to two lines pushes nothing sideways. */
+.update-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: 1rem;
+    margin: 0;
+}
+
+.update-facts > div {
+    min-width: 0;
+    padding: 0.75rem 0.875rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-bg);
+}
+
+.update-facts dt {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+    margin-bottom: 0.25rem;
+}
+
+.update-facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+/* Own line rather than trailing the value: these are qualifiers ("from
+   1.26.40.8", "every 6 hours"), and inline they read as part of the number. */
+.update-facts .check-detail {
+    display: block;
+    margin-top: 0.125rem;
+}
+
+.update-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+/* Wraps instead of compressing. `.provision-controls` caps itself at 32rem,
+   which squeezed three selects and a button down to about five characters
+   each — the reason the mode dropdown rendered as a lone "A". */
+/* A row of labelled controls that wraps. Named for what it is rather than for
+   the first panel that wanted one — the Bedrock update settings, the restart
+   schedule and the watchdog all lay out the same way, and three copies of this
+   would drift the first time one of them was tuned. */
+.settings-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: flex-end;
+}
+
+.settings-row .field {
+    flex: 1 1 14rem;
+    min-width: 12rem;
+    margin: 0;
+}
+
+.settings-row .field > span {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.settings-row .form-select,
+.settings-row .form-control { width: 100%; }
+
+/* Narrow enough that a two-digit number does not sit in a field built for a
+   version string. */
+.settings-row .field.narrow { flex: 0 1 9rem; min-width: 7rem; }
+
+/* Saved / installed confirmations. Quiet enough not to compete with the
+   headline, distinct enough not to be mistaken for another explainer. */
+.update-note {
+    color: var(--sentry-ok-text);
+    font-size: 0.9375rem;
+}
+
+/* Marks the build a server is actually on, in a table where every other row
+   looks equally installable. */
+.pill {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.0625rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    vertical-align: 0.05em;
+}
+
+.pill-ok {
+    color: var(--sentry-ok-text);
+    background: var(--sentry-ok-bg);
+}
+
+/* An update this server is counting down to. Framed rather than another
+   paragraph, because it is the one thing on the page with a deadline on it. */
+.update-pending {
+    border: 1px solid var(--sentry-accent);
+    background: var(--sentry-accent-wash);
+    border-left-width: 3px;
+    border-radius: 0 6px 6px 0;
+    padding: 0.875rem 1rem;
+}
+
+.update-pending > :first-child { margin-top: 0; }
+.update-pending > :last-child { margin-bottom: 0; }
+.update-pending .provision-controls { margin-top: 0.75rem; }
+
+/* Whether this server's allowlist applies, and how many people it lets in.
+   A property of the server rather than of the list, so it sits on the table's
+   own header rather than in a paragraph above it. */
+.access-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem 1.1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.7rem;
+}
+
+.access-bar .counts {
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+}
+
+.access-bar .counts b {
+    color: var(--sentry-text);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+/* Row controls sit against the right edge, away from the data. Kick renders
+   only on a row it can act on, so most cells here are empty and the column
+   stays quiet. */
+.row-actions {
+    display: flex;
+    gap: 0.35rem;
+    justify-content: flex-end;
+}
+
+.table-wrap th.actions { text-align: right; }
+
+/* A role the wrapper cannot set yet — nobody has a XUID until they join once.
+   Greyed rather than hidden, so the column stays a column. */
+.table-wrap td select.role:disabled {
+    color: var(--sentry-text-muted);
+    cursor: not-allowed;
+}
+
+.access-note {
+    display: block;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+    font-style: italic;
+}

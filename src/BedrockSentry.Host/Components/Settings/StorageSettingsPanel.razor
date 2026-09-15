@@ -1,0 +1,187 @@
+@* Where the space-hungry folders live (docs/design.md § 4.3). Only the directories
+   that grow without bound are movable — backups, downloaded server packages,
+   and where new instances land. Everything else the wrapper keeps is small and
+   stays at the data root, whose location cannot be a setting inside itself. *@
+
+@using BedrockSentry.Services.Configuration
+@using BedrockSentry.Services.Instances
+
+@inject StorageLocations Storage
+@inject InstanceRegistry Registry
+
+<h2>Storage</h2>
+
+<p class="lead">
+    The three folders that grow over time, each placeable on whichever volume has
+    the room. Changes apply immediately, with no restart — but nothing is moved
+    for you: files already at an old location stay there, and stop being listed
+    until you move them across yourself. Any quiet moment will do; the wrapper
+    holds none of these folders open between operations.
+</p>
+
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="settings-row">
+                <label class="field">
+                    <span>Backups</span>
+                    <input class="form-control" @bind="backupsRoot" @bind:after="OnBackupsRootChangedAsync"
+                           disabled="@busy" placeholder="@Storage.DefaultBackupsRoot" />
+                </label>
+            </div>
+            @Feedback("backups")
+        </div>
+        <div class="prop-doc">
+            <p>
+                ZIP archives, snapshot folders and each server's backup history. The
+                biggest consumer of disk over time, and the one most worth putting on a
+                large volume.
+            </p>
+            <span class="prop-allowed">
+                New backups land here at once. Old ones stay where they were taken and
+                leave the restore picker until moved — move the per-server folders across
+                and they come straight back, history and all. Blank returns to the
+                default.
+            </span>
+        </div>
+    </div>
+
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="settings-row">
+                <label class="field">
+                    <span>Server packages</span>
+                    <input class="form-control" @bind="packagesRoot" @bind:after="OnPackagesRootChangedAsync"
+                           disabled="@busy" placeholder="@Storage.DefaultServerPackagesRoot" />
+                </label>
+            </div>
+            @Feedback("packages")
+        </div>
+        <div class="prop-doc">
+            <p>
+                Every downloaded Bedrock zip — a few hundred megabytes each, and they
+                accumulate with every update the wrapper fetches.
+            </p>
+            <span class="prop-allowed">
+                Downloads land here at once; zips at the old location leave the build
+                lists until moved. Blank returns to the default.
+            </span>
+        </div>
+    </div>
+
+    <div class="prop">
+        <div class="prop-edit">
+            <div class="settings-row">
+                <label class="field">
+                    <span>New servers</span>
+                    <input class="form-control" @bind="instancesRoot" @bind:after="OnInstancesRootChangedAsync"
+                           disabled="@busy" />
+                </label>
+            </div>
+            @Feedback("instances")
+        </div>
+        <div class="prop-doc">
+            <p>
+                Where a newly created server's folder is placed — worlds are the other
+                thing that grows.
+            </p>
+            <span class="prop-allowed">
+                Existing servers never move from here: each is pinned to its current
+                folder before this changes, so nothing is re-addressed behind its back.
+                A single server is moved from its own Configuration tab, and can be
+                given its own folder when it is created.
+            </span>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string backupsRoot = string.Empty;
+    private string packagesRoot = string.Empty;
+    private string instancesRoot = string.Empty;
+    private bool busy;
+    private string? errorFor;
+    private string? error;
+    private string? savedFor;
+
+    protected override void OnInitialized() => SyncFromSource();
+
+    /// <summary>
+    /// Overrides shown as themselves, the default shown as the placeholder — so
+    /// a blank field honestly reads as "the default", and clearing a field is
+    /// how you go back to it. Run after every save attempt, success or failure,
+    /// so the field always ends up showing what is actually in force rather
+    /// than what somebody typed.
+    /// </summary>
+    /// <remarks>
+    /// This relies on <c>@@bind</c> rather than a plain <c>value</c> attribute:
+    /// Blazor tracks the bound value with the special handling that forces a
+    /// client-side sync on every render the binding participates in, even when
+    /// the reverted string is identical to what the browser is already
+    /// showing — a rejected edit's own text, for instance. A manual
+    /// <c>value="@@field"</c> would diff against the last render and, finding no
+    /// change, leave the rejected text on screen with no way to tell the
+    /// config file no longer agrees with it.
+    /// </remarks>
+    private void SyncFromSource()
+    {
+        backupsRoot = Storage.BackupsRoot == Storage.DefaultBackupsRoot ? "" : Storage.BackupsRoot;
+        packagesRoot = Storage.ServerPackagesRoot == Storage.DefaultServerPackagesRoot
+            ? ""
+            : Storage.ServerPackagesRoot;
+        instancesRoot = Registry.Root;
+    }
+
+    private RenderFragment? Feedback(string field) => builder =>
+    {
+        if (errorFor == field && error is not null)
+        {
+            builder.OpenElement(0, "div");
+            builder.AddAttribute(1, "class", "prop-check bad");
+            builder.AddContent(2, error);
+            builder.CloseElement();
+        }
+        else if (savedFor == field)
+        {
+            builder.OpenElement(0, "div");
+            builder.AddAttribute(1, "class", "prop-check ok");
+            builder.AddContent(2, "Saved — in effect now. Move any existing files across when convenient.");
+            builder.CloseElement();
+        }
+    };
+
+    private async Task SaveAsync(string field, Func<CancellationToken, Task> save)
+    {
+        busy = true;
+        errorFor = null;
+        error = null;
+        savedFor = null;
+
+        try
+        {
+            await save(CancellationToken.None);
+            savedFor = field;
+        }
+        catch (Exception ex)
+        {
+            errorFor = field;
+            error = ex.Message;
+        }
+        finally
+        {
+            // Whether it succeeded or not: reload from what is actually in
+            // force, never leave a field showing what somebody typed.
+            SyncFromSource();
+            busy = false;
+        }
+    }
+
+    private Task OnBackupsRootChangedAsync() =>
+        SaveAsync("backups", ct => Storage.SetBackupsRootAsync(backupsRoot, ct));
+
+    private Task OnPackagesRootChangedAsync() =>
+        SaveAsync("packages", ct => Storage.SetServerPackagesRootAsync(packagesRoot, ct));
+
+    private Task OnInstancesRootChangedAsync() =>
+        SaveAsync("instances", ct => Registry.SetRootAsync(instancesRoot, ct));
+}
