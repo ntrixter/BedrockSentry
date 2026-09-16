@@ -140,36 +140,22 @@ jobs:
         shell: powershell
         run: .\scripts\Assert-PowerShell51.ps1
 
-      # The code-comment standard: a comment may describe the system, it may not
-      # describe the project. The full rule, the referent test that applies it and the
-      # rewrite form are in the script's own header. The bar sits here, at the commit
-      # that writes the comment, rather than at publication - a filter that routinely
-      # catches things is a filter whose failures become normal.
+      # THE HYGIENE AND PUBLISH-SCOPE STEPS MOVED OUT OF HERE to
+      # private-checks.yml (T197). They invoked Assert-CodeHygiene.ps1 and
+      # Assert-PublishScope.ps1, both held back from the public repository - so
+      # this file, which crosses, was asking the public repository to run two
+      # scripts it would never receive. Red on every run there, from its first
+      # snapshot, and found by reading rather than by a run.
       #
-      # SELF-TEST FIRST, AND IT IS NOT CEREMONY. Its fixtures pin fifteen NEGATIVE
-      # cases - real lines from this tree that must stay clean - alongside six
-      # positives. A check that only pins positives is the half-a-rule shape
-      # RemovalPhraseTests already fell into, and here it would mean nobody notices
-      # the rules have been tightened into noise until somebody deletes the step.
+      # It is the same trap as the branches-ignore note at the top of this file,
+      # one section down: A LIST OF NAMES IN A FILE THAT CROSSES NAMES THINGS
+      # THAT MAY NOT EXIST ON THE OTHER SIDE. That comment was already here,
+      # about the `on:` block, while the `run:` lines below it had the identical
+      # defect. Naming a hazard is not the same as having looked for it
+      # everywhere it applies.
       #
-      # Deliberately NOT in release.yml, unlike the two steps above. T157's lesson -
-      # a check that skips the release branches skips the ones that ship - was about
-      # a safety check. This is not one: the real gate is the publish skill, which
-      # refuses. A violation can sit on build for a cycle and reach nobody.
-      - name: Check the code comments describe the system, not the project
-        shell: pwsh
-        run: |
-          .\scripts\Assert-CodeHygiene.ps1 -SelfTest
-          .\scripts\Assert-CodeHygiene.ps1
-
-      # The two lists that describe the publishable tree live in different files, and
-      # a file in the first but not the second is PUBLISHED UNCHECKED. That gap was
-      # real: paths-ignore skipped docs/ and companion-pack/README.md, both of which
-      # cross, and it was true from the hygiene check's first commit.
-      #
-      # One rule stated in two places is enforced in one, so it gets this class's
-      # remedy - a check that fails when they diverge - rather than a comment asking
-      # people to keep them in step.
-      - name: Check the crossing set and the scanned set agree
-        shell: pwsh
-        run: .\scripts\Assert-PublishScope.ps1
+      # Everything left in this file runs correctly in BOTH repositories, which
+      # is the property to preserve. Before adding a step here, ask what it
+      # invokes and whether that crosses - Assert-PublishScope.ps1 now fails when
+      # it does not, so the question is asked mechanically rather than
+      # remembered.

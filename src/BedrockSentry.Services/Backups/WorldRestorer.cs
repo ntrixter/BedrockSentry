@@ -133,7 +133,7 @@ public sealed class WorldRestorer
         }
 
         var archives = Directory
-            .EnumerateFiles(directory, "backup-*.zip")
+            .EnumerateFiles(directory, $"{ZipBackupStrategy.ArchivePrefix}*{ZipBackupStrategy.ArchiveSuffix}")
             .Select(f => new FileInfo(f))
             .Select(f => new RestorableBackup(
                 f.FullName, f.Name, f.LastWriteTimeUtc, f.Length, IsFolder: false));

@@ -24,6 +24,18 @@ namespace BedrockSentry.Services.Backups;
 /// </remarks>
 public sealed class ZipBackupStrategy : IBackupStrategy
 {
+    /// <summary>The prefix every archive carries. Also what retention matches.</summary>
+    /// <remarks>
+    /// A constant rather than a literal because the pattern was written out in four
+    /// places — here, the restore picker, the Backups page and retention — and one
+    /// rule spelled four times is enforced in none of them. <c>VssBackupStrategy</c>
+    /// already had <c>FolderPrefix</c> for the same reason.
+    /// </remarks>
+    public const string ArchivePrefix = "backup-";
+
+    /// <summary>The extension every archive carries, used with <see cref="ArchivePrefix"/>.</summary>
+    public const string ArchiveSuffix = ".zip";
+
     private readonly TimeProvider _time;
     private readonly ILogger<ZipBackupStrategy> _log;
 
@@ -58,8 +70,8 @@ public sealed class ZipBackupStrategy : IBackupStrategy
                 Name, false, "The snapshot lists no files — there is no world here to archive.", null);
         }
 
-        var stamp = context.StartedUtc.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        var finalPath = Path.Combine(context.ArtifactDirectory, $"backup-{stamp}.zip");
+        var archiveName = BackupRetentionPlan.ComposeName(ArchivePrefix, context.StartedUtc, ArchiveSuffix);
+        var finalPath = Path.Combine(context.ArtifactDirectory, archiveName);
         var tempPath = $"{finalPath}.tmp";
 
         long totalBytes = 0;
@@ -217,40 +229,42 @@ public sealed class ZipBackupStrategy : IBackupStrategy
             return 0;
         }
 
-        var archives = Directory
-            .EnumerateFiles(context.ArtifactDirectory, "backup-*.zip")
-            .Select(f => new FileInfo(f))
-            .OrderByDescending(f => f.LastWriteTimeUtc)
+        // Names, not FileInfo: the decision is made from the stamp each name
+        // carries, in Core where a test can reach it, and identically for both
+        // strategies (T198). The filesystem's own timestamps are not consulted -
+        // restoring from an archive or copying it moves those, and the name does
+        // not move. Never deleting the one just written is BackupRetentionPlan's
+        // job now, where it is pinned ahead of the count rather than skipped
+        // after it.
+        var names = Directory
+            .EnumerateFiles(context.ArtifactDirectory, $"{ArchivePrefix}*{ArchiveSuffix}")
+            .Select(Path.GetFileName)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Select(n => n!)
             .ToList();
 
-        var doomed = retention.Mode switch
-        {
-            BackupRetentionMode.Count => archives.Skip(retention.Value),
-            BackupRetentionMode.Days => archives.Where(f =>
-                f.LastWriteTimeUtc < _time.GetUtcNow().UtcDateTime.AddDays(-retention.Value)),
-            _ => [],
-        };
+        var doomed = BackupRetentionPlan.NamesToRemove(
+            names,
+            ArchivePrefix,
+            ArchiveSuffix,
+            retention,
+            _time.GetUtcNow().UtcDateTime,
+            Path.GetFileName(justWritten));
 
         var pruned = 0;
 
-        foreach (var file in doomed)
+        foreach (var name in doomed)
         {
-            // Never the one just written, whatever the clock says: a retention
-            // rule that can delete the backup it is running for is a rule with
-            // a hole in it.
-            if (string.Equals(file.FullName, justWritten, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
+            var full = Path.Combine(context.ArtifactDirectory, name);
 
             try
             {
-                file.Delete();
+                File.Delete(full);
                 pruned++;
             }
             catch (IOException ex)
             {
-                _log.LogWarning(ex, "Could not prune old backup {File}", file.FullName);
+                _log.LogWarning(ex, "Could not prune old backup {File}", full);
             }
         }
 

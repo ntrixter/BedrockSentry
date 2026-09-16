@@ -82,8 +82,8 @@ public sealed class VssBackupStrategy : IBackupStrategy
                 Name, false, "The snapshot lists no files — there is no world here to copy.", null);
         }
 
-        var stamp = context.StartedUtc.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        var destination = Path.Combine(context.ArtifactDirectory, $"{FolderPrefix}{stamp}");
+        var folderName = BackupRetentionPlan.ComposeName(FolderPrefix, context.StartedUtc);
+        var destination = Path.Combine(context.ArtifactDirectory, folderName);
 
         string volumeRoot;
 
@@ -299,37 +299,38 @@ public sealed class VssBackupStrategy : IBackupStrategy
             return 0;
         }
 
-        var folders = Directory
+        // Names, not FileSystemInfo: the decision is made from the stamp each name
+        // carries, in Core where a test can reach it, and identically for both
+        // strategies (T198). The filesystem's own timestamps are not consulted.
+        var names = Directory
             .EnumerateDirectories(context.ArtifactDirectory, $"{FolderPrefix}*")
-            .Select(d => new DirectoryInfo(d))
-            .OrderByDescending(d => d.LastWriteTimeUtc)
+            .Select(Path.GetFileName)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Select(n => n!)
             .ToList();
 
-        var doomed = retention.Mode switch
-        {
-            BackupRetentionMode.Count => folders.Skip(retention.Value),
-            BackupRetentionMode.Days => folders.Where(d =>
-                d.LastWriteTimeUtc < _time.GetUtcNow().UtcDateTime.AddDays(-retention.Value)),
-            _ => [],
-        };
+        var doomed = BackupRetentionPlan.NamesToRemove(
+            names,
+            FolderPrefix,
+            suffix: "",
+            retention,
+            _time.GetUtcNow().UtcDateTime,
+            Path.GetFileName(justWritten));
 
         var pruned = 0;
 
-        foreach (var folder in doomed)
+        foreach (var name in doomed)
         {
-            if (string.Equals(folder.FullName, justWritten, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
+            var full = Path.Combine(context.ArtifactDirectory, name);
 
             try
             {
-                folder.Delete(recursive: true);
+                Directory.Delete(full, recursive: true);
                 pruned++;
             }
             catch (IOException ex)
             {
-                _log.LogWarning(ex, "Could not prune old backup {Folder}", folder.FullName);
+                _log.LogWarning(ex, "Could not prune old backup {Folder}", full);
             }
         }
 

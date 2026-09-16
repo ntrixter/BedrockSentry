@@ -48,9 +48,6 @@ from them directly.
 - **Stops servers gracefully.** Every planned stop — a scheduled restart, an update, the wrapper
   updating itself — warns whoever is online first, drains the server, and can take a backup on the
   way down. Saves are never left paused, whatever else fails.
-- **Backups, three ways.** A ZIP, a Volume Shadow Copy, or a command of your own, on a schedule or
-  on demand, with retention, notes, and restore. The archive also carries that server's
-  `server.properties`, allowlist and permissions file, restorable separately from the world.
 - **Bedrock updates, watched and applied.** It reads Mojang's feed, tells you when there is
   something newer, counts players down, applies it, and rolls back a build that will not start.
   Per server: automatic, tell-me-first, or a pin that outranks both. Preview builds and manual

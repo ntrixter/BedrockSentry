@@ -123,7 +123,7 @@ else
 
             var directory = History.DirectoryFor(supervisor.InstanceId);
             var archives = Directory.Exists(directory)
-                ? Directory.EnumerateFiles(directory, "backup-*.zip").Select(f => new FileInfo(f)).ToList()
+                ? Directory.EnumerateFiles(directory, $"{ZipBackupStrategy.ArchivePrefix}*{ZipBackupStrategy.ArchiveSuffix}").Select(f => new FileInfo(f)).ToList()
                 : [];
 
             built.Add(new Row(
