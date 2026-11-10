@@ -12,7 +12,7 @@ namespace BedrockSentry.Services.DependencyInjection;
 public static class BrokerServiceCollectionExtensions
 {
     /// <summary>
-    /// Points the seven privileged seams at the broker, through <paramref name="channel"/>.
+    /// Points the eight privileged seams at the broker, through <paramref name="channel"/>.
     /// </summary>
     /// <remarks>
     /// Removes whatever was registered for each seam first, so it holds whether it runs
@@ -33,6 +33,7 @@ public static class BrokerServiceCollectionExtensions
         Point<IShadowCopyService, BrokerShadowCopyService>(services);
         Point<IOrphanInspector, BrokerOrphanInspector>(services);
         Point<IWrapperUpdateInstaller, BrokerWrapperUpdateInstaller>(services);
+        Point<IVolumeDeduplicationInspector, BrokerVolumeDeduplicationInspector>(services);
 
         return services;
     }

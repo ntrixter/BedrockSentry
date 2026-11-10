@@ -70,7 +70,7 @@ git checkout build
 .\scripts\package-local.ps1
 ```
 
-That produces `bedrocksentry-0.4.0-local_<sha>.zip` in the repo root, with the
+That produces `bedrocksentry-0.4.1-local_<sha>.zip` in the repo root, with the
 same files CI puts in a release and checked against the same list, so
 `install.ps1` treats it like any other. Expect roughly 80 MB and a minute or two.
 
@@ -89,14 +89,14 @@ Server already allows unblocked scripts.
 ```powershell
 # Unblock it if it came from a browser or a network share, or PowerShell
 # will refuse to run the scripts inside.
-Unblock-File .\bedrocksentry-0.4.0-local_abc1234.zip
+Unblock-File .\bedrocksentry-0.4.1-local_abc1234.zip
 
 # Name the folder after the build. Never reuse one folder across installs —
 # see Updating below for why that matters.
-Expand-Archive .\bedrocksentry-0.4.0-local_abc1234.zip -DestinationPath .\bs-0.4.0-local_abc1234
-cd .\bs-0.4.0-local_abc1234
+Expand-Archive .\bedrocksentry-0.4.1-local_abc1234.zip -DestinationPath .\bs-0.4.1-local_abc1234
+cd .\bs-0.4.1-local_abc1234
 
-.\install.ps1 -ZipPath ..\bedrocksentry-0.4.0-local_abc1234.zip
+.\install.ps1 -ZipPath ..\bedrocksentry-0.4.1-local_abc1234.zip
 ```
 
 Yes, you extract it and then point the installer back at the zip — the scripts
@@ -255,6 +255,19 @@ install folder, the data root (a server's folder in its `instances` folder is th
 exception, on a Windows build with RedirectionGuard), and a folder with a junction, symbolic link or second hard link anywhere
 inside it, since the grant would follow it out of the folder. It needs the broker,
 so an install made with `-NoBroker` cannot use it.
+
+**Deduplicated volumes.** On a volume with Windows Data Deduplication, every
+optimized file is a reparse point, tag `IO_REPARSE_TAG_DEDUP` (`0x80000013`), and
+shows `Archive, SparseFile, ReparsePoint` with an empty `LinkType`. That is how
+the file stores its own contents, not a link to anywhere else, so `-GrantFolder`
+grants and labels such a folder like any other, and backups, restores, add-on
+copies and the size on the Status page read its files through the deduplication
+filter. Only that tag, and only on a file, is let through: a symbolic link, a
+junction, a mount point and any other reparse point are still refused, and the
+refusal names the tag it found, for example `is a junction or mount point
+(reparse tag 0xA0000003)`. Builds up to 0.4.0 refused every deduplicated file as a
+link: update rather than rehydrate the files. To read a tag yourself, run
+`fsutil reparsepoint query "<file>"` from an elevated prompt.
 
 **Letting the panel grant folders.** If you would rather pick such folders from the
 panel without running a command each time, turn that on once:
@@ -541,12 +554,12 @@ Build or download a newer zip, then **extract it to a new folder and run that
 copy of `install.ps1`** — exactly as you did for the first install:
 
 ```powershell
-Unblock-File .\bedrocksentry-0.4.0-build.99_bbbb222.zip
+Unblock-File .\bedrocksentry-0.4.1-build.99_bbbb222.zip
 
-Expand-Archive .\bedrocksentry-0.4.0-build.99_bbbb222.zip -DestinationPath .\bs-0.4.0-build.99_bbbb222
-cd .\bs-0.4.0-build.99_bbbb222
+Expand-Archive .\bedrocksentry-0.4.1-build.99_bbbb222.zip -DestinationPath .\bs-0.4.1-build.99_bbbb222
+cd .\bs-0.4.1-build.99_bbbb222
 
-.\install.ps1 -ZipPath ..\bedrocksentry-0.4.0-build.99_bbbb222.zip
+.\install.ps1 -ZipPath ..\bedrocksentry-0.4.1-build.99_bbbb222.zip
 ```
 
 First the installer asks the running wrapper to warn players and stop its
@@ -576,8 +589,9 @@ differ; it still installs, and extracting to a fresh folder is the fix.
 ### Once the repo is public
 
 The wrapper updates itself. Settings → **Wrapper updates** shows the running
-build, the channel, when it last checked, and any newer build it has seen. Its
-controls choose the channel, what happens when a build appears, the hours
+build, the channel, when it last checked, and any newer build it has seen. The
+channel is saved as soon as it is picked, and the wrapper then checks the new
+channel. The other controls choose what happens when a build appears, the hours
 between checks (6 by default) and how many minutes players are warned, and take
 effect when saved, without a restart:
 
@@ -648,7 +662,10 @@ Pass the same `-ServiceName` to both if you changed it, and the same
 nothing to read them from. The new install grants the data root to the service's account on its way
 in. A server folder, backups folder or packages folder outside the data root
 needs `-GrantFolder` afterwards (see
-[Folders outside the data root](#folders-outside-the-data-root)).
+[Folders outside the data root](#folders-outside-the-data-root)), on a
+deduplicated volume too. Until it is granted, its server is refused at start; the
+service retries for two minutes and then leaves it stopped, so start it from the
+panel once the grant is made.
 
 If the install refuses the data root, something in it is owned by an account
 other than SYSTEM or Administrators: usually a folder copied in or made by hand
@@ -678,7 +695,9 @@ reads its two helper scripts from the release the service runs from.
 It first lists what it will remove and what it keeps, and asks; the default
 answer is No. Then it stops the service and then the broker, waiting for each
 process to exit, deregisters both, removes both event log sources, and deletes
-the install directory with every build under `versions\`. A named account keeps
+the install directory with every build under `versions\`, so no earlier build is
+left on disk to go back to; keep the release archive you installed from if you may
+want it again. A named account keeps
 its right to log on as a service, which another service may share. The install and data roots are
 read from the service, so only `-ServiceName` needs repeating if you changed it.
 
@@ -688,6 +707,7 @@ read from the service, so only `-ServiceName` needs repeating if you changed it.
 | `-ServiceName <name>` | The name you installed with, if you changed it. It decides which install is removed. |
 | `-InstallRoot <path>`, `-DataRoot <path>` | Only needed once the service is gone, to finish a partial uninstall of an install kept elsewhere. One that disagrees with the service's removes nothing. |
 | `-Confirm:$false` | Skips the question, for a script that has already checked what it is removing. |
+| `-Force` | The same, and the one to use through `powershell.exe -File`, which passes the `$false` in `-Confirm:$false` as text and fails before anything is removed. |
 | `-WhatIf` | Prints the list and removes nothing. |
 
 If a file under the install directory cannot be deleted yet, the script says

@@ -28,14 +28,29 @@ namespace BedrockSentry.Services.Diagnostics;
 /// reach it on any machine. What is left here cannot be exercised off Windows and
 /// is kept small for that reason.
 /// </para>
+/// <para>
+/// Windows answers only an administrator, so under the service's own account
+/// (milestone 18.5) the broker reads it (<c>BrokerOperation.ReadDeduplication</c>)
+/// and <c>BrokerVolumeDeduplicationInspector</c> takes the answer; this class is
+/// the broker's reader, and the main service's only when it runs without one.
+/// </para>
 /// </remarks>
-public sealed class WmiVolumeDeduplicationInspector : IVolumeDeduplicationInspector
+public sealed class WmiVolumeDeduplicationInspector : IVolumeDeduplicationInspector, IDeduplicationReader
 {
     // The service's own namespace. Absent entirely when the role is not
     // installed — which is every client edition of Windows, and a server that
     // has not had it added — and that absence is the whole of the
     // "not installed" state rather than an error.
     private const string Scope = @"\\.\root\Microsoft\Windows\Deduplication";
+
+    /// <summary>
+    /// What Windows answers a caller that is not an administrator: <c>WBEM_E_FAILED</c>,
+    /// read as "Generic failure", rather than access denied (0.4.0, Windows Server 2025,
+    /// the service's own account).
+    /// </summary>
+    public const string NeedsAnAdministrator =
+        "Data Deduplication is installed, but Windows lets only an administrator read it, "
+        + "and this service's account is not one. With the privilege broker installed it is read through the broker.";
 
     private readonly ILogger<WmiVolumeDeduplicationInspector> _log;
 
@@ -44,34 +59,52 @@ public sealed class WmiVolumeDeduplicationInspector : IVolumeDeduplicationInspec
         _log = log;
     }
 
-    public IReadOnlyDictionary<string, VolumeDeduplication> Inspect(IReadOnlyCollection<string> volumeRoots)
+    public IReadOnlyDictionary<string, VolumeDeduplication> Inspect(IReadOnlyCollection<string> volumeRoots) =>
+        Read().For(volumeRoots);
+
+    public DeduplicationReading Read()
     {
         if (!OperatingSystem.IsWindows())
         {
-            return VolumeDeduplication.AssembleUnknown(
-                volumeRoots, "Data Deduplication can only be read on Windows.");
+            return DeduplicationReading.Unreadable("Data Deduplication can only be read on Windows.");
         }
 
         try
         {
-            return VolumeDeduplication.Assemble(volumeRoots, Query());
+            return DeduplicationReading.Of(Query());
         }
         catch (ManagementException ex) when (ex.ErrorCode == ManagementStatus.InvalidNamespace)
         {
             // Not a failure. The namespace only exists once the role is
             // installed, so this is the ordinary answer on most machines.
-            return VolumeDeduplication.Assemble(volumeRoots, rows: null);
+            return DeduplicationReading.NotInstalled;
+        }
+        catch (ManagementException ex) when (ex.ErrorCode is ManagementStatus.Failed or ManagementStatus.AccessDenied
+                                             && !IsAdministrator())
+        {
+            // The answer to a caller that is not an administrator, every time: said
+            // as what is missing, and logged once a read rather than as a fault.
+            _log.LogDebug(ex, "Data Deduplication answered a non-administrator with {Status}.", ex.ErrorCode);
+            return DeduplicationReading.Unreadable(NeedsAnAdministrator);
         }
         catch (Exception ex) when (ex is ManagementException or COMException or UnauthorizedAccessException)
         {
-            // Installed but unreadable — most likely a service account without
-            // the right to ask (`D44`). Distinct from "not installed" on purpose:
-            // an administrator who enabled it deserves to hear that the panel
-            // cannot see it, not that it is missing.
+            // Installed but unreadable for another reason. Distinct from "not
+            // installed" on purpose: an administrator who enabled it deserves to
+            // hear that the panel cannot see it, not that it is missing.
             _log.LogWarning(ex, "Data Deduplication is installed but could not be read.");
 
-            return VolumeDeduplication.AssembleUnknown(volumeRoots, ex.Message);
+            return DeduplicationReading.Unreadable(ex.Message);
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool IsAdministrator()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+
+        return identity.IsSystem
+               || new System.Security.Principal.WindowsPrincipal(identity).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
     }
 
     /// <summary>

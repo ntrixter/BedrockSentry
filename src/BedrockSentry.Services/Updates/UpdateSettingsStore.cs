@@ -20,6 +20,30 @@ public sealed class UpdateSettingsStore(ISentryPaths paths, ILogger<UpdateSettin
 {
     private string ConfigPath => Path.Combine(paths.Config, "bedrocksentry.json");
 
+    /// <summary>
+    /// Writes the channel alone, for the panel's channel picker, which saves on change
+    /// (<c>T435</c>).
+    /// </summary>
+    /// <remarks>
+    /// The other three stay as stored, so a half-typed interval beside the picker is
+    /// not saved with it. <see cref="UpdateService"/> sees the reload and checks the new
+    /// channel itself.
+    /// </remarks>
+    public async Task SaveChannelAsync(UpdateChannel channel, CancellationToken cancellationToken = default)
+    {
+        await JsonConfigWriter
+            .MergeAsync(
+                ConfigPath,
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{UpdateOptions.SectionName}:Channel"] = JsonValue.Create(channel.ToString()),
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        logger.LogInformation("Wrapper update channel changed to {Channel}", channel);
+    }
+
     public async Task SaveAsync(
         UpdateChannel channel,
         UpdateMode mode,

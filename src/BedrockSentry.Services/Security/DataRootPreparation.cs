@@ -11,7 +11,8 @@ public sealed record DirectoryList(string? OwnerSid, bool IsProtected, IReadOnly
 /// One folder beneath a data root, with its owner and list, or a link or a file with a
 /// second name (<see cref="List"/> null): the root's list would reach what either names.
 /// </summary>
-public sealed record TreeEntry(string Path, DirectoryList? List);
+/// <param name="Why">For a refused entry, what it is, as "is a symbolic link (reparse tag ...)"; null for a folder.</param>
+public sealed record TreeEntry(string Path, DirectoryList? List, string? Why = null);
 
 /// <summary>One folder or file beneath a data root to label, or one refused because it is a link or has a second name.</summary>
 public sealed record LabelTarget(string Path, bool Directory, bool Refused);
@@ -246,7 +247,7 @@ public static class DataRootPreparation
         {
             if (entry.List is not { } list)
             {
-                return $"{entry.Path} is a link or has a second name";
+                return $"{entry.Path} {entry.Why ?? "is a link or has a second name"}";
             }
 
             if (AccessPlan.WhyNotSpreadOver(list.OwnerSid, list.Rules) is { } beneath)
@@ -285,24 +286,25 @@ public sealed class WindowsAccessListWriter : IAccessListWriter
         };
 
         // .NET does not recurse into a link; each is answered as one, and the first ends
-        // the walk.
+        // the walk. A deduplicated file is no link (ReparseTags) and is pinned below like
+        // any other file.
         foreach (var entry in new DirectoryInfo(root).EnumerateFileSystemInfos("*", options))
         {
-            if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            if (ReparseTags.Why(entry) is { } link)
             {
-                yield return new TreeEntry(entry.FullName, null);
+                yield return new TreeEntry(entry.FullName, null, "is " + link);
             }
             else if (entry is FileInfo)
             {
                 // Refused when it has more than one name, among other things; a file
                 // that cannot be pinned is not one to walk a list over either.
-                if (PinnedHandle.Open(entry.FullName, 0, directory: false, out _) is { } pinned)
+                if (PinnedHandle.Open(entry.FullName, 0, directory: false, out var refusal) is { } pinned)
                 {
                     pinned.Handle.Dispose();
                 }
                 else
                 {
-                    yield return new TreeEntry(entry.FullName, null);
+                    yield return new TreeEntry(entry.FullName, null, "was refused: " + refusal);
                 }
             }
             else if (entry is DirectoryInfo directory)
@@ -353,7 +355,7 @@ public sealed class WindowsAccessListWriter : IAccessListWriter
                     continue;
                 }
 
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                if (ReparseTags.IsLink(entry))
                 {
                     yield return new LabelTarget(entry.FullName, entry is DirectoryInfo, Refused: true);
                 }

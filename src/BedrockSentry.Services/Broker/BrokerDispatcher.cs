@@ -57,6 +57,7 @@ public sealed class BrokerDispatcher
     private readonly IFolderGrant _grant;
     private readonly IBrokerUpdates? _updates;
     private readonly IInstallPolicy? _policy;
+    private readonly IDeduplicationReader? _deduplication;
     private readonly ILogger _log;
 
     public BrokerDispatcher(
@@ -75,8 +76,10 @@ public sealed class BrokerDispatcher
         IFolderGrant grant,
         ILogger<BrokerDispatcher> log,
         IBrokerUpdates? updates = null,
-        IInstallPolicy? policy = null)
+        IInstallPolicy? policy = null,
+        IDeduplicationReader? deduplication = null)
     {
+        _deduplication = deduplication;
         _instances = instances;
         _reachable = reachable;
         _paths = paths;
@@ -115,6 +118,8 @@ public sealed class BrokerDispatcher
                 BrokerOperation.ReadDefenderExclusions => Read(await _defender.ReadAsync(ct)),
                 BrokerOperation.ReadFirewallRules => Read(await _firewall.ReadAsync(ct)),
                 BrokerOperation.ReadLoopbackExemptions => Read(await _loopback.ReadAsync(ct)),
+                BrokerOperation.ReadDeduplication when _deduplication is not null => Read(_deduplication.Read()),
+                BrokerOperation.ReadDeduplication => Refuse(request, "This broker has no deduplication reader."),
                 BrokerOperation.ExemptLoopback => Fix(await _loopback.ExemptAsync(request.PackageFamily!, ct)),
                 BrokerOperation.EnableVss => Fix(await _vss.EnableVssAsync(ct)),
                 BrokerOperation.CreateShadowCopy => await CreateShadowCopyAsync(request, ct),
@@ -154,6 +159,10 @@ public sealed class BrokerDispatcher
     private static BrokerResponse Read(LoopbackExemptions read) => Read(read.Read, read.Json, read.Error);
 
     private static BrokerResponse Read(bool read, string json, string error) => new(read, error, Json: json);
+
+    /// <summary>Succeeded whatever the reading says: not installed and unreadable are answers too, and cross as such.</summary>
+    private static BrokerResponse Read(DeduplicationReading read) =>
+        new(true, read.Error ?? string.Empty, Json: System.Text.Json.JsonSerializer.Serialize(read));
 
     /// <summary>The instance, or the refusal that names why there is none to act on.</summary>
     private (BrokerInstance? Instance, string? Refusal) Resolve(string instanceId)

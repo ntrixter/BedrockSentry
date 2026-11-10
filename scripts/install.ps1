@@ -144,7 +144,7 @@
     Turns it back off. Folders already granted stay granted.
 
 .EXAMPLE
-    .\install.ps1 -ZipPath ..\bedrocksentry-0.4.0-build.91_abc1234.zip
+    .\install.ps1 -ZipPath ..\bedrocksentry-0.4.1-build.92_abc1234.zip
 
     Run from a new folder the zip was extracted into, so the installer is the one
     that shipped in that zip.

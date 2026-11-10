@@ -2817,7 +2817,9 @@ night.
   and a line under the table names the volume (`T430`). On a machine with Data
   Deduplication, three columns give the rate and ratio of the saving against the
   data stored, never the volume, the bytes saved, and the last optimisation
-  (`T429`); without the role one sentence under the table says so.
+  (`T429`); without the role one sentence under the table says so. Windows
+  answers the deduplication service only for an administrator, so the broker
+  reads it and the answer is kept for two minutes (`T434`).
 - **Clock.** Local time and time zone, because scheduled restarts are written in
   local time (Section 5.3) and a machine set to UTC runs an 05:00 restart at
   midnight — discoverable otherwise only from player complaints.
@@ -2925,11 +2927,12 @@ field its operation does not take is refused as well as one that lacks a field.
 | `RemoveServerRules` | instance id | Removes the inbound rules `AllowServerPorts` named for the instance, matched on the name the broker reads from the configuration; a removal sends it before the configuration forgets the server (`T400`) |
 | `RenameServerRules` | instance id | Relabels the instance's rules, found by the description `AllowServerPorts` gives them (`BedrockSentry server <id>`) or by the name, with the name the configuration gives it now; a rename sends it under the old name and again under the new one (`T411`) |
 | `UpdateServerRules` | instance id | Moves the instance's rules to the sockets its own `server.properties` names, adding one only where none is left to move and removing a leftover; refused when a socket is another server's or one `BrokerPortRules` refuses (`T411`) |
+| `ReadDeduplication` | none | Reads Data Deduplication's volume rows for the Storage table; Windows answers `MSFT_DedupVolume` only for an administrator and tells any other account "Generic failure" (`T434`) |
 
 The main service reaches the broker through the same seams the in-process code
 sits behind (`IFirewallService`, `IDefenderService`, `ILoopbackExemptionService`,
 `IVssServiceControl`, `IShadowCopyService`, `IOrphanInspector`,
-`IWrapperUpdateInstaller`). `--broker pipe` in the main service's ImagePath swaps in
+`IWrapperUpdateInstaller`, `IVolumeDeduplicationInspector`). `--broker pipe` in the main service's ImagePath swaps in
 the broker clients; without it the same seams run in the main service's process
 with its own account's rights.
 

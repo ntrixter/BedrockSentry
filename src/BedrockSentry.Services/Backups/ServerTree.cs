@@ -13,6 +13,9 @@ namespace BedrockSentry.Services.Backups;
 /// where Windows has it; this is the check that holds where it does not.</para>
 /// <para>A walk by name, so a server that is running can still make one after it. The
 /// callers walk a server they have stopped, or a folder only this service writes.</para>
+/// <para>A file Data Deduplication optimized is a reparse point but no link
+/// (<see cref="Security.ReparseTags"/>), so a server on a deduplicated volume is walked,
+/// and its files are then read through <see cref="ServerFileReader"/>.</para>
 /// </remarks>
 public static class ServerTree
 {
@@ -26,7 +29,7 @@ public static class ServerTree
             return null;
         }
 
-        if (top.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        if (Security.ReparseTags.IsLink(top))
         {
             return top.FullName;
         }
@@ -42,7 +45,7 @@ public static class ServerTree
         {
             foreach (var entry in folder.EnumerateFileSystemInfos("*", options))
             {
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                if (Security.ReparseTags.IsLink(entry))
                 {
                     return entry.FullName;
                 }
@@ -71,13 +74,13 @@ public static class ServerTree
             return null;
         }
 
-        if (top.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        if (Security.ReparseTags.IsLink(top))
         {
             return top.FullName;
         }
 
         return top.EnumerateFiles("*", new EnumerationOptions { AttributesToSkip = 0 })
-            .FirstOrDefault(file => file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            .FirstOrDefault(Security.ReparseTags.IsLink)
             ?.FullName;
     }
 
@@ -106,7 +109,7 @@ public static class ServerTree
     {
         try
         {
-            return File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
+            return Security.ReparseTags.Why(path) is not null;
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {

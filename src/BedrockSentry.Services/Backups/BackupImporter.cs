@@ -541,7 +541,7 @@ public sealed class BackupImporter
         {
             foreach (var entry in directory.EnumerateFileSystemInfos())
             {
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                if (Security.ReparseTags.IsLink(entry))
                 {
                     throw new InvalidDataException(
                         $"'{Path.GetRelativePath(root, entry.FullName)}' is a link to somewhere else, "

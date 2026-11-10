@@ -421,7 +421,7 @@ public sealed class AddonLibrary(ISentryPaths paths, ILogger<AddonLibrary> logge
             {
                 // A link is refused rather than followed or left out: followed, it copies
                 // whatever it points at into the shelf; left out, the copy is not the pack.
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                if (Security.ReparseTags.IsLink(entry))
                 {
                     return Rejected(
                         name,

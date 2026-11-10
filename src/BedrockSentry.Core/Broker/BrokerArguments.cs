@@ -57,6 +57,7 @@ public static partial class BrokerArguments
         BrokerOperation.Status => Field.None,
         BrokerOperation.ReadFirewallRules => Field.None,
         BrokerOperation.ReadLoopbackExemptions => Field.None,
+        BrokerOperation.ReadDeduplication => Field.None,
         BrokerOperation.CreateShadowCopy => Field.InstanceId,
         BrokerOperation.ReleaseShadowCopy => Field.ShadowId,
         BrokerOperation.FindOrphans => Field.InstanceId,

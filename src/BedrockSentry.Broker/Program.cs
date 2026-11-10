@@ -75,6 +75,7 @@ builder.Services.AddSingleton<ILoopbackExemptionService, AppIsolationInspector>(
 builder.Services.AddSingleton<IVssServiceControl, ReadinessInspector>();
 builder.Services.AddSingleton<IShadowCopyService, ShadowCopyService>();
 builder.Services.AddSingleton<IOrphanInspector, ProcessOrphanInspector>();
+builder.Services.AddSingleton<IDeduplicationReader, WmiVolumeDeduplicationInspector>();
 builder.Services.AddSingleton<IBrokerInstances, ConfiguredBrokerInstances>();
 builder.Services.AddSingleton<IReparseProbe, FileSystemReparseProbe>();
 builder.Services.AddSingleton<IFolderPin, WindowsFolderPin>();

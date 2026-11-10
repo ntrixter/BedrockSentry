@@ -556,6 +556,15 @@ h1:focus {
     background: var(--sentry-accent-wash);
 }
 
+/* The sentence under Install now and restart. .field-hint's negative top margin
+   pulled it over the button (`T435`); PanelMarkupTests keeps .field-hint off the
+   element after a form. */
+.update-apply-hint {
+    margin: 0.75rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
 /* A neutral, dismissible report at the top of a page. Deliberately not
    .update-failure, which is the danger palette, and not .update-available, whose
    name means something else entirely. Introduced for the removal report the Status

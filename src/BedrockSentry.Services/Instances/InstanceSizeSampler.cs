@@ -174,14 +174,20 @@ public sealed class InstanceSizeSampler
         {
             RecurseSubdirectories = true,
             IgnoreInaccessible = true,
-            AttributesToSkip = FileAttributes.ReparsePoint,
+            AttributesToSkip = 0,
         };
 
-        foreach (var file in Directory.EnumerateFiles(directory, "*", options))
+        // .NET does not recurse into a linked folder. A linked file is left out, and a
+        // deduplicated file, a reparse point that is its own storage, is counted
+        // (Security.ReparseTags).
+        foreach (var file in new DirectoryInfo(directory).EnumerateFiles("*", options))
         {
             try
             {
-                total += new FileInfo(file).Length;
+                if (!Security.ReparseTags.IsLink(file))
+                {
+                    total += file.Length;
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

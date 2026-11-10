@@ -48,6 +48,39 @@ public sealed record DeduplicationRow(
     string? LastOptimisationMessage);
 
 /// <summary>
+/// What the deduplication service answered, before any row is matched to a volume:
+/// its rows, or that the role is not installed, or why it could not be read.
+/// </summary>
+/// <remarks>
+/// The shape that crosses from the broker to the main service, which reads
+/// <c>MSFT_DedupVolume</c> only as an administrator: Windows answers any other
+/// caller with <c>WBEM_E_FAILED</c>, "Generic failure", not with access denied.
+/// </remarks>
+/// <param name="Installed">False when the role, and so its namespace, is absent.</param>
+/// <param name="Rows">Every volume the service knows of; empty when not installed or unread.</param>
+/// <param name="Error">Why it could not be read, or null when it was.</param>
+public sealed record DeduplicationReading(bool Installed, IReadOnlyList<DeduplicationRow> Rows, string? Error)
+{
+    public static DeduplicationReading NotInstalled { get; } = new(false, [], null);
+
+    public static DeduplicationReading Of(IReadOnlyList<DeduplicationRow> rows) => new(true, rows, null);
+
+    public static DeduplicationReading Unreadable(string error) => new(true, [], error);
+
+    /// <summary>One entry per root, keyed exactly as passed (<see cref="VolumeDeduplication.Assemble"/>).</summary>
+    public IReadOnlyDictionary<string, VolumeDeduplication> For(IReadOnlyCollection<string> volumeRoots) =>
+        Error is { } error
+            ? VolumeDeduplication.AssembleUnknown(volumeRoots, error)
+            : VolumeDeduplication.Assemble(volumeRoots, Installed ? Rows : null);
+}
+
+/// <summary>Reads the deduplication service's rows on this machine. Never throws.</summary>
+public interface IDeduplicationReader
+{
+    DeduplicationReading Read();
+}
+
+/// <summary>
 /// The one Windows call behind the storage section's deduplication column.
 /// </summary>
 /// <remarks>

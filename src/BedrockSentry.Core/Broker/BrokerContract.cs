@@ -95,6 +95,13 @@ public enum BrokerOperation
     /// now, rather than adding rules beside them (<c>T411</c>).
     /// </summary>
     UpdateServerRules = 18,
+
+    /// <summary>
+    /// Data Deduplication's volume rows, which Windows answers only an administrator,
+    /// telling any other caller "Generic failure". No arguments; the answer's JSON is a
+    /// <c>DeduplicationReading</c>.
+    /// </summary>
+    ReadDeduplication = 19,
 }
 
 /// <summary>Which folder <see cref="BrokerOperation.GrantFolder"/> grants.</summary>
@@ -194,7 +201,7 @@ public static class BrokerContract
     /// argument rule changes. Both executables ship in one <c>versions\&lt;id&gt;</c>
     /// folder, so a mismatch means a half-applied update or a hand-copied file.
     /// </summary>
-    public const int Version = 5;
+    public const int Version = 6;
 
     /// <summary>
     /// How both sides read and write the contract's messages. An unknown member is an

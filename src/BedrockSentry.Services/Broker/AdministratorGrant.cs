@@ -19,7 +19,8 @@ namespace BedrockSentry.Services.Broker;
 /// system folder, the install tree or a drive root by mistyping. The grant is written on
 /// the folder and inherited by everything in it, so the tree is walked first and refused
 /// whole on a link or a file with a second name: either would carry the grant to
-/// something outside the folder.</para>
+/// something outside the folder. A file Data Deduplication optimized is a reparse point
+/// but no link, and is granted and labelled like any other (<see cref="ReparseTags"/>).</para>
 /// <para>The entry <c>D124</c> gave the folder's own server identity
 /// (<see cref="ServerSandbox.SidFor"/>) is removed, which a low-integrity server needs
 /// (<c>T409</c>), and the folder labelled low; on a backups or packages folder there is
@@ -78,7 +79,7 @@ public static class AdministratorGrant
             if (entry.List is null)
             {
                 return new SystemCheckFix(false,
-                    $"'{entry.Path}' is a link, has a second name or could not be opened, so the grant on "
+                    $"'{entry.Path}' {entry.Why ?? "is a link, has a second name or could not be opened"}, so the grant on "
                     + $"'{pinned.Path}' might reach past it. Nothing was granted. Remove the link, or copy the folder's contents to a new "
                     + "folder, and run the command again.");
             }

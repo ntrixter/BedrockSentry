@@ -11,7 +11,9 @@ namespace BedrockSentry.Services.Security;
 /// </summary>
 /// <remarks>
 /// <para><c>FILE_FLAG_OPEN_REPARSE_POINT</c> opens a junction or symbolic link itself
-/// rather than what it points to, so a link is seen as one and refused.</para>
+/// rather than what it points to, so a link is seen as one and refused. A file Data
+/// Deduplication optimized is a reparse point too, but its own storage, and is held
+/// like any other file (<see cref="ReparseTags"/>).</para>
 /// <para><c>GetFinalPathNameByHandle</c> answers with the object's real name. A path
 /// that reached it some other way (a short 8.3 name, a trailing dot Windows trimmed, a
 /// junction or mount point higher up the path, an object-manager link) answers with a
@@ -66,9 +68,11 @@ internal static class PinnedHandle
             return $"'{full}' could not be read: {new Win32Exception().Message}";
         }
 
-        if ((information.FileAttributes & FileAttributeReparsePoint) != 0)
+        // A deduplicated file is a reparse point that is the file's own storage, not a
+        // way to somewhere else, so it is held as a plain file (ReparseTags).
+        if (ReparseTags.Why(handle, information.FileAttributes) is { } link)
         {
-            return $"'{full}' is a link to somewhere else.";
+            return $"'{full}' is {link}, a link to somewhere else.";
         }
 
         var isDirectory = (information.FileAttributes & FileAttributeDirectory) != 0;
@@ -127,7 +131,6 @@ internal static class PinnedHandle
     private const uint FileFlagBackupSemantics = 0x0200_0000;
     private const uint FileFlagOpenReparsePoint = 0x0020_0000;
     private const uint FileAttributeDirectory = 0x10;
-    private const uint FileAttributeReparsePoint = 0x400;
     private const uint FileNameNormalized = 0x0;
     private const uint VolumeNameDos = 0x0;
 

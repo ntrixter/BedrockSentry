@@ -67,11 +67,13 @@
         @* "Update channel", the same wording as the read-only value eight lines above
            and as the Status page (`T166`). It said "Track branch", which made one fact
            carry two names on one page - the other half of the defect that entry is
-           about, seen from the side where the word is right and the label is not. *@
+           about, seen from the side where the word is right and the label is not.
+           Saved on change (`T435`): with a Save button, Check for update below asked
+           the stored channel, not the one shown. *@
         <label class="field">
             <span>Update channel</span>
-            <select class="form-select" value="@wrapperChannel" disabled="@wrapperSaving"
-                    @onchange="e => wrapperChannel = Enum.Parse<UpdateChannel>(e.Value?.ToString() ?? nameof(UpdateChannel.Stable))">
+            <select class="form-select" value="@wrapperChannel" disabled="@(wrapperSaving || channelSaving)"
+                    @onchange="SaveChannelAsync">
                 <option value="@UpdateChannel.Stable">stable — tested, tagged releases</option>
                 <option value="@UpdateChannel.Build">build — the latest in-progress build</option>
             </select>
@@ -116,8 +118,11 @@
            The throttling that matters is in UpdateService, not in this
            attribute — the panel binds every interface, so a disabled button is
            a hint to one browser. *@
+        @* Held until the reload shows the picked channel, since the check reads the
+           stored one (`T435`). *@
         <button class="btn btn-secondary"
-                disabled="@(wrapperSaving || wrapperChecking || !Updates.SelfUpdateIsActive)"
+                disabled="@(wrapperSaving || channelSaving || wrapperChecking || !Updates.SelfUpdateIsActive
+                            || wrapperChannel != UpdateConfig.CurrentValue.Channel)"
                 @onclick="CheckWrapperNowAsync">
             @(wrapperChecking ? "Checking…" : "Check for a BedrockSentry update")
         </button>
@@ -178,7 +183,9 @@
                 <button type="submit" class="btn btn-primary">Install now and restart</button>
             </form>
 
-            <p class="field-hint">
+            @* Not .field-hint: its negative top margin pulled this text up over the
+               button (`T435`). *@
+            <p class="update-apply-hint">
                 The service stops and restarts. If the new build does not report healthy
                 within @((int)UpdateConfig.CurrentValue.HealthTimeout.TotalSeconds) seconds it is rolled
                 back automatically and this page comes back on the current version.
@@ -556,6 +563,7 @@ else
     private int wrapperIntervalHours = 6;
     private int wrapperWarningMinutes = 1;
     private bool wrapperSaving;
+    private bool channelSaving;
     private bool wrapperChecking;
     private string? wrapperMessage;
     private string? wrapperError;
@@ -566,8 +574,8 @@ else
         {
             var current = UpdateConfig.CurrentValue;
 
-            return wrapperChannel != current.Channel
-                || wrapperMode != current.Mode
+            // Not the channel: the picker saves it on change.
+            return wrapperMode != current.Mode
                 || wrapperIntervalHours != (int)Math.Round(current.CheckInterval.TotalHours)
                 || wrapperWarningMinutes != (int)Math.Round(current.PlayerWarning.TotalMinutes);
         }
@@ -717,6 +725,39 @@ else
         finally
         {
             wrapperSaving = false;
+        }
+    }
+
+    /// <remarks>
+    /// Writes the channel alone. UpdateService sees the reload and checks the new
+    /// channel itself when its cooldown allows; Last checked shows whether it did.
+    /// </remarks>
+    private async Task SaveChannelAsync(ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<UpdateChannel>(e.Value?.ToString(), out var picked) || picked == wrapperChannel)
+        {
+            return;
+        }
+
+        var previous = wrapperChannel;
+        wrapperChannel = picked;
+        channelSaving = true;
+        wrapperError = null;
+        wrapperMessage = null;
+
+        try
+        {
+            await UpdateSettings.SaveChannelAsync(picked);
+            wrapperMessage = $"Saved — now on the {picked.ToString().ToLowerInvariant()} channel.";
+        }
+        catch (Exception ex)
+        {
+            wrapperChannel = previous;
+            wrapperError = ex.Message;
+        }
+        finally
+        {
+            channelSaving = false;
         }
     }
 

@@ -17,6 +17,23 @@ a test server you have backups of.
 
 ---
 
+## 0.4.1 — 2026-11-10
+
+### Fixed
+- On Windows Server volumes with Data Deduplication, `install.ps1 -GrantFolder` refused
+  server, package and backup folders as holding links, and those servers could not start
+  or be backed up. Deduplicated files are now accepted; any other link is still refused.
+- The Storage table read *Could not be read: Generic failure* for every deduplicated
+  volume and logged a warning on each page load. The privilege broker now reads the rate.
+- `uninstall.ps1 -Confirm:$false` failed through `powershell.exe -File`; `-Force` skips
+  the question instead.
+- Settings → Wrapper updates: changing the update channel did nothing until **Save** was
+  clicked, so **Check for a BedrockSentry update** still asked the old channel. The channel
+  now saves as soon as it is picked.
+- The text under **Install now and restart** was drawn over the button.
+
+---
+
 ## 0.4.0 — 2026-11-10
 
 ### Added

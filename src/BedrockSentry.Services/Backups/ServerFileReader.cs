@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using BedrockSentry.Services.Security;
 using Microsoft.Win32.SafeHandles;
 
 namespace BedrockSentry.Services.Backups;
@@ -17,6 +18,10 @@ namespace BedrockSentry.Services.Backups;
 /// file is opened without following a link, and refused unless the handle's own name
 /// is the path asked for and the file has one name. Checked on the open handle, so
 /// nothing can be swapped in between the check and the read.</para>
+/// <para>A file Data Deduplication optimized is a reparse point that is its own storage,
+/// not a link (<see cref="ReparseTags"/>). It is read through a second handle opened
+/// the ordinary way, so the deduplication filter returns its contents, and only when
+/// that handle holds the same file as the one checked.</para>
 /// <para>Shared for reading, writing and deleting, as a running server needs: LevelDB
 /// appends to its current log while saves are held, and compacts and deletes the rest.</para>
 /// </remarks>
@@ -64,9 +69,16 @@ internal static class ServerFileReader
 
         try
         {
-            if (Refuse(full, handle) is { } why)
+            if (Refuse(full, handle, out var deduplicated) is { } why)
             {
                 throw new IOException(why);
+            }
+
+            if (deduplicated)
+            {
+                var contents = ReopenThroughTheFilter(full, handle);
+                handle.Dispose();
+                return new FileStream(contents, FileAccess.Read);
             }
 
             return new FileStream(handle, FileAccess.Read);
@@ -78,18 +90,60 @@ internal static class ServerFileReader
         }
     }
 
+    /// <summary>
+    /// A deduplicated file opened again without <c>FILE_FLAG_OPEN_REPARSE_POINT</c>, so its
+    /// reads go through the deduplication filter and return the file's contents rather
+    /// than its reparse point, refused unless it is the very file <paramref name="checkedHandle"/> holds.
+    /// </summary>
+    /// <remarks>
+    /// The second open follows a link, so the file is compared by volume and file index
+    /// with the handle already checked, which is still open: a link swapped in between
+    /// names another file and is refused.
+    /// </remarks>
     [SupportedOSPlatform("windows")]
-    private static string? Refuse(string full, SafeFileHandle handle)
+    private static SafeFileHandle ReopenThroughTheFilter(string full, SafeFileHandle checkedHandle)
     {
+        var handle = CreateFile(
+            full, GenericRead, FileShareRead | FileShareWrite | FileShareDelete, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
+
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new IOException($"'{full}' is a deduplicated file and could not be opened to read it: {new Win32Exception(error).Message}");
+        }
+
+        if (GetFileInformationByHandle(checkedHandle, out var expected)
+            && GetFileInformationByHandle(handle, out var opened)
+            && opened.VolumeSerialNumber == expected.VolumeSerialNumber
+            && opened.FileIndexHigh == expected.FileIndexHigh
+            && opened.FileIndexLow == expected.FileIndexLow)
+        {
+            return handle;
+        }
+
+        handle.Dispose();
+        throw new IOException($"'{full}' changed while it was opened, so it is not copied.");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string? Refuse(string full, SafeFileHandle handle, out bool deduplicated)
+    {
+        deduplicated = false;
+
         if (!GetFileInformationByHandle(handle, out var information))
         {
             return $"'{full}' could not be read: {new Win32Exception().Message}";
         }
 
-        if ((information.FileAttributes & FileAttributeReparsePoint) != 0)
+        // A deduplicated file is a reparse point that is the file's own storage, not a
+        // way to somewhere else (ReparseTags); every other reparse point is refused.
+        if (ReparseTags.Why(handle, information.FileAttributes) is { } link)
         {
-            return $"'{full}' is a link to somewhere else, so it is not copied.";
+            return $"'{full}' is {link}, so it is not copied.";
         }
+
+        deduplicated = (information.FileAttributes & FileAttributeReparsePoint) != 0;
 
         if (information.NumberOfLinks != 1)
         {

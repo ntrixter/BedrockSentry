@@ -15,8 +15,8 @@
     is printed at the end so anyone who genuinely wants it gone knows where to look.
 
     Before removing anything it lists what it will remove and what it keeps, and
-    asks; No is the default answer. -Confirm:$false skips the question and -WhatIf
-    stops after the list.
+    asks; No is the default answer. -Force or -Confirm:$false skips the question and
+    -WhatIf stops after the list.
 
     Exit codes: 0 removed, or nothing to remove; 1 partly removed (run it again),
     or refused with nothing removed; 2 declined at the question.
@@ -36,6 +36,11 @@
 .PARAMETER RemoveFirewallRule
     Also removes the inbound rule for the web UI, if install.ps1 created one.
 
+.PARAMETER Force
+    Skips the question, as -Confirm:$false does. Through powershell.exe -File the
+    $false in -Confirm:$false arrives as text and the switch refuses it, so a
+    script that runs this through -File passes -Force.
+
 .EXAMPLE
     .\uninstall.ps1
 #>
@@ -48,7 +53,9 @@ param(
 
     [string] $ServiceName = 'BedrockSentry',
 
-    [switch] $RemoveFirewallRule
+    [switch] $RemoveFirewallRule,
+
+    [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -266,7 +273,7 @@ if ($WhatIfPreference) {
 }
 
 if ($removals.Count -gt 0) {
-    $confirmedByCaller = $PSBoundParameters.ContainsKey('Confirm') -and -not $PSBoundParameters['Confirm']
+    $confirmedByCaller = $Force -or ($PSBoundParameters.ContainsKey('Confirm') -and -not $PSBoundParameters['Confirm'])
 
     if (-not $confirmedByCaller) {
         $choices = [System.Management.Automation.Host.ChoiceDescription[]] @(

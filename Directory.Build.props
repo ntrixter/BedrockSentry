@@ -35,7 +35,7 @@
       update". They are not interchangeable — on the build channel this prefix
       never moves, so comparing versions alone would never detect an update.
     -->
-    <VersionPrefix>0.4.0</VersionPrefix>
+    <VersionPrefix>0.4.1</VersionPrefix>
 
     <!--
       D114. Raised by one on a build an installed wrapper must not reach by

@@ -339,3 +339,73 @@ public sealed class BrokerWrapperUpdateInstaller(IBrokerChannel broker, IInstall
             : throw new InvalidOperationException(response.Message);
     }
 }
+
+/// <summary>
+/// <see cref="IVolumeDeduplicationInspector"/> with the read made by the broker, since
+/// Windows answers <c>MSFT_DedupVolume</c> only for an administrator and tells the
+/// service's own account "Generic failure".
+/// </summary>
+/// <remarks>
+/// <para>The Storage table asks on every render of the Status page. An answer is kept
+/// for <see cref="Fresh"/>: deduplication moves only when its optimization job runs,
+/// and a page reload is not a reason to ask the broker again.</para>
+/// <para>The caller is synchronous, so the request runs on the thread pool and is
+/// waited for there, never on the caller's synchronization context.</para>
+/// </remarks>
+public sealed class BrokerVolumeDeduplicationInspector(IBrokerChannel broker, TimeProvider time) : IVolumeDeduplicationInspector
+{
+    /// <summary>How long one answer is shown before the broker is asked again.</summary>
+    public static readonly TimeSpan Fresh = TimeSpan.FromMinutes(2);
+
+    private readonly object _gate = new();
+    private (DeduplicationReading Reading, DateTimeOffset At)? _last;
+
+    public IReadOnlyDictionary<string, VolumeDeduplication> Inspect(IReadOnlyCollection<string> volumeRoots) =>
+        Read().For(volumeRoots);
+
+    private DeduplicationReading Read()
+    {
+        lock (_gate)
+        {
+            if (_last is { } last && time.GetUtcNow() - last.At < Fresh)
+            {
+                return last.Reading;
+            }
+        }
+
+        var response = Task.Run(() => broker.SendAsync(
+            new BrokerRequest { Operation = BrokerOperation.ReadDeduplication })).GetAwaiter().GetResult();
+
+        var reading = Parse(response);
+
+        // A broker that did not answer is not remembered, so the next render asks again.
+        if (response.Succeeded)
+        {
+            lock (_gate)
+            {
+                _last = (reading, time.GetUtcNow());
+            }
+        }
+
+        return reading;
+    }
+
+    /// <summary>The broker's answer as a reading; a failure or an unreadable answer is said as one.</summary>
+    public static DeduplicationReading Parse(BrokerResponse response)
+    {
+        if (!response.Succeeded)
+        {
+            return DeduplicationReading.Unreadable($"The privilege broker did not read it: {response.Message}");
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<DeduplicationReading>(response.Json ?? string.Empty)
+                   ?? DeduplicationReading.Unreadable("The privilege broker answered with nothing.");
+        }
+        catch (JsonException ex)
+        {
+            return DeduplicationReading.Unreadable($"The privilege broker's answer could not be read: {ex.Message}");
+        }
+    }
+}
