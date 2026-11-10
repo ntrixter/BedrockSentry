@@ -1,0 +1,46 @@
+@* A pack's icon: its own, the companion's mark, or its initials; with no uuid, the
+   server's mark, for the one Add-ons tab issue that is about the server itself. Shared
+   by the Add-ons tab and the add-on library page, so the two draw one pack alike. *@
+@using BedrockSentry.Core.Addons
+@using BedrockSentry.Services.Addons
+
+@if (Uuid is null)
+{
+    <span class="addons-icon addons-icon-initials" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="7" rx="1.5"></rect>
+            <rect x="3" y="13" width="18" height="7" rx="1.5"></rect>
+            <path d="M7 7.5h.01M7 16.5h.01"></path>
+        </svg>
+    </span>
+}
+else if (CompanionPack.Is(Uuid) || CompanionPack.IsResource(Uuid))
+{
+    <span class="addons-icon addons-icon-companion" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"></path>
+            <path d="M8.5 12l2.5 2.5 4.5-5"></path>
+        </svg>
+    </span>
+}
+else if (Url is { } url)
+{
+    <img class="addons-icon" src="@url" alt="" loading="lazy" />
+}
+else
+{
+    <span class="addons-icon addons-icon-initials" aria-hidden="true">@AddonsTabText.Initials(Name)</span>
+}
+
+@code {
+    /// <summary>The pack's uuid, or null for the server itself.</summary>
+    [Parameter] public string? Uuid { get; set; }
+
+    /// <summary>What the initials are taken from.</summary>
+    [Parameter, EditorRequired] public string Name { get; set; } = "";
+
+    /// <summary>Where its own icon is served, or null when it has none.</summary>
+    [Parameter] public string? Url { get; set; }
+}

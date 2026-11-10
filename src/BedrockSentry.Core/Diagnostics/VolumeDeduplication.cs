@@ -28,10 +28,10 @@ public enum DeduplicationState
 /// <param name="Volume">As the service names it — <c>D:</c>, without the separator.</param>
 /// <param name="SavingsPercent">
 /// The whole-volume <c>SavingsRate</c>, never <c>OptimizedFilesSavingsRate</c>.
-/// The two have different denominators — the second counts only files in
-/// policy for optimisation — and the whole-volume figure is the one that
-/// belongs beside a free-space number with the same denominator. Showing the
-/// other unlabelled would be two correct numbers that disagree.
+/// The second counts only files in policy for optimisation. <c>SavingsRate</c> is
+/// <c>SavedSpace</c> over <c>SavedSpace</c> plus <c>UsedSpace</c>: a share of the
+/// data on the volume, not of its size, so a saving can exceed the volume (`T429`:
+/// 288.7 GB saved, 76%, on a 101 GB volume).
 /// </param>
 /// <param name="LastOptimisationSucceeded">
 /// <c>LastOptimizationResult == 0</c>. Deduplication is post-processing, so a
@@ -118,7 +118,17 @@ public sealed record VolumeDeduplication(
     public static bool ColumnWorthShowing(IEnumerable<VolumeDeduplication> volumes) =>
         volumes.Any(v => v.State != DeduplicationState.NotInstalled);
 
-    public string Describe(DateTimeOffset now) => State switch
+    /// <summary>
+    /// The Dedup. Rate cell: the reduction and the ratio, or the volume's state
+    /// when there is no saving to rate.
+    /// </summary>
+    /// <param name="usedBytes">
+    /// What the volume holds on disk (its size less its free space), which the
+    /// storage table already has. With it the rate is worked from the byte
+    /// counts, to a tenth (`T429`); without it, the service's whole-number
+    /// <c>SavingsRate</c>.
+    /// </param>
+    public string RateText(long usedBytes) => State switch
     {
         DeduplicationState.NotInstalled => "Not installed",
 
@@ -127,23 +137,57 @@ public sealed record VolumeDeduplication(
             : $"Could not be read: {Detail}",
 
         // Disabled after use: the data is still deduplicated until the volume
-        // is un-optimised, and saying only "not enabled" would hide a real
-        // number the free-space column depends on.
-        DeduplicationState.NotEnabled when SavedBytes > 0 =>
-            $"Disabled — {ByteSize.Format(SavedBytes)} still deduplicated",
+        // is un-optimized, and the Savings cell keeps that number on the page.
+        DeduplicationState.NotEnabled when SavedBytes > 0 => "Disabled",
 
         DeduplicationState.NotEnabled => "Not enabled",
 
         // Enabled, no job yet. Post-processing means nothing has happened until
-        // the schedule fires, and "saving 0 B (0%)" would read as broken.
-        DeduplicationState.Enabled when LastOptimised is null => "Enabled — not yet optimised",
+        // the schedule fires, and "0% (1.0x)" would read as broken.
+        DeduplicationState.Enabled when LastOptimised is null => "Enabled",
+
+        _ => Rate(usedBytes),
+    };
+
+    /// <summary>The Dedup. Savings cell: the bytes saved, or a dash.</summary>
+    public string SavingsText => State switch
+    {
+        DeduplicationState.NotEnabled when SavedBytes > 0 =>
+            $"{ByteSize.Format(SavedBytes)} still deduplicated",
+        DeduplicationState.Enabled when LastOptimised is not null => ByteSize.Format(SavedBytes),
+        _ => "—",
+    };
+
+    /// <summary>The Last Optimization cell.</summary>
+    public string LastOptimizationText(DateTimeOffset now) => State switch
+    {
+        DeduplicationState.Enabled when LastOptimised is null => "Not yet",
 
         DeduplicationState.Enabled when !LastOptimisationSucceeded =>
-            $"Last optimisation failed {Ago(now)}"
+            $"Failed {Ago(now)}"
             + (string.IsNullOrWhiteSpace(Detail) ? string.Empty : $": {Detail}"),
 
-        _ => $"Saving {ByteSize.Format(SavedBytes)} ({SavingsPercent}% of the volume), optimised {Ago(now)}",
+        DeduplicationState.Enabled => Ago(now),
+
+        _ => "—",
     };
+
+    // The service's SavingsRate is saved over saved plus used: a share of the data
+    // stored, not of the volume (`T429`). The ratio is logical size over size on disk.
+    private string Rate(long usedBytes)
+    {
+        if (usedBytes <= 0 || SavedBytes <= 0)
+        {
+            return $"{SavingsPercent}%";
+        }
+
+        var logical = (double)SavedBytes + usedBytes;
+        return string.Format(
+            System.Globalization.CultureInfo.InvariantCulture,
+            "{0:0.0}% ({1:0.0}x)",
+            SavedBytes / logical * 100,
+            logical / usedBytes);
+    }
 
     private string Ago(DateTimeOffset now)
     {

@@ -136,6 +136,24 @@
                 ? $"{Outcome.PlayerRecordsForgotten} player records were erased."
                 : "No player records were stored for it, so none were erased.")
         </li>
+        @* `T400`. Only when asked, and a failure says what is still open. *@
+        @if (Outcome.FirewallRules is { } rules)
+        {
+            <li>
+                @if (rules.Succeeded)
+                {
+                    <text>Firewall: @rules.Message</text>
+                }
+                else
+                {
+                    <text>
+                        <strong>Its firewall rules were not removed:</strong> @rules.Message
+                        Any inbound rule named "BedrockSentry - @Outcome.Name (…)" still
+                        holds its port open; delete it in Windows Defender Firewall.
+                    </text>
+                }
+            </li>
+        }
     </ul>
     <button class="btn btn-secondary" @onclick="OnDismiss">Dismiss</button>
 </div>

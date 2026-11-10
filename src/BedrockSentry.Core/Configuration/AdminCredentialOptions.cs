@@ -45,7 +45,42 @@ public sealed class AdminCredentialOptions
     /// <summary>When the credential was last set. Informational.</summary>
     public DateTimeOffset? UpdatedUtc { get; set; }
 
+    /// <summary>
+    /// The authenticator-app second step (<c>D125</c>), or null when it is off.
+    /// </summary>
+    public AdminMfaOptions? Mfa { get; set; }
+
+    /// <summary>True when sign-in asks for an authenticator code after the password.</summary>
+    public bool MfaEnabled => !string.IsNullOrWhiteSpace(Mfa?.Secret);
+
     /// <summary>True when a usable credential is present.</summary>
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(Username) && !string.IsNullOrWhiteSpace(PasswordHash);
+}
+
+/// <summary>
+/// The stored half of the authenticator-app second step, bound from
+/// <c>Sentry:Admin:Mfa</c> (<c>D125</c>).
+/// </summary>
+/// <remarks>
+/// Under <c>Sentry:Admin</c> so it lives in <c>auth.json</c> and the settings export
+/// leaves it out for the same structural reason it leaves out the password hash.
+/// </remarks>
+public sealed class AdminMfaOptions
+{
+    /// <summary>
+    /// The shared secret, encrypted with the host's data-protection key ring. Unlike the
+    /// password it cannot be hashed: the host has to compute the same codes the phone
+    /// does.
+    /// </summary>
+    public string? Secret { get; set; }
+
+    /// <summary>
+    /// SHA-256 hashes of the unused recovery codes, hex, separated by <c>;</c>. One
+    /// string rather than an array, so a used code's removal is a plain value write.
+    /// </summary>
+    public string? RecoveryCodes { get; set; }
+
+    /// <summary>When the second step was switched on. Informational.</summary>
+    public DateTimeOffset? EnabledUtc { get; set; }
 }

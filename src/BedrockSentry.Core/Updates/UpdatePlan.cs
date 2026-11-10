@@ -24,6 +24,18 @@ public sealed class UpdatePlan
     [JsonPropertyName("serviceName")]
     public string ServiceName { get; set; } = "BedrockSentry";
 
+    /// <summary>
+    /// The privilege broker's service, stopped after the main service and started
+    /// before it; empty when there is none.
+    /// </summary>
+    /// <remarks>
+    /// Both executables run from the one <c>current</c> junction, so one flip moves
+    /// both contract versions and a rollback moves both back. A broker left running
+    /// across the flip would answer the new main service with the old contract.
+    /// </remarks>
+    [JsonPropertyName("brokerServiceName")]
+    public string BrokerServiceName { get; set; } = string.Empty;
+
     /// <summary>Install root holding <c>versions\</c> and the <c>current</c> junction.</summary>
     [JsonPropertyName("installRoot")]
     public string InstallRoot { get; set; } = string.Empty;

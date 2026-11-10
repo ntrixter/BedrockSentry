@@ -15,6 +15,12 @@ public enum StopReason
 
     /// <summary>Coming down so a backup can be applied over the world.</summary>
     Restore,
+
+    /// <summary>Coming down so another server's world can be copied in and Sync Areas put back (<c>D103</c>).</summary>
+    Sync,
+
+    /// <summary>Coming down so one area can be put back from a backup (<c>D108</c>).</summary>
+    AreaRestore,
 }
 
 /// <summary>
@@ -42,9 +48,11 @@ public enum StopReason
 /// shortening the lead should not require also editing the list.
 /// </param>
 /// <param name="DrainBudget">
-/// How long BDS gets to exit after <c>stop</c> before it is killed. The spike
-/// measured a real stop at 422 ms, so this is generous by design — the cost of
-/// being wrong is a killed server mid-save.
+/// How long the stop has from the end of the countdown until BDS is killed. It
+/// covers asking the companion pack where everyone is (<c>D35</c>, at most a
+/// quarter of it), then <c>stop</c> and the exit. The spike measured a real stop
+/// at 422 ms, so this is generous by design — the cost of being wrong is a
+/// killed server mid-save.
 /// </param>
 public sealed record GracefulStopRequest(
     StopReason Reason,
@@ -168,9 +176,14 @@ public static class CountdownMessage
                 : $"restarting to update Minecraft {version.Trim()}",
             StopReason.WrapperUpdate => "restarting to update BedrockSentry",
             StopReason.Restore => "restarting to restore a backup",
+            StopReason.Sync => "restarting to sync its world",
+            StopReason.AreaRestore => "restarting to restore an area",
             _ => "shutting down",
         };
 
         return $"say Server {what} in {Describe(remaining)}";
     }
+
+    /// <summary>The <c>say</c> line for a countdown called off before the stop (<c>D100</c>).</summary>
+    public static string CalledOff() => "say Server restart called off. The server stays up.";
 }

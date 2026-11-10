@@ -1,6 +1,7 @@
 using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Text.Json;
+using BedrockSentry.Core.Broker;
 using BedrockSentry.Core.Diagnostics;
 using Microsoft.Extensions.Logging;
 
@@ -23,7 +24,7 @@ namespace BedrockSentry.Services.Diagnostics;
 /// never reported as "not set up", a fix only where there is genuinely something
 /// to do, and the fix says what it will change before it is pressed.
 /// </remarks>
-public sealed class ReadinessInspector
+public sealed class ReadinessInspector : IVssServiceControl
 {
     private readonly IPowerShellRunner _powerShell;
     private readonly ILogger<ReadinessInspector> _log;
@@ -34,11 +35,26 @@ public sealed class ReadinessInspector
         _log = log;
     }
 
-    /// <summary>What the machine said about the Volume Shadow Copy service.</summary>
-    public sealed record VssState(bool Read, string Json, string Error);
-
     public const string VssTitle = "Volume Shadow Copy service";
     public const string PrivilegeTitle = "Service account";
+
+    /// <summary>The self-update row's name.</summary>
+    public const string SelfUpdateTitle = "Self-update";
+
+    /// <summary>
+    /// Whether this install can update itself: <paramref name="inactiveReason"/> is
+    /// <c>UpdateService.InactiveReason</c>, null when it can.
+    /// </summary>
+    /// <remarks>
+    /// Missing rather than Unknown when it cannot: the reason is known, and it is one
+    /// no button here changes. A service under its own account updates only through
+    /// the privilege broker, so with the broker off the row says so here instead of an
+    /// update failing later with a sentence about access.
+    /// </remarks>
+    public static SystemCheck CheckSelfUpdate(string? inactiveReason) =>
+        inactiveReason is null
+            ? new SystemCheck(SelfUpdateTitle, SystemCheckState.Good, "This install can download and apply its own updates.")
+            : new SystemCheck(SelfUpdateTitle, SystemCheckState.Missing, inactiveReason, CanFix: false);
 
     /// <summary>
     /// Reads the VSS service's status and start type, once.
@@ -149,67 +165,73 @@ public sealed class ReadinessInspector
     }
 
     /// <summary>
-    /// Whether the account the wrapper runs as can do the things it offers.
+    /// Who does the administrative work this panel offers, and whether it can now
+    /// (milestone 18.5): the privilege broker, or this process itself.
     /// </summary>
     /// <remarks>
-    /// A report, never a fix. A process cannot grant itself privileges it does
-    /// not have, and a button implying otherwise would be a lie — the answer is
-    /// to reinstall the service under an account that has them, which is a
-    /// decision rather than a click.
-    ///
-    /// This matters more than it looks. Run under a plain user account, the
-    /// wrapper still starts, still serves the panel and still runs servers — and
-    /// then every firewall fix, every Defender exclusion and every snapshot
-    /// backup fails, each with its own unrelated-looking error. One row saying
-    /// why is worth more than three checks reporting <c>Unknown</c>.
+    /// <para>A report, never a fix. A process cannot grant itself privileges, and the
+    /// broker is installed or left out by <c>install.ps1</c>, which is a decision
+    /// rather than a click.</para>
+    /// <para>Listed first because it explains the rows below it. Without the broker, or
+    /// with one that does not answer, every firewall fix, Defender exclusion and
+    /// snapshot backup fails, each with its own unrelated-looking error; one row
+    /// saying why is worth more than three reporting <c>Unknown</c>.</para>
     /// </remarks>
-    public static SystemCheck CheckPrivileges()
+    /// <param name="account">This process's account, or null off Windows.</param>
+    /// <param name="mode">Where the work runs, from the service's command line.</param>
+    /// <param name="brokerService">The broker service's name.</param>
+    /// <param name="answer">
+    /// The broker's answer to <see cref="BrokerOperation.Status"/>; read only in
+    /// <see cref="BrokerMode.Pipe"/>.
+    /// </param>
+    public static SystemCheck CheckPrivileges(
+        ProcessAccount? account, BrokerMode mode, string brokerService, BrokerResponse? answer)
     {
-        if (!OperatingSystem.IsWindows())
+        if (account is null)
         {
             return new SystemCheck(
                 PrivilegeTitle, SystemCheckState.Unknown,
                 "Not running on Windows, so there is nothing to check.");
         }
 
-        return CheckWindowsPrivileges();
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static SystemCheck CheckWindowsPrivileges()
-    {
-        try
+        if (mode is BrokerMode.Pipe)
         {
-            using var identity = WindowsIdentity.GetCurrent();
-            var principal = new WindowsPrincipal(identity);
-            var name = identity.Name ?? "an unnamed account";
-
-            if (principal.IsInRole(WindowsBuiltInRole.Administrator))
-            {
-                return new SystemCheck(
+            return answer is { Succeeded: true }
+                ? new SystemCheck(
                     PrivilegeTitle, SystemCheckState.Good,
-                    $"Running as {name}, which can add firewall rules, set Defender exclusions "
-                    + "and take shadow copies.");
-            }
+                    $"Running as {account.Name}. The firewall, Defender and loopback fixes, shadow copies "
+                    + $"and self-update are done by the {brokerService} service, which is answering.")
+                : new SystemCheck(
+                    PrivilegeTitle, SystemCheckState.Missing,
+                    $"Running as {account.Name}. The {brokerService} service does this install's "
+                    + $"administrative work, and asking it failed: {answer?.Message ?? "it was not asked."} "
+                    + "Until it does, the fixes on this page, shadow-copy backups and self-update fail. "
+                    + $"Start {brokerService} from Services, or run install.ps1 again.",
+                    CanFix: false);
+        }
 
-            return new SystemCheck(
-                PrivilegeTitle,
-                SystemCheckState.Missing,
-                $"Running as {name}, which is not an administrator. Servers will run, but the "
-                + "firewall and Defender fixes on this page and Volume Shadow Copy backups will "
-                + "all fail. Reinstall the service under LocalSystem or an administrator account "
-                + "to change this.",
-                // No fix. A process cannot grant itself privileges, and a button
-                // that pretended to would be worse than none.
-                CanFix: false);
-        }
-        catch (Exception ex)
+        return account.IsAdministrator switch
         {
-            return new SystemCheck(
+            true => new SystemCheck(
+                PrivilegeTitle, SystemCheckState.Good,
+                $"Running as {account.Name}, which can add firewall rules, set Defender exclusions "
+                + "and take shadow copies."),
+            false => new SystemCheck(PrivilegeTitle, SystemCheckState.Missing, NoBrokerReason(account), CanFix: false),
+            null => new SystemCheck(
                 PrivilegeTitle, SystemCheckState.Unknown,
-                $"Could not read the account this is running as. {ex.Message}");
-        }
+                "Could not read the account this service runs as, so whether it can add firewall "
+                + "rules, set Defender exclusions and take shadow copies is unknown."),
+        };
     }
+
+    /// <summary>
+    /// Why the administrative fixes cannot run in this process: an install left without
+    /// the broker (<c>-NoBroker</c>), under an account that is not an administrator.
+    /// </summary>
+    public static string NoBrokerReason(ProcessAccount account) =>
+        $"Running as {account.Name} without the privilege broker. Servers and backups run, but the "
+        + "firewall, Defender and loopback fixes, shadow-copy backups and self-update need it. Run "
+        + "install.ps1 again without -NoBroker to turn them on.";
 
     /// <summary>The row's name, needed before its answer arrives.</summary>
     public static string PortTitle(string label) => $"Port availability — {label}";
@@ -224,9 +246,29 @@ public sealed class ReadinessInspector
     /// installed, a second instance created — is exactly the kind that presents
     /// as a crash loop with no mention of ports anywhere.
     /// </remarks>
-    public static SystemCheck CheckPorts(string label, IReadOnlyList<Instances.PortConflict> conflicts)
+    /// <param name="unreadable">
+    /// Why this instance's <c>server.properties</c> could not be read, when it
+    /// could not (<c>T210</c>). Null otherwise.
+    /// </param>
+    public static SystemCheck CheckPorts(
+        string label, IReadOnlyList<Instances.PortConflict> conflicts, string? unreadable = null)
     {
         var title = PortTitle(label);
+
+        // Before anything else, because an empty conflict list is what a failed
+        // read produces and it is indistinguishable from a clean one (`T210`).
+        // "Its ports are free." was rendered against a port a foreign process
+        // demonstrably held, on an instance whose file something else had open —
+        // a green assurance about ports nothing managed to look up. Unknown is the
+        // honest answer and it is the state this panel already has for it.
+        if (!string.IsNullOrWhiteSpace(unreadable))
+        {
+            return new SystemCheck(
+                title,
+                SystemCheckState.Unknown,
+                "Could not read this server's server.properties, so which ports it wants is "
+                + $"unknown and nothing about them has been checked. {unreadable}");
+        }
 
         if (conflicts.Count == 0)
         {

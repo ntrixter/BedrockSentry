@@ -1,0 +1,278 @@
+@* One pack's settings: the controls it declares, the values this world
+   overrides, and a save that is validated whole (D81, T257). *@
+
+@using System.Globalization
+@using BedrockSentry.Core.Addons
+@using BedrockSentry.Services.Addons
+
+<div class="addon-gear">
+    @foreach (var setting in Schema.Settings)
+    {
+        @if (setting.Kind == PackSettingKind.Label)
+        {
+            @* A label is the author's text for the game. A short one groups the
+               controls after it; a long one explains the control before it. *@
+            @if (PackSettingsText.IsHeading(setting.Text))
+            {
+                <div class="addon-gear-section">@PackSettingsText.Plain(setting.Text)</div>
+            }
+            else
+            {
+                <p class="addon-gear-help">@PackSettingsText.Plain(setting.Text)</p>
+            }
+        }
+        else if (setting.Name is { Length: > 0 } key)
+        {
+            <div class="addon-gear-row">
+                @if (setting.Kind == PackSettingKind.Multiselect)
+                {
+                    <label>@(PackSettingsText.Plain(setting.Text) ?? key)</label>
+                }
+                else
+                {
+                    <label for="@Id(key)">@(PackSettingsText.Plain(setting.Text) ?? key)</label>
+                }
+
+                @switch (setting.Kind)
+                {
+                    case PackSettingKind.Toggle:
+                        <input id="@Id(key)" type="checkbox" class="form-check-input" disabled="@ReadOnly"
+                               checked="@(Flag(key, setting))"
+                               @onchange="e => SetFlagAsync(key, e)" />
+                        break;
+
+                    case PackSettingKind.Slider:
+                        <input id="@Id(key)" type="number" class="form-control form-control-sm num" disabled="@ReadOnly"
+                               min="@Invariant(setting.Min)" max="@Invariant(setting.Max)"
+                               step="@Invariant(setting.Step ?? 1)"
+                               value="@Invariant(Number(key, setting))"
+                               @onchange="e => SetNumberAsync(key, e)" />
+                        break;
+
+                    case PackSettingKind.Dropdown:
+                        <select id="@Id(key)" class="form-select form-select-sm" disabled="@ReadOnly"
+                                value="@(Text(key, setting))"
+                                @onchange="e => SetTextAsync(key, e)">
+                            @foreach (var option in setting.Options)
+                            {
+                                <option value="@option.Name" selected="@(Text(key, setting) == option.Name)">
+                                    @(PackSettingsText.Plain(option.Text) ?? option.Name)
+                                </option>
+                            }
+                        </select>
+                        break;
+
+                    case PackSettingKind.Multiselect:
+                        @* Measured on BDS 1.26.51.1: neither spelling of a
+                           multiselect override works. The array form is rejected
+                           and takes every pack's settings in the world with it;
+                           the comma-joined string is accepted, applies nothing
+                           and says nothing. So this shows what the pack does by
+                           default and offers no way to change it. *@
+                        <div class="addon-gear-fixed">
+                            <span>
+                                @(setting.DefaultSelection.Count == 0
+                                    ? "nothing selected"
+                                    : string.Join(", ", setting.DefaultSelection))
+                            </span>
+                            <span class="check-detail">
+                                As the add-on ships it: this Bedrock build cannot change a multi-select.
+                            </span>
+                        </div>
+                        break;
+                }
+            </div>
+        }
+    }
+
+    @if (stale.Count > 0)
+    {
+        <p class="check-detail">
+            This world holds values for @string.Join(", ", stale), which this version of
+            the add-on no longer has. Saving removes them.
+        </p>
+    }
+
+    @if (problems.Count > 0)
+    {
+        @* Named per value, and a problem may name a pack other than this one:
+           the whole file is checked because one bad value discards all of it. *@
+        <div class="console-fault">
+            <strong>Nothing was saved.</strong>
+            <ul>
+                @foreach (var problem in problems)
+                {
+                    <li>@problem.Detail</li>
+                }
+            </ul>
+        </div>
+    }
+    else if (refusal is { Length: > 0 })
+    {
+        <p class="console-fault">@refusal</p>
+    }
+
+    <div class="addon-gear-actions">
+        <button class="btn btn-sm btn-primary" disabled="@(ReadOnly || !changed)" @onclick="SaveAsync">
+            Save settings
+        </button>
+        @if (changed)
+        {
+            <button class="btn btn-sm btn-secondary" disabled="@ReadOnly" @onclick="UndoAsync">
+                Undo
+            </button>
+        }
+        <span class="@(changed ? "addon-gear-note" : Pending is not null ? "addon-gear-note addon-gear-queued" : saved ? "addon-gear-note addon-gear-saved" : "addon-gear-note")">@Note</span>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string PackId { get; set; } = default!;
+    [Parameter, EditorRequired] public PackSettingsSchema Schema { get; set; }
+    [Parameter, EditorRequired] public PackSettingsEntry? Current { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+
+    /// <summary>
+    /// The values queued for this pack until the server stops (<c>D85</c>), shown in place of
+    /// <see cref="Current"/>, or null when nothing is queued.
+    /// </summary>
+    [Parameter] public IReadOnlyDictionary<string, PackSettingValue>? Pending { get; set; }
+
+    /// <summary>Whether a save now is queued rather than written (<c>D85</c>).</summary>
+    [Parameter] public bool Waits { get; set; }
+
+    /// <summary>Told when this pack starts or stops having unsaved changes.</summary>
+    [Parameter] public EventCallback<bool> DirtyChanged { get; set; }
+
+    [Parameter, EditorRequired]
+    public Func<string, IReadOnlyDictionary<string, PackSettingValue>, Task<SettingsSaveResult>>
+        Save { get; set; } = default!;
+
+    private readonly Dictionary<string, PackSettingValue> edited = new(StringComparer.Ordinal);
+    private readonly List<string> stale = [];
+    private IReadOnlyList<SettingsWriteProblem> problems = [];
+    private string? refusal;
+    private bool changed;
+    private bool saved;
+
+    private string Note =>
+        changed ? (Waits ? "Not saved yet. A save waits until the server stops." : "Not saved yet.")
+        : Pending is not null ? AddonsTabText.SettingsQueued
+        : saved ? "Saved. The server reads these when it next starts."
+        : "Applies when the server next starts.";
+
+    protected override void OnParametersSet()
+    {
+        if (!changed)
+        {
+            Revert();
+        }
+    }
+
+    private void Revert()
+    {
+        edited.Clear();
+        stale.Clear();
+
+        foreach (var (key, value) in Pending ?? Current?.Values ?? new Dictionary<string, PackSettingValue>())
+        {
+            // A value for a control this version of the pack no longer declares.
+            // Keeping it would refuse every future save as an unknown setting;
+            // dropping it without saying so loses a value nobody was told about.
+            if (Schema.Find(key) is null)
+            {
+                stale.Add(key);
+                continue;
+            }
+
+            edited[key] = value;
+        }
+
+        changed = false;
+        problems = [];
+        refusal = null;
+    }
+
+    private async Task UndoAsync()
+    {
+        Revert();
+        await DirtyChanged.InvokeAsync(false);
+    }
+
+    private static string Invariant(double? value) =>
+        value?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private string Id(string key) => $"gear-{PackId}-{key}";
+
+    private bool Flag(string key, PackSetting setting) =>
+        edited.TryGetValue(key, out var value) && value is PackSettingValue.Toggle toggle
+            ? toggle.Value
+            : setting.DefaultToggle ?? false;
+
+    private double Number(string key, PackSetting setting) =>
+        edited.TryGetValue(key, out var value) && value is PackSettingValue.Number number
+            ? number.Value
+            : setting.DefaultNumber ?? setting.Min ?? 0;
+
+    private string Text(string key, PackSetting setting) =>
+        edited.TryGetValue(key, out var value) && value is PackSettingValue.Text text
+            ? text.Value
+            : setting.DefaultText ?? setting.Options.FirstOrDefault()?.Name ?? string.Empty;
+
+    private Task SetFlagAsync(string key, ChangeEventArgs e)
+    {
+        edited[key] = new PackSettingValue.Toggle(e.Value is true);
+        return TouchedAsync();
+    }
+
+    private Task SetNumberAsync(string key, ChangeEventArgs e)
+    {
+        // A value the browser will not give as a number is left alone rather
+        // than written as zero: silently replacing somebody's setting with a
+        // number they did not type is worse than ignoring the keystroke.
+        if (double.TryParse(
+                e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+        {
+            edited[key] = new PackSettingValue.Number(number);
+            return TouchedAsync();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task SetTextAsync(string key, ChangeEventArgs e)
+    {
+        edited[key] = new PackSettingValue.Text(e.Value?.ToString() ?? string.Empty);
+        return TouchedAsync();
+    }
+
+    private async Task TouchedAsync()
+    {
+        var was = changed;
+
+        changed = true;
+        saved = false;
+        problems = [];
+        refusal = null;
+
+        if (!was)
+        {
+            await DirtyChanged.InvokeAsync(true);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        var result = await Save(PackId, edited);
+
+        problems = result.Problems;
+        refusal = result.Reason;
+        saved = result.Saved || result.Queued;
+
+        if (saved)
+        {
+            changed = false;
+            await DirtyChanged.InvokeAsync(false);
+        }
+    }
+}

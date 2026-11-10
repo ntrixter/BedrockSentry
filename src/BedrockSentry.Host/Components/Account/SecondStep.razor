@@ -1,0 +1,150 @@
+@page "/account/second-step"
+@layout BedrockSentry.Host.Components.Layout.EmptyLayout
+@attribute [AllowAnonymous]
+
+@using System.ComponentModel.DataAnnotations
+@using BedrockSentry.Core.Security
+@using BedrockSentry.Services.Security
+@using Microsoft.AspNetCore.Authentication
+@using Microsoft.AspNetCore.Authentication.Cookies
+
+@inject IAdminCredentialService Credentials
+@inject IAdminMfaService Mfa
+@inject SignInThrottle Throttle
+@inject TimeProvider Time
+@inject NavigationManager Navigation
+
+<PageTitle>Authenticator code · BedrockSentry</PageTitle>
+
+@* D125. Reached only with the half-signed-in cookie the password step issues; that
+   cookie opens this page and nothing else. *@
+<div class="auth-shell">
+    <div class="auth-card">
+        <h1>BedrockSentry</h1>
+        <p class="auth-subtitle">Enter the six-digit code from your authenticator app.</p>
+
+        <EditForm Model="Input" method="post" OnValidSubmit="CheckAsync" FormName="second-step">
+            <DataAnnotationsValidator />
+
+            @if (message is not null)
+            {
+                <div class="auth-error" role="alert">@message</div>
+            }
+
+            <label>
+                <span>Code</span>
+                <InputText @bind-Value="Input!.Code" autocomplete="one-time-code" inputmode="numeric"
+                           class="form-control" autofocus />
+            </label>
+            <ValidationMessage For="() => Input!.Code" />
+
+            <p class="auth-hint">
+                Lost your phone? Type one of your recovery codes here instead. Each works once.
+            </p>
+
+            <button type="submit" class="btn btn-primary auth-submit">Sign in</button>
+        </EditForm>
+
+        <p class="auth-hint"><a href="/account/login">Start again</a></p>
+    </div>
+
+    <p class="auth-build">@BuildInfo.Identity</p>
+</div>
+
+@code {
+    private string? message;
+
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    [SupplyParameterFromForm]
+    private CodeModel? Input { get; set; }
+
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    private string? ReturnUrl { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Input ??= new();
+
+        if (await PendingAsync() is null)
+        {
+            Navigation.NavigateTo("/account/login");
+        }
+    }
+
+    private async Task<PendingSignIn?> PendingAsync()
+    {
+        var result = await HttpContext.AuthenticateAsync(SecondStepSignIn.Scheme);
+
+        return result.Succeeded
+            ? SecondStepSignIn.Read(result.Principal, Credentials.Current.SecurityStamp)
+            : null;
+    }
+
+    private async Task CheckAsync()
+    {
+        var pending = await PendingAsync();
+
+        if (pending is null)
+        {
+            Navigation.NavigateTo("/account/login");
+            return;
+        }
+
+        // Per address, and once for every address together: reaching this page means
+        // the password is known (SignInThrottle says why both).
+        var keys = new[]
+        {
+            SignInThrottle.CodeKey(HttpContext.Connection.RemoteIpAddress?.ToString()),
+            SignInThrottle.SecondStepKey,
+        };
+
+        if (Throttle.RefusedUntil(keys) is { } until)
+        {
+            message = SignInThrottle.RefusalMessage(until, Time.GetUtcNow());
+            return;
+        }
+
+        var check = await Mfa.VerifyAsync(Input!.Code);
+
+        switch (check)
+        {
+            case MfaCheck.Accepted:
+            case MfaCheck.AcceptedRecoveryCode:
+                break;
+
+            case MfaCheck.SecretUnreadable:
+                Throttle.RecordFailure(keys);
+                message = "This server can no longer read its authenticator secret. Sign in with a "
+                    + "recovery code, then set the authenticator up again in Settings.";
+                return;
+
+            default:
+                Throttle.RecordFailure(keys);
+                message = "That code was not accepted. Codes change every 30 seconds, and each works once.";
+                return;
+        }
+
+        Throttle.RecordSuccess(keys);
+
+        await HttpContext.SignOutAsync(SecondStepSignIn.Scheme);
+
+        // The stamp as it is now: a used recovery code writes a new one, and the
+        // cookie has to carry the stamp it will be checked against.
+        var current = Credentials.Current;
+
+        await HttpContext.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            SecondStepSignIn.SignedIn(current.Username ?? pending.Username, current.SecurityStamp),
+            SignInLifetime.For(pending.Remember, DateTimeOffset.UtcNow));
+
+        Navigation.NavigateTo(SecondStepSignIn.SafeReturnUrl(ReturnUrl));
+    }
+
+    private sealed class CodeModel
+    {
+        [Required(ErrorMessage = "Enter the code.")]
+        public string Code { get; set; } = string.Empty;
+    }
+}

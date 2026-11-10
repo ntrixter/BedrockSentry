@@ -1,0 +1,25 @@
+@* The players-online bar and count. The control row above every tab and the Status
+   tab's Players card both draw it, so the bar, the number and the full colour follow
+   one set of rules (OnlineMeter) rather than two copies of markup. *@
+
+@using BedrockSentry.Core.Players
+
+@if (OnlineMeter.HasBar(MaxPlayers))
+{
+    <span class="meter" role="img" aria-label="@OnlineMeter.AriaLabel(Online, MaxPlayers)">
+        <i style="width:@OnlineMeter.FillWidth(Online, MaxPlayers)"
+           class="@(OnlineMeter.IsFull(Online, MaxPlayers) ? "meter-full" : null)"></i>
+    </span>
+}
+
+<span class="meter-label">@OnlineMeter.Label(Online, MaxPlayers)</span>
+
+@code {
+    /// <summary>Everybody online, operators included.</summary>
+    [Parameter, EditorRequired]
+    public int Online { get; set; }
+
+    /// <summary>The server's <c>max-players</c>; null when unset or unreadable, which draws the count alone.</summary>
+    [Parameter]
+    public int? MaxPlayers { get; set; }
+}

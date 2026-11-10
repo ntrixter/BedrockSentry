@@ -76,6 +76,7 @@ public sealed class ConfigArchive
         BdsUpdateOptions.SectionName,
         UpdateOptions.SectionName,
         HostDetailsOptions.SectionName,
+        PlayerFacesOptions.SectionName,
 
         // Machine-specific paths, like the per-instance WorkingDirectory the
         // Instances section already carries. A file imported onto a box whose

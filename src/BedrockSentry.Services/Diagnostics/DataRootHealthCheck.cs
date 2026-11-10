@@ -18,19 +18,23 @@ namespace BedrockSentry.Services.Diagnostics;
 /// value of this check is catching the cases where the path looks fine and the
 /// write fails. The probe file is created and deleted in the same call and is
 /// named so that one left behind is recognisable rather than mysterious.</para>
+///
+/// <para>The write is <see cref="DataRootProbe"/>'s, at most once per
+/// <see cref="DataRootProbe.Interval"/>, never once per request: <c>/readyz</c> is
+/// anonymous, and a request must not be a way to make the service write.</para>
 /// </remarks>
 public sealed class DataRootHealthCheck : IHealthCheck
 {
     /// <summary>The name this check reports under, in the JSON and in registration.</summary>
     public const string CheckName = "data-root";
 
-    private readonly ISentryPaths _paths;
+    private readonly DataRootProbe _probe;
 
-    public DataRootHealthCheck(ISentryPaths paths) => _paths = paths;
+    public DataRootHealthCheck(DataRootProbe probe) => _probe = probe;
 
     public Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context, CancellationToken cancellationToken = default) =>
-        Task.FromResult(Evaluate(_paths.DataRoot));
+        Task.FromResult(_probe.Current());
 
     /// <summary>
     /// The rule, taking a path so a test can point it at a directory it controls.
@@ -77,6 +81,50 @@ public sealed class DataRootHealthCheck : IHealthCheck
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
             }
+        }
+    }
+}
+
+/// <summary>
+/// The data root's last write test, repeated only once it is older than
+/// <see cref="Interval"/>.
+/// </summary>
+/// <remarks>
+/// A singleton, since the health check itself is created per request. However often
+/// <c>/readyz</c> is asked, the data root sees one probe file per interval, and none
+/// when nobody asks.
+/// </remarks>
+public sealed class DataRootProbe
+{
+    /// <summary>How long a result stands before the next request tests again.</summary>
+    public static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
+
+    private readonly ISentryPaths _paths;
+    private readonly TimeProvider _time;
+    private readonly Lock _gate = new();
+    private (DateTimeOffset At, HealthCheckResult Result)? _last;
+
+    public DataRootProbe(ISentryPaths paths, TimeProvider time)
+    {
+        _paths = paths;
+        _time = time;
+    }
+
+    /// <summary>The last result, or a new one when it is older than <see cref="Interval"/>.</summary>
+    public HealthCheckResult Current()
+    {
+        lock (_gate)
+        {
+            var now = _time.GetUtcNow();
+
+            if (_last is { } last && now - last.At < Interval)
+            {
+                return last.Result;
+            }
+
+            var result = DataRootHealthCheck.Evaluate(_paths.DataRoot);
+            _last = (now, result);
+            return result;
         }
     }
 }

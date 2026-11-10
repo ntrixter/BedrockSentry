@@ -17,9 +17,44 @@ a test server you have backups of.
 
 ---
 
-## Unreleased
+## 0.4.0 — 2026-11-10
 
-Nothing yet.
+### Added
+- A privilege broker: the panel's service runs under its own virtual account, a LocalSystem
+  broker does the administrative work from a fixed list, and each Bedrock server runs at low
+  integrity. An earlier install moves across by uninstalling and installing again; worlds,
+  backups and settings are kept.
+- An optional authenticator-app code at sign-in and before destructive steps, and
+  `install.ps1 -ClearPanelMfa` for a lost phone.
+- New servers use NetherNet with a pinned play window. Firewall rules follow a server's ports and
+  name, and reachability checks are grouped per server with a fix for each.
+- Add-on changes made while a server runs wait in a queue and are written at its next stop or
+  restart.
+- Player faces beside each name, from GeyserMC or set by hand.
+- Creative sister servers that take another server's newest backup and keep chosen areas.
+- Companion pack commands (`listcord`, `syncarea`) and area outlines drawn in game.
+- Backup locks: a locked backup is never pruned.
+- A Storage table on the status page: each volume the wrapper uses, its drive type (SSD, HDD
+  or a Storage Space), free and used space with their share of the volume, and a warning when a
+  volume runs under 15% free. On a volume with Data Deduplication it shows the rate, the saving
+  and the last optimisation.
+
+### Fixed
+- The deduplication saving read as a share of the volume (*76% of the volume*); it is a share
+  of the data stored, and now reads as a rate and a ratio.
+- An imported `.mcworld` or ZIP was listed hours off; it is now listed at the time its world
+  was last played.
+- Importing a folder the service cannot read said *There is no folder*; it now says the
+  service cannot read it and suggests uploading a `.zip` instead.
+- Restoring a backup's configuration overwrote the server's own ports with the backup's. A
+  restore now keeps `server-name`, `server-port`, `server-portv6` and the play window, and a
+  copy restored as a new server plays on its own port rather than the backup's play window.
+- A world with the companion pack showed an *Achievements disabled* warning. The pack is now
+  marked as an add-on and its commands need no cheats, so worlds keep earning achievements.
+- The Server properties tab stopped taking input on a NetherNet server with a play window.
+- The new server form wrote play ports that had been cleared.
+- Setting a restart schedule to Never during its countdown left the countdown running.
+- A fresh install into a data root that did not exist yet failed.
 
 ---
 

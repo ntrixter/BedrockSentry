@@ -26,11 +26,11 @@ both the Minecraft binary and the wrapper itself.
 |---|---|
 | Runtime | .NET 10 (LTS) |
 | Web UI | ASP.NET Core + Blazor Server, real-time via SignalR |
-| Hosting | Windows Service (`Microsoft.Extensions.Hosting.WindowsServices`) — runs on Server Core, no desktop shell required |
-| Process management | `System.Diagnostics.Process`, redirected stdin/stdout |
+| Hosting | Two Windows Services (`Microsoft.Extensions.Hosting.WindowsServices`) — runs on Server Core, no desktop shell required. The main service serves the panel and runs the servers under its own account; the privilege broker runs as LocalSystem and does the administrative work it asks for (§ 17) |
+| Process management | Redirected stdin/stdout. On Windows each server starts through `CreateProcessAsUserW` at low integrity (§ 17.6); elsewhere `System.Diagnostics.Process` |
 | Player data | SQLite (source of truth) + export/import to JSON for manual editing |
 | Backup archives | `System.IO.Compression.ZipFile`, configurable compression level |
-| VSS snapshots | `vssadmin` invoked from the wrapper |
+| VSS snapshots | `Invoke-CimMethod` against `Win32_ShadowCopy` (§ 8.7) — not `vssadmin`, which is Server SKUs only |
 | Configuration | YAML or JSON config file — no hardcoded paths or secrets |
 | License | MIT |
 
@@ -61,6 +61,24 @@ allowed to use it) isn't enough.
   recoverable if the file is ever read by the wrong person
 - Ties into the first-run setup wizard (Section 13) as the point where
   initial credentials get set
+- An optional second step (`D125`): a six-digit code from an authenticator app
+  (RFC 6238, HMAC-SHA1, 30-second steps, one step of drift either way, a used code
+  refused). Off by default; switched on from Settings → **Authenticator app**, which
+  shows a QR code and stores nothing until a code from it is confirmed. The secret
+  is encrypted with the data-protection key ring and kept in `auth.json` under
+  `Sentry:Admin:Mfa`; ten single-use recovery codes are stored as SHA-256 hashes and
+  still work if the key ring is lost. A right password issues a five-minute cookie
+  under its own scheme, which opens only `/account/second-step`. Switching the step
+  on or off, replacing the recovery codes or using one writes a new security stamp,
+  which signs every session out. With the phone and the codes both lost, an
+  administrator runs `install.ps1 -ClearPanelMfa`
+- With the step on, the confirm dialogs (Remove, Retire, Restore, the sync and its
+  put back, erasing a player) ask for a current code in place of the password
+  (`DestructiveConfirmPolicy`); recovery codes are refused there, and wrong codes
+  count against the second step's limit. Changing the password still asks for it
+- Wrong attempts are limited (`SignInThrottle`): five inside fifteen minutes per
+  address and step, then refused until the oldest ages out. The second step also
+  counts every address together, because reaching it means the password is known
 
 ## 4. Multi-Instance Architecture
 
@@ -138,12 +156,15 @@ baked in starting at milestone 4, not retrofitted later.
   The wizard checks the choice rather than taking it. A relative path is refused
   outright, because it would resolve inside the install tree that a self-update
   replaces wholesale. The folder is created and written to rather than merely
-  inspected — the service runs as SYSTEM, and a share or a folder owned by
-  another account reads perfectly well right up until the first world is created
-  in it. Accepting the default leaves the setting *absent* rather than writing
+  inspected — the service runs under its own account (§ 17), and a share or a
+  folder owned by another account reads perfectly well right up until the first
+  world is created in it. A folder outside the data root that already holds files
+  is granted to the service by an administrator with `install.ps1 -GrantFolder`
+  (§ 17.7) before a server can start there. Accepting the default leaves the setting *absent* rather than writing
   the resolved path, since an empty value means "under the data root" and pinning
   it would detach instances the moment anybody relocated that root.
-- Wrapper self-update applies once, since it's a single process. BDS
+- Wrapper self-update applies once per install, to both services together, since
+  both executables ship in one version folder (§ 12). BDS
   auto-update is per-instance, so one server can intentionally run ahead of
   another.
 - The global `behavior_packs/`/`resource_packs/` folders can act as a shared
@@ -151,11 +172,14 @@ baked in starting at milestone 4, not retrofitted later.
   than duplicating pack files per instance.
 - **Instance binaries come from a package store (resolved as `D19`).** BDS zips
   live in `<DataRoot>\server-packages\`, named by version, and the store is
-  filled two ways: an administrator drops a zip in by hand, or milestone 13's
-  updater downloads into it. Creating an instance extracts a chosen package into
+  filled two ways: an administrator drops a zip in by hand, or the wrapper
+  downloads into it, milestone 13's updater and the first build for an empty store
+  (§ 11) alike. Creating an instance extracts a chosen package into
   that instance's working directory, so adding a server is never a manual unzip
   into the right folder — which is exactly how an instance ends up pointed
-  somewhere it should not be.
+  somewhere it should not be. The world can come from a file instead of being
+  generated: a `.mcworld` or one of this panel's ZIP backups, uploaded on the
+  create form (§ 8.5).
 - **Each instance gets its own copy of the binaries, not a shared one (`D19`).**
   BDS keeps `worlds/`, `allowlist.json`, `permissions.json` and
   `server.properties` beside its own executable, so a shared install directory
@@ -181,6 +205,97 @@ baked in starting at milestone 4, not retrofitted later.
   every instance advertising itself. The Server properties page says what turning
   the setting off would cost, rather than explaining a default the wrapper no
   longer writes.
+- **What "a port" means comes from the instance's own `transport` key (`D70`).** Under
+  `transport=raknet` a server binds `server-port` and `server-portv6`, both UDP — the model every
+  port claim in this document was written for. Under `transport=nethernet` it binds `server-port`
+  as a **TCP** listener carrying an HTTP signalling handshake, does not read `server-portv6` at
+  all, and moves play to a second set of UDP sockets, one per player online. Measured on BDS
+  1.26.51.1: a server on 19150 held TCP 19150 listening, with nothing on 19151; a server on the same
+  build whose file has no `transport` line held UDP 19136 and UDP 19137 and no TCP at all.
+  **Where those play sockets land is `server-udp-ports`' answer, and it is the half the first
+  measurement could not see (`D71`).** That capture was taken with nobody connected. With one client
+  and then two: with the key **unset**, play lands on `server-port`'s own **UDP** side — the same
+  number, the other protocol; with a window **set**, nothing touches that number's UDP side at all.
+  The property moves the allocation window rather than widening it, so a NetherNet server has two
+  port cases and the file says which.
+  So **one install holds both models at once** and the answer is per instance, never install-wide.
+  `ServerPorts.For` is the one function that turns a transport into a port set, and the start
+  pre-flight, the Readiness panel, the firewall check, the discovery-pair guard and the Status card
+  all ask it rather than deciding for themselves. `ListeningSockets` chooses the socket table to
+  match, because a NetherNet server holds its port as a TCP listener from the moment it starts — so
+  asking the UDP table alone returned *free* whoever held it, a false clear on the one check that
+  exists to stop a second process opening a live world. With the key unset that number's UDP side
+  is not reliably empty either, since play lands there once somebody connects; such a server is
+  therefore asked on **both** tables, and a firewall row for it appears twice, TCP and UDP, each
+  openable on its own.
+  **A transport this wrapper does not recognise, a directory with no `server.properties` yet, and a
+  `server-udp-ports` this code cannot read are all checked on both protocols.** Over-gating there
+  names a holder an administrator can act on; under-gating opens a world twice.
+  **A pinned play window is deliberately not in that model.** It is a run of ports rather than a
+  socket, and what the model feeds is a *refusal*: missing one of those ports costs a player who
+  cannot join, and over-gating costs a server that will not start because something unrelated holds
+  one port out of ten. That is the opposite balance to the one above, so the same rule weighed again
+  on this case comes out the other way. `PlayPorts` describes the window instead, and the panel
+  reports on it.
+- **The create form's port is the first number where none of the new server's
+  sockets is taken (`ON1`, `T371`).** A RakNet server needs the number and the one
+  after it, a NetherNet server the number on TCP and its play window on UDP; taken
+  means another server's file names the port or its window, or something on this
+  machine is listening on it. `NewServerPorts` holds the rule and
+  `PortInspector.Claims` gathers what is taken. Choosing NetherNet fills a **Play
+  ports** field with the `server-udp-ports` line the Status tab would suggest, ten
+  ports wide for the package's `max-players`, which is written at creation as the
+  operator leaves it; `D71`'s rule that the wrapper never writes the key afterwards
+  stands. A number typed by hand is checked when the field loses focus, and each
+  clash is named with its holder. A server switched to NetherNet on its
+  Configuration tab is given a window the same way, from its own `server-port` up
+  past every other server's file and every socket open on the machine, unless the
+  window it has is free and wide enough; a window that runs into a holder refuses
+  the save, and the Status tab calls it a fault and offers a free line (`T415`).
+- **A new instance is written `transport=nethernet` with a pinned play window, and the
+  create form offers RakNet for an older build (`D75`, `T413`).** BDS 1.26.60 prints a
+  `TRANSPORT TYPE ERROR` for `transport=raknet` and runs NetherNet anyway, so a RakNet
+  server's rows describe ports it does not use; its Status tab says so. The default was
+  RakNet until then, for the reason that follows. BDS 1.26.50 onward extracts a `server.properties` that says
+  `transport=nethernet`, which moves `server-port` to TCP, ignores
+  `server-portv6` entirely and puts play on negotiated UDP ports — one per player
+  online. Every port claim above, the start pre-flight, the Readiness panel and
+  the firewall check describe the RakNet model, so creating a NetherNet server
+  silently produces one the wrapper reports wrongly. Writing the transport at
+  creation is what keeps those claims true of the servers this wrapper makes,
+  and it is the only door that needs it: a file with no `transport` line at all
+  is a RakNet server whatever the build, so nothing that already exists moves.
+  The picker is where the choice stays available, and it states what NetherNet
+  costs — TCP as well as UDP on the server port, a forwarded UDP range as wide as
+  `max-players`, the public address in `server.properties`, and a saved server
+  identity — at the moment of choosing rather than in a document. This is a
+  default with an end rather than a position on the transport: it turns over when
+  the port model can describe a NetherNet server honestly.
+  **`D71` and `D73` did both halves and the default has not moved** — the port
+  model carries both cases, the firewall covers both protocols, the panel works out
+  the `server-udp-ports` line, and a **Server identity** row says when a server has
+  no saved key and offers to send `serveridentity save` on its own console. What is
+  left before the default could flip is a run against a real client.
+- **A server with no saved identity is reported, and the command that saves one is
+  offered rather than run automatically (`D73`).** BDS keeps it at
+  `keys/server_identity_key.pem`; with no file it generates one in memory at every
+  start, so the identity changes and every player is asked to trust the server
+  again. That is harmless on a server somebody restarts by hand and is not harmless
+  here — this wrapper restarts servers on a schedule, on a Bedrock update, on its
+  own update and after a crash, so it is the reason it keeps happening.
+  The row reports in three states rather than two: a stopped server can be reported
+  and cannot be fixed, because the fix is a console write; an unreadable folder is
+  *unknown* rather than missing, since those two produce opposite advice. The
+  sentence names what it costs rather than the path, and the fix reports what it
+  **sent** — what the command did is on the server's own console, and the row reads
+  the file again on the next pass.
+  **The wrapper never writes the key.** `serveridentity` is the server's own
+  command, so BDS authors its own identity and the button is only the keystroke —
+  the reasoning § 7.6 already applies to the access files.
+  **The key is out of every backup by construction**: the archive carries four named
+  flat configuration files and its reader refuses anything nested, so nothing under
+  `keys/` can reach one. A private key in a file that gets copied and emailed is a
+  different class of thing from a settings file.
 
 ### 4.3 Storage locations
 
@@ -191,6 +306,14 @@ logs and update staging are all small and stay at the data root; the data root
 itself stays put, because the config file's location derives from it and a
 setting cannot describe where its own file lives. (`BEDROCKSENTRY_DATAROOT`
 still exists for installs that want everything elsewhere, set before first run.)
+
+**What a removed server left behind is listed on the same page** (`D63`): its backups folder when
+the box to delete it was left unticked, its console-log folder, and its version record. Each row
+has a tickbox, and **Delete selected** removes the ticked ones after a second press; nothing is
+deleted unasked and nothing is pruned by age, which is what a removed server's backups are kept
+for. A retired server is configured and keeps its folders, so it is never listed. The deletion
+asks the list again when it runs, so a server created since under a removed one's id keeps its
+folders, and a folder delete that stops partway is reported as partial with what remains.
 
 Four movable things, three of them live with no restart at all:
 
@@ -258,6 +381,10 @@ both and restored by either) and anything inside the wrapper's own data
 directories. Everything else an instance gets — console, backups, players,
 updates — works from the moment it is adopted, because adoption lands in the
 same registration path creation uses.
+
+A server adopted from a folder outside the data root cannot start until an
+administrator grants that folder with `install.ps1 -GrantFolder` (§ 17.7); until
+then each start is refused with the reason and never counted as a crash.
 
 ## 5. Process Management & Console
 
@@ -361,6 +488,31 @@ shutdown timeout, which must exceed the total drain budget of every managed
 instance. Inverting any pair means force-killing a server that is legitimately
 mid-save.
 
+**The drain runs before anything else in the host stops (`T112`).** Hosted
+services stop in reverse registration order, and the web server, registered
+last, stops first and waits for its open connections until the host's shutdown
+timeout. So the drain runs in `StoppingAsync`, which the host calls before any
+hosted service's `StopAsync`. And a request that arrives once the stop has begun
+gets a 503: a panel tab reconnects at once, and a connection it opens then is
+one nothing closes.
+
+**Windows is told the service stopped when the host has (`T167`, `D32`).** The
+framework's service lifetime waits the host's shutdown timeout and then reports
+stopped whether the host has finished or not, so a drain that overran it left
+servers saving behind a service Windows called stopped, and a start in that gap
+found them on its worlds. The service's lifetime now holds its stop pending until
+the host has stopped, asks Windows for more time every ten seconds, and writes the
+overrun to the Application log. The hold has no timeout: a server's stop kills it
+when its budget runs out, so only something holding an instance's gate can make it
+long, and then "stopping" is the true answer. A Windows shutdown is unchanged,
+because Windows bounds that wait itself.
+
+**Asking where everyone is comes out of the drain budget (`D35`).** Before
+`stop`, a server whose companion pack has answered this run's probe is asked
+where every online player is (Section 9). The wait is at most two seconds, or a
+quarter of the budget if that is less, and it is spent from the budget rather
+than added to it, so the invariant above holds unchanged.
+
 ### 5.3 Scheduled restarts
 
 Deliberately not cron expressions. Two shapes cover what a game server
@@ -381,6 +533,10 @@ an empty array: the configuration system emits no keys for an empty array, so
 
 "Every N hours" counts from the instance's last start rather than from a fixed
 epoch, so a server just restarted by hand is not restarted again minutes later.
+
+Setting the schedule to none while a restart's countdown runs calls that restart
+off (`T425`): the stop has not begun, so players are told the restart is off, the
+server stays up and the claim ends at once. Once the stop has begun it finishes.
 
 **Daylight saving is resolved explicitly, not left to the framework (`D18`).**
 A daily time is a wall-clock time, and twice a year a wall-clock time is not a
@@ -409,8 +565,8 @@ in-memory-only buffer loses when the wrapper restarts.
 **In-game chat is classified where it is recorded, and hidden only in the
 view.** Chat gets its own console origin, decided once as the line enters the
 buffer, so every reader agrees about what it is — the console page, the
-transcript on disk, and anything later that counts it. The console has a
-**Show in-game chat** switch, and it filters at render time, never at read time.
+transcript on disk, and anything later that counts it. Once chat is relayed the
+console gets a **Chat** box, and it filters at render time, never at read time.
 Filtering as lines are read would advance the cursor past them, so turning it
 back on would show only chat from that moment onward — which looks like it works
 and quietly loses the conversation somebody turned it back on to read. The
@@ -432,10 +588,13 @@ merely undocumented. A false positive is still the worse failure: it would
 restyle real server output as conversation and then hide it the moment somebody
 turned chat off, losing operational output to a chat filter.
 
-That makes the companion pack relay the **only** source of chat, not the better
-of two. Until the pack exists nothing is ever classified as chat, so the **Show
-in-game chat** switch has nothing to filter — worth knowing before the toggle is
-tested and read as broken.
+That makes a pack's relay the **only** source of chat, not the better of two. The
+companion pack relays none, because the event it would need is pre-release
+(Section 9, `D95`), so nothing is ever classified as chat. Until a relay exists
+the console has no **Chat** box at all (`ON4`, `T370`); it had an unticked,
+disabled one (`T316`), which the operator asked to be removed until chat is
+supported. A chat line that arrives anyway, from some pack other than the
+companion, is shown rather than hidden behind a box nobody can see.
 
 **The buffer is read by sequence cursor, and gaps are surfaced (`D16`).** Each
 line gets a monotonic per-instance sequence number, and a reader asks for
@@ -469,10 +628,13 @@ scroll event, which is why the remembered answer survives it.
 
 ### 5.5 What BDS actually emits — measured, not assumed
 
-`scripts/stdin-spike.ps1` was run against BDS **1.26.36.1** under
-`NT AUTHORITY\SYSTEM`, session 0, non-interactive — the exact conditions the
-Windows Service launches instances under. Every check passed, and the timings
-say the important part: there is no output buffering to work around.
+`scripts/stdin-spike.ps1` was run against BDS **1.26.36.1** as LocalSystem
+(`NT AUTHORITY\SYSTEM`), session 0, non-interactive — the conditions the Windows
+Service launched instances under while it ran as LocalSystem. Every check passed,
+and the timings say the important part: there is no output buffering to work
+around. The service now starts each server at low integrity under its own
+account (§ 17.6). The same measurements there are `T385`'s, and this
+table stays the LocalSystem reading until that entry has run.
 
 | Step | Measured |
 | --- | --- |
@@ -558,20 +720,32 @@ Housekeeping (`Running AutoCompaction...`, `Player Spawned:`,
 AutoCompaction matters is the moment it stops appearing, and a hidden line
 cannot show anybody that.
 
-**Filtering is a separate control from colour**, with four switches — server
-output, joins, leaves, chat — and a **Players only** preset that turns the
-console into a feed of who is on the server and what they are doing. Server
-output covers everything that is not one of the other three, warnings and
+The `save query` file list folds under the `Data saved. Files are now ready to
+be copied.` line before it, behind a *Show N files* toggle on that line
+(`ConsoleSaveFold`). It is one long line of paths a backup prints every time,
+and reading it is rare. A list with no `Data saved` line above it on screen,
+because the buffer evicted that line or a filter hides it, stays shown: a fold
+with no toggle would hide it for good.
+
+**Filtering is a separate control from colour**, with five switches — server
+output, joins, leaves, deaths, chat, the last disabled until chat is relayed —
+and a **Players only** preset that turns
+the console into a feed of who is on the server and what they are doing. Server
+output covers everything that is not one of the other four, warnings and
 errors included: an operator who has hidden the machine has hidden its
 complaints too, which is what asking for only the players means. Run
 boundaries are never hidden whatever is ticked, because a restart in the
 middle of a filtered feed would otherwise be invisible and "why did everyone
 leave and rejoin" would have no answer.
 
-Death messages will join the list when the companion pack ships (Section 9).
-There is deliberately no disabled checkbox for them now — a control that does
-nothing yet is a lie in a settings panel, the same reason the two update
-toggles in Section 8.1 wait for the flows that honour them.
+**The companion pack's lines are read, not just shown** (Section 9). A death
+is its own subject, marked with a dagger, under the deaths switch. The pack's
+join and leave lines, which carry the position, count as arrivals and
+departures while the server shows join and leave positions, and are dimmed
+otherwise. The lines it prints for the wrapper rather than for a person —
+hello, the probe, the positions asked for before a stop — are dimmed. The
+console shows the pack's sentence where a line has one; the message underneath
+stays what the server printed, so every matcher reads the same text.
 
 The filter is applied when lines are rendered, never when they are read from
 the buffer: reading past hidden lines would advance the cursor over them, so
@@ -594,10 +768,21 @@ because two of the rules have to see the line before it:
   recognises in its own right keeps its own meaning — the save manifest arrives
   bare too, and must not turn amber because a warning happened to precede it.
 - **Bedrock prints boxed notices** several lines between two rules of `=`. The
-  TELEMETRY MESSAGE block is advice rather than an event and is dimmed whole.
+  TELEMETRY MESSAGE block is advice rather than an event and is dimmed whole,
+  and folds under its opening line, which carries a *Show notice* toggle
+  (`ConsoleNoticeFold`, `ON2`); the buffer and the transcript keep every line.
+  The ALLOW LIST WARNING and TRANSPORT TYPE ERROR boxes keep their severity and
+  carry the same toggle as *Hide notice*, open at first (`T406`). The choice is
+  per banner, kept in the browser per instance (`ConsoleNoticeChoices`), so it
+  reaches the next start's box.
   The banner's subject opens the box, never a bare row of `=`: the rules are
   identical between one notice and the next, so opening on the rule would
   swallow whatever followed the next one.
+- **A blank line is never shown** (`T311`), whatever prefix or padding it
+  carries, and the transcript keeps it. The wrapper reads one after every script
+  line from Linux BDS (`D93`'s spike) and two on Windows (`T295`), and two on
+  Windows after *Content logging to console is enabled.* at each start. A row
+  with a time and nothing after it says nothing.
 
 It changes no stored line and never reaches the transcript, which stays the raw
 bytes BDS wrote. An unrecognised line is left alone, so a future BDS that
@@ -700,6 +885,82 @@ cases the text view exists for. It does mean parsing has to be lossless —
 unrecognised lines, odd spacing and comments all survive a parse-and-save round
 trip, or editing one setting by hand would delete the documentation above it.
 
+### 5.7 One job at a time
+
+A job that stops a server, changes its files and starts it again claims the server for its length
+(`InstanceClaim`): a scheduled restart, a restart from the panel, a Bedrock update's install, a
+restore, a sync (`D103`), and removing, retiring or moving a server. While one holds the claim, a
+start, stop, restart or second claim from anyone else is refused with the job's name, so nothing
+lands between its own stop and its start. A claim waits for a start or stop already under way and
+is set while the gate they take is held. The wrapper's own stops are the exception: a service stop
+and the drain before the wrapper's update stop every server, claimed or not, because Windows waits
+for nobody (§ 5.2). The wrapper's update therefore waits a check while any server is claimed,
+rather than drain one part-way through a job.
+
+What comes due during a claim waits for it. A scheduled restart says so once on the console; when
+the claim ends it runs if the server is running and has not started since it came due. A start
+after that moment, such as a sync's own, is the fresh process the restart was for, and a server
+left stopped has nothing to restart. A daily restart is remembered past its time, since the
+schedule would answer with tomorrow's. An automatic Bedrock update says so once, keeps the build
+rather than declining it, and installs on the first tick after with its short final countdown. A
+scheduled backup runs on the first tick after, and a join or leave takes none. **Back up now** and
+add-on changes are refused. The backups a job takes inside its own stop, a shutdown backup and a
+safety backup, run.
+
+### 5.8 Command completion
+
+The Console tab completes commands as they are typed (`D105`). The list opens with the first
+character, Tab takes the highlighted match, Up and Down move in the list while it is open and walk
+the history while it is closed, and Esc closes it. A grey preview shows the rest of the first match.
+Under the input, the usage line shows the command's description and the forms still possible, with
+the word the caret is in marked. Enter sends exactly what is typed; a suggestion is taken with Tab,
+never with Enter. Completion runs in the browser (`console-completion.js`), and the send goes back
+through the component, so what may be sent stays in C#.
+
+**The commands are the server's own.** A version's commands, forms, descriptions and aliases are
+read with `help` from a throwaway copy of its package: its own folder under the data root, cheats
+on, LAN visibility off, two free ports, deleted afterwards. A server with cheats off lists 17
+commands and none of an add-on's, so the instance's own start cannot stand in, and turning cheats on
+in the operator's world is not an option. Option-list values ship with BedrockSentry, and the same
+run sends each one and keeps those the server parses; `gamerule` lists the rules. Until a version
+has been read, completion uses the newest version read that is not newer, then the list that ships
+with BedrockSentry, and says which.
+
+**Names come from Mojang.** Blocks, items, entity types, biomes, effects, enchantments and camera
+presets come from Mojang's `@minecraft/vanilla-data` package for the server's version, fetched at
+each BDS update check and at an install, only while the check is on. The tarball is checked against
+the registry's `sha512`. Mojang can publish the package after the server, so until it does the
+newest earlier release is used and the Commands view says so. Names the server refused where a form
+takes them ship as measured exclusions. Biomes keep their `minecraft:` namespace, which
+`locate biome` requires.
+
+**An add-on's commands** come from a second throwaway run with the instance's switched-on script
+packs, their dependencies and the world's `level.dat`, started once it is switched on. They complete
+at once, and until the server restarts the usage line says it has not loaded them. Blocks, items,
+entities and functions an add-on declares are read from its files. Values of an add-on's own option
+lists are not completed.
+
+**Players.** Online players complete wherever the server takes a player or a selector.
+`allowlist add` offers the players BedrockSentry has seen that are not on the server's allowlist,
+and `allowlist remove` offers the names on it.
+
+One throwaway runs at a time. A failed run is retried at the next update check, install, add-on
+change or start, never in a loop. The Commands view, the second half of a Console | Commands
+switch, lists where each kind of word came from and how fresh it is, then every command with its
+forms, filtered by name, alias, description or form.
+
+**The world's ticking areas are the console's third view (`D107`).** The Script API cannot see an
+area a command made, so the view reads `tickingarea list all-dimensions` from the console,
+collecting its answer from its header to the `n/10 ticking areas in use.` line, and changes areas
+with the commands an operator would type, in the area's dimension through `execute in`. Bedrock
+snaps an area to whole chunks and cannot change one in place, so an edit removes the area and adds
+it again, and puts the old one back if the new one is refused. A world has ten areas in all its
+dimensions together. Each area can be shown in game for operators in a colour of its own, kept in
+the instance's `TickingAreas` by name and dimension, since one name may be used in two dimensions;
+its outline is a full-height box over its chunks, a circle drawn as a circle. Nothing is sent while
+a sync runs, since a sync adds and removes its own area named `bedrocksentry` through the same
+console; the view shows that area and does not edit it.
+
 ## 6. In-Game Chat Commands
 
 Players with permission can trigger wrapper actions via chat — not
@@ -725,8 +986,8 @@ Minecraft's own commands.
 - Replies are sent privately via `/tell`, not broadcast.
 - Because `\` isn't a recognized Minecraft prefix, the raw command text still
   broadcasts as an ordinary chat message before the wrapper intercepts it —
-  worth knowing going in. The companion add-in's `chatSend` hook (Section 9)
-  could suppress this later if wanted.
+  worth knowing going in. A `chatSend` before-event could suppress this later
+  if wanted; it is pre-release (Section 9, `D95`).
 - Built as a generic command-dispatcher (parse → check permission → execute
   → reply) so Telegram and Discord (Section 15) can plug into the same
   pipeline rather than reimplementing it.
@@ -779,8 +1040,14 @@ players               xuid PK, gamertag, nickname, notes,
                       first_seen_utc, is_wrapper_admin
 player_sessions       id PK, xuid FK, instance_id,
                       connected_utc, disconnected_utc (null while online),
+                      gamertag — the name the connect line printed (schema v2)
                       exit_x, exit_y, exit_z, exit_dimension
                       — null unless the companion pack reported them (Section 9)
+player_deaths         id PK, xuid FK, instance_id, died_utc, cause,
+                      killer_type, killer_name, x, y, z, dimension, message
+                      — one row per relayed death; counts are derived (schema v2)
+companion_reports     (instance_id, reported_utc) PK, pack_version
+                      — each hello; the earliest is when counting began there
 player_instance_state (xuid, instance_id) PK, is_allowlisted, op_level
                       — retired by D31; shipped in schema v1, never written
 ```
@@ -910,6 +1177,12 @@ record. Treat export/import as a stop-the-service operation; the export is a
 snapshot, and re-importing a stale one while the service is running would
 overwrite session/playtime updates that happened in the meantime.
 
+A timestamp in the file is read as an instant, not as text (`T301`). An editor
+that writes the file back often respells them, `2026-09-22T18:00:00.0000000+00:00`
+as `2026-09-22T20:00:00+02:00`, so import converts each one to the store's own
+spelling before matching or writing it. Only ISO 8601 is read; a row whose
+timestamp is not one is skipped and named in the result.
+
 ### 7.5 The allowlist and permissions files — measured, not assumed
 
 Both files were taken off a live install rather than a wiki. They disagree with
@@ -1007,10 +1280,47 @@ Three independent, stackable strategies — any combination can run together,
 via an `IBackupStrategy` interface so adding a fourth later doesn't touch the
 orchestrator.
 
+**Format and acquisition are separate questions.** A strategy decides what the
+backup *is* — an archive (§ 8.3), a folder (§ 8.4), somebody's own command
+(§ 8.2). How the world's bytes are *obtained* is one setting covering all of
+them (§ 8.7), held by the orchestrator, because a snapshot is taken once per run
+rather than once per strategy.
+
 ### 8.1 Orchestration
-`save hold` → poll `save query` until the snapshot is ready → run every
-enabled strategy in parallel → `save resume`, unconditionally (try/finally),
-even if a strategy fails.
+`save hold` → poll `save query` until the snapshot is ready → watch the save's folders for
+the write the hold sets off, and when one lands `save resume` and hold again → acquire the world
+(§ 8.7) → run every enabled strategy in parallel → `save resume`,
+unconditionally (try/finally), even if a strategy fails.
+
+**The first list predates the save it announces** (`T356`). Measured on Linux BDS 1.26.52.3 with
+an idle world: `save query` answers at once with the database's lengths as they stood at the hold,
+then BDS writes the changes from before the hold into the `db` log past those lengths, 0.9 to 4.2
+seconds later, and the list does not move while the hold lasts. A copy at the first list's lengths
+read the blocks from before a `fill` made up to 10 seconds ahead of the hold; one at a second
+hold's list, after that write, read the new blocks four times out of four. So the backup watches
+the folders the list names for up to 10 seconds, and once a write has landed and stayed still for
+a second, or is still going at the end, it resumes, holds again and copies at the second list.
+Nothing written means the first list is the whole save, and the exchange is the one hold. A resume
+between the two holds that is not confirmed fails the backup, with that resume on its record.
+
+**A backup carries the whole `worlds` folder** (`D97`). While the server runs, the files
+`save query` names — the loaded world's `db` folder, `level.dat` and `levelname.txt` — are copied at
+the lengths it gives, because only that list is consistent while saves are held. Everything else
+under `worlds` is copied whole: the world's pack folders and pack lists, other worlds, and any file
+an administrator keeps there. Inside a `db` folder the save names, the save's list is the whole
+answer: LevelDB's lock, its logs and tables it has finished with stay out. A file beside the save
+that cannot be opened is left out and named in the backup's result, and the backup still stands;
+so does one whose folder cannot be listed, which then holds the save's files alone and says so.
+A stopped server's backup walks every file under `worlds`, so it always carried all of this;
+before `D97` a running server's backup held the save's files and nothing else, so it had no
+add-ons in it.
+
+**Where the resume falls depends on acquisition.** With a shadow copy it comes
+straight after the snapshot, before the copy begins, which is the whole of what
+that setting buys; without one it comes after every strategy has finished. Either
+way it is in a `finally` and fires exactly once per hold, and the instance console says
+which of the two it was — a resume that follows a snapshot has not finished a
+backup, and saying so would tell somebody watching the console the wrong thing.
 
 - Skipped only if no player was online at all since the last backup. Manual
   triggers always run regardless.
@@ -1046,6 +1356,16 @@ rules make it safe to leave on:
 They are not subject to the played-since-last skip, because the trigger already
 *is* the evidence that somebody played.
 
+**A backup shows where a sync does (`D113`).** Whoever asks for it, the orchestrator keeps
+where it is (`BackupRuns`), and the strip under the controls lists its steps: Pause saves, Copy
+the world, Resume saves on a running server, with Take a snapshot after the pause and the resume
+before the copy when a shadow copy is taken; the copy alone on a stopped one. While the ZIP or
+folder copy runs, a bar counts the world's files, each once however many formats copy it; a
+custom command copies with another program and has no bar. One somebody asked for, and any that
+did not work, stays with its record's label and sentence until dismissed; an automatic one that
+worked goes when it ends. A backup taken inside a job that claims the server is a step of that
+job's strip and draws none of its own. *Back up now* waits while any backup runs.
+
 ### 8.2 Custom Command
 Runs a user-provided script/command once the snapshot is ready.
 
@@ -1056,6 +1376,9 @@ alongside it — they fail on `worlds/<level>/db/*.log` and nothing the wrapper
 does can change that for somebody else's process. A custom command either opens
 files the way § 5.5 describes, or runs only against a stopped server. The
 strategy's own description in the UI says so.
+
+The manifest file it is handed names the save's files only. The rest of the `worlds` folder,
+which the ZIP and folder formats carry beside the save (`D97`), is the script's own to copy.
 
 ### 8.3 ZIP to File
 - Compression slider spanning none (fastest, dedup-friendly) → balanced
@@ -1074,13 +1397,20 @@ update preserves, and for the same reason.
 
 Three details of how, each of which is the answer to a way it could go wrong:
 
-- **They live under a reserved `_serverconfig/` prefix, never at the archive
-  root.** The root is the `worlds/`-relative namespace: an entry there is a path
-  inside a world folder, and a file called `server.properties` sitting beside
-  `Bedrock level/` would be indistinguishable from a world *called*
-  `server.properties`. The prefix keeps them apart, and an archive written
-  before any of this existed simply has no such entries and restores exactly as
-  it always did.
+- **The archive is laid out as the server's own folder (`D110`).** The world is
+  under `worlds/`, and the four files are at the top beside `bds_version.txt`,
+  which names the Bedrock build the server last reported, and
+  `bedrocksentry_origin.json`, which names the instance it was taken from by id and
+  name (`D89`). A restore into another instance says so and goes ahead; a restore as a
+  new server picks the build the backup names before the source's version log. Unzipped, with
+  `bedrock_server.exe` dropped in, it is a server. Backups written before `D110`
+  hold the `worlds` folder's contents at the top and the configuration under a
+  reserved `_serverconfig/` prefix; they restore exactly as they always did.
+  `NewServerWorld` tells the layouts apart: a `_serverconfig/` entry means the
+  older one, and otherwise a file only a server's folder has at its top means the
+  new one, with or without a `worlds/` folder left beside it, so a folder backup
+  gutted to those files holds no world (`T236`). The identity key under `keys/` is
+  never written (`D73`).
 - **They are read straight from the instance directory, not from the manifest.**
   They are not part of the save, so `save hold` says nothing about them and
   there is no byte count to honour — but they are opened the same permissive way
@@ -1090,45 +1420,289 @@ Three details of how, each of which is the answer to a way it could go wrong:
   never instead of it: a backup with the world and no `server.properties` is
   worth far more than no backup at all.
 
-### 8.4 Volume Shadow Copy (VSS)
+### 8.4 Folder copy
 
-Windows-native point-in-time snapshots. A folder per backup rather than an
-archive, with the same retention options as ZIP, and both strategies can be on at
-once.
+The world copied out uncompressed, one file per file, with the same retention
+options as ZIP. Both formats can be on at once, and they produce two copies of
+the same backup, of the same instant.
 
-**What it buys is not speed or size.** It is that nothing on the volume can move
-while the copy runs, and that a file another process holds exclusively can still
-be read — LevelDB's `LOCK` being the one that bites. The ZIP strategy opens world
-files permissively and hopes; a shadow copy makes the question not arise.
+**What it buys over an archive is not speed.** A folder restores by copying and
+can be read without any tooling, and on a volume running Data Deduplication it
+stores best: unchanged world files are byte-identical from one backup to the
+next and collapse completely, which compression prevents (§ 14 has the rest of
+that trade).
 
-**The manifest lengths still apply**, and that is the part it would be easy to get
-wrong. A shadow copy is a faithful image of the volume, and the volume at that
-instant holds world files *longer* than the save BDS just flushed — those trailing
-bytes belong to the next save (§ 5.5). Copying them whole produces a folder that
-looks perfect and restores to a corrupt world.
+**The manifest lengths still apply**, and that is the part it would be easy to
+get wrong. The world files on disk are *longer* than the save BDS just flushed —
+those trailing bytes belong to the next save (§ 5.5). Copying them whole produces
+a folder that looks perfect and restores to a corrupt world.
 
-The output is a folder rather than an archive deliberately: the point of paying
-for a snapshot is to get bytes off the volume quickly and let saves resume, and
-compressing them while the server is held would spend the time this strategy
-exists to save. Configuration files are carried under the same reserved
-`_serverconfig/` name the ZIP strategy uses, so a restore reads one layout
-whichever strategy wrote the backup — and they are read from the live instance
-directory rather than from the shadow, because a config file edited a second ago
-is more useful than whatever the volume happened to be holding.
+Configuration files are laid out as the ZIP strategy lays them out, the world
+under `worlds/` and the configuration at the top (`D110`), so a restore reads one
+layout whichever format wrote the backup — and they are read from the live instance directory rather than from
+wherever the world came from, because a config file edited a second ago is more
+useful than whatever the volume happened to be holding.
 
-Two rules carry the safety of the operation:
+**A half-copied folder is deleted**, because it would list in the restore picker
+looking exactly like a complete one.
+
+**This format was called "VSS" and it produced no VSS snapshot of its own.** It
+took a shadow copy, read the world out of the frozen view, wrote a plain folder
+and released the snapshot — so the tab offered *ZIP* against *VSS*, which reads
+as file-versus-snapshot and named a compressed file against an uncompressed
+folder. It also broke a reasonable space expectation: shadow copies are
+copy-on-write and cost deltas, and materialising one into a folder throws that
+sharing away at full world size every time. The snapshot was a means, and it is
+now § 8.7, applying to both formats.
+
+### 8.5 Restore
+Picker listing available ZIP archives and folder copies side by side, labelled
+by which they are and with notes shown. Each row names its file or folder as it
+sits in the backups folder, so a row can be matched to what is on disk; a row whose
+file retention has removed keeps the name it had. Neither is a snapshot by the time it is
+listed — a shadow copy is released when the backup that used it finishes (§ 8.7),
+so every row is a file or a folder on an ordinary disk. Custom-command backups appear in history
+for reference but aren't restorable through the wrapper, since it doesn't know
+their format.
+
+The two shapes go through one flow. A folder copy's world is copied back where an
+archive's is extracted, and both obey the same two rules: only the backup's
+`worlds` folder goes into `worlds`, read by its layout (`D110`), so configuration
+never arrives as a world folder and a server folder's binary, packs and `keys/`
+go nowhere; and every target is checked to be inside the worlds directory. An
+entry written with backslashes, as Windows PowerShell 5.1's `Compress-Archive`
+writes them, is read as one with slashes. The wrapper's own backups cannot contain a traversal, which is
+exactly why the check exists — the dangerous one is the folder somebody placed
+there by hand.
+
+Restore flow: stop the server if running → take a safety backup of current
+state first → apply the selected backup → restart.
+
+**The restore panels open near the top of the Backups tab, and a restore runs where it is seen
+(`D111`).** Restore, Restore as new and An area… open their panel under the tab's four cards and
+above *Back up now*, and scroll the page to it; a confirmed restore scrolls to the controls. A confirmed restore of the world runs in the background: the strip
+a sync draws under the controls lists its steps (Stop, Safety backup, Put back the world, Start for
+a running server; the middle two for a stopped one) and stays after it ends with the restore's own
+summary until dismissed. Its outcome is the sync's: finished, called off with the world as it was,
+or stopped after the backup's world was put in place. An area restore draws there too.
+
+**Restoring the add-ons is a choice too, on by default** (`D97`). A world's add-ons are its two
+pack folders and the files that switch packs on, record their history and hold their settings.
+The dialog offers a box, ticked each time it opens, when the backup carries any: ticked, the world
+comes back exactly as the backup has it; unticked, it keeps the add-ons the server has now, copied
+across from the world being replaced. A backup with no add-ons in it — every one a running server
+took before `D97` — offers no box and keeps the server's, and the dialog says so: restoring it used
+to replace the whole folder and take every add-on the world used with it. Each world is settled on
+its own, inside the move-aside, so a failure puts the whole previous world back. Restoring into a
+new server offers the same box; unticked, the new world has no add-ons, since a new server has none
+of its own to keep. The experiments a script pack needs live in `level.dat`, which is the world,
+and come back with it either way.
+
+**Restoring the configuration is a separate, opt-in choice.** The picker offers
+it as a checkbox, shown only when the archive actually carries configuration and
+unticked every time the panel opens rather than remembered. Putting an old
+`server.properties` back can move the port, which is the one change that makes a
+server unreachable rather than merely wrong — so the world and the
+configuration are restored independently and the configuration half is off
+unless asked for. When it is asked for, the server keeps its own `server-name`,
+`server-port`, `server-portv6` and `server-udp-ports` over the restored file (`D127`): a backup of
+another server carries that server's ports, and two servers on one port is a
+pair of which one will not start. The summary says so, and names the server the
+backup was taken from when it is another one. A new server made from a backup
+has the backup's `server-udp-ports` lines commented out, since the window was the
+source server's; unset, play goes to the copy's own `server-port`.
+
+The two halves are also handled differently on failure, deliberately. The world
+goes through the move-aside dance because a half-extracted world is corrupt;
+the four configuration files are written afterwards, outside it, because their
+previous contents are already in the safety backup and a failure there is worth
+reporting rather than worth unwinding a completed world restore for. The safety
+backup carries configuration too, so undoing a config restore is restoring that
+archive with the box ticked again.
+
+**A new server loads the world its backup's server loaded (`T335`).** BDS opens the folder under
+`worlds` that `level-name` names and generates a new world when there is none. A new server's
+`server.properties` is the package's, which names `Bedrock level`, so a backup of a server whose
+world has another name went into a folder nothing opened. After the world and any configuration
+are in, `level-name` is pointed at a world the server holds: the one the backup's own
+`server.properties` names, then the one already set, then the first by name. The summary says
+which when there are several, and when `level-name` could not be written it says so and the
+server is not started.
+
+**A world file makes a new server the same way (`T334`).** The create form takes a `.mcworld`
+exported from Minecraft, which holds one world with `level.dat` at its top, or a ZIP in either of this
+panel's backup layouts (`D110`). The upload is written
+under the data root before it is read, since a ZIP's directory is at its end and a world can be
+gigabytes; one nobody uses is deleted with the form or a day later. Every entry is planned
+before the server is created, by the add-on uploads' rules (`D82`) with bounds for worlds, and
+two entries Windows would write to one file refuse the file. A `.mcworld` goes into the folder
+`level-name` names. A backup's worlds keep their names and `level-name` is settled as above. Its
+configuration is opt-in as in a restore, limited to the four files a backup carries, with the new
+server's name and ports written over it (`D42`). The server is created stopped with auto-start
+off, and takes the form's answers only once its world is in and `level-name` names it; the
+companion pack goes into that world (`D93`); a world that already has it keeps its version until
+its next start, which moves it to the shipped one (`D106`).
+
+**A backup made elsewhere is imported one at a time (`D110`).** The Backups tab's
+Import… takes an uploaded `.zip` or `.mcworld`, or a folder on the machine by its
+full path, which is copied and never moved; a folder holding a link is refused.
+Every entry is planned first by the uploads' rules (`D82`), and the panel shows the
+layout, the worlds, the configuration, the build from `bds_version.txt` and the server
+from `bedrocksentry_origin.json` when there are, and when it was taken: the stamp in a BedrockSentry backup's name,
+else for a ZIP or `.mcworld` the `LastPlayed` its `level.dat` carries (seconds in UTC, since a ZIP's entry
+times have no zone), else the newest `level.dat`'s file time. A folder the service's account may not read,
+such as one under a user's profile, is refused with that reason and the advice to upload a `.zip` of it,
+since the panel grants the service no folder (`D120`). Entry times the wrapper writes into a ZIP are local
+time, the convention Windows reads by. It is kept as it came under `backup-{stamp}.zip`,
+`backup-{stamp}.mcworld` or `folder-{stamp}`, except that a copy of a server's whole
+folder keeps only its worlds, configuration and version file, and names what it
+left out. It is recorded as `Imported` where its time puts it in the history, with
+the note, and marked Keep. It is never the server's last backup: not on the
+standing card, not for the skip rule and not as the schedule's anchor. Restoring an
+imported `.mcworld` in place puts its world in the folder `level-name` names.
+
+**A backup downloads as a `.zip` or a `.mcworld` (`D110`).** A ZIP is sent as it is.
+A folder copy or an imported `.mcworld` is zipped as the server's own folder as it is
+sent. A `.mcworld` holds one world, the one the backup's `server.properties` names or
+its only one, with `level.dat` at its top and no configuration. Packing is Deflate at
+its smallest size, the strongest Minecraft reads.
+
+**A sync copies another server's newest backup in and keeps chosen areas (`D103`).** A server's
+Sync tab names the server it takes its world from and the areas of its own world it keeps, the
+Sync Areas, each a name, a dimension and two corners. A sync saves each Sync Area through the
+running server's console as structures of at most 64 blocks across and the dimension's height
+(384 in the Overworld, 128 in the Nether, 256 in the End), every command for a Nether or End area
+run through `execute in` (`D106`), then stops the server, which writes them into the
+world's database. It reads them out of the stopped world, takes a safety backup at this server's
+own ZIP compression and retention, as a ZIP run would (`D104`), and puts the other server's newest
+usable backup where `level-name` points, keeping this server's
+`server.properties`, name and ports. It then writes the pieces into a pack in the new world, starts
+the server, and loads each piece back after removing the entities in its box. Nothing in the world
+changes until every piece is a file outside it: a failure before then calls the sync off and starts
+a server that was running again. A failure after the world is replaced leaves the pieces waiting:
+the sync records its areas as it saved them beside the pieces, under the data root, and the Sync
+tab offers **Put the Sync Areas back**, which stops the server, starts it with the pieces in its pack
+and loads each again, or **Discard**. A new sync is refused while pieces wait, since it would save
+the replaced world's areas over them. The pack comes off at the next launch, since a world's pack list
+is only edited with its server stopped (`D85`). The other server is only read through its backups,
+and its safety backups are passed over, since each holds a world that was replaced. The sync claims
+this server for its whole length (§ 5.7). Two Sync Areas may share blocks only in different
+dimensions. Each also carries an outline colour, new areas taking the next unused one of eight, and
+whether its outline is drawn in game; neither changes what a sync keeps. The wrapper hands the
+companion pack the areas with Show in game ticked after its every `hello` and after every save on
+the Sync tab, and the pack outlines them for operators (§ 9).
+
+**One area can be put back from a backup (`D108`).** Restore on a backup's row offers *An area…*:
+a panel under the tab's four cards taking a Sync Area of the server's own, or two corners and a
+dimension, with no password, since the restore takes a safety backup of the whole world first. The wrapper starts a throwaway copy
+of the server's own Bedrock package on the backup's world, with the server's packs from outside its
+world beside it, clears the copy's ticking areas, saves the area through its console as a sync saves,
+and reads the pieces out of the stopped copy, all while the server runs. Then it stops the server
+with 30 seconds' warning, takes a safety backup at its ZIP compression and retention, writes the
+pieces into the world's structures pack, starts the server and loads each piece back. A read that
+fails calls the restore off before the countdown, with the world untouched. The restore claims the
+server for its whole length (§ 5.7), so a sync on it is refused meanwhile. `restorearea` in game
+does the same with no confirmation (§ 9). A backup chosen as `latest` is the newest that is not a
+safety backup, opens, holds a world and was not recorded as damaged, the rule a sync's source
+backup follows. A backup waits for the write `save hold` sets off before it copies (§ 8.1, `T356`).
+
+**An area can come from another server's backup (`D111`).** The area panel's *Put it back on*
+names any server that is not retired. The Sync tab's *Sync one area* takes one area from the source
+server's newest usable backup and leaves the rest of the world as it is. Either way the server whose
+world changes is the one that is claimed, warned, stopped and backed up, and its own Bedrock build
+reads the backup; the other server is only read through its backup. A Sync Area is carried with its
+corners, so the server it goes onto needs none of that name. A server on an older build than the
+backup's server is refused before anything stops, as `D103` requires of a sync; a build the wrapper
+does not know refuses nothing.
+
+### 8.6 Notes and locks
+
+Two controls on every backup row. A **note** is free text an administrator types against one
+artifact — why this one matters, as opposed to why it was taken. A **lock** means *never removed by
+retention*, and it is **not counted toward the retention number**: keep 5 with 2 locked is 5
+unlocked plus 2 locked on disk. Counting a lock against the number would make a lock silently
+shrink the retention somebody asked for.
+
+**Both are per artifact rather than per run.** One run with both formats enabled writes one history
+record and two artifacts, so a per-run note would be ambiguous in a way a lock is not — and the two
+controls sit on the same row of the same table, so they have to mean the same "this backup".
+
+**They live in their own file**, `artifacts.json`, beside the history in the instance's own backup
+folder — same directory, same atomic write, same fate if the instance is removed. Not in the
+history: that records *what happened*, and a history that is rewritten when somebody ticks a box has
+stopped being one. Entries are keyed by artifact name, and an entry whose artifact is gone is kept
+rather than swept, because deciding which artifacts exist is the filesystem's job.
+
+**There are two notes and both are shown.** The run's note travels with the history record and does
+not change; the artifact's note is typed afterwards. The row shows the second first, then the first.
+
+**History rows have a retention of their own** (`D98`), per server and 30 days by default. Each
+recorded run trims the history to it, except for three kinds of row something still reads: a row
+whose backup is still in the backups folder, a row recording that a prune damaged a backup still
+there, and the newest successful run. An administrator can remove a row whose run left nothing on
+disk; a row still describing a backup stays with it. The chips are **Restorable**, **Skipped**,
+**Problems** and **All**, and the tab opens on Restorable, which hides every row without a backup;
+Skipped shows the runs that were skipped (`D110`).
+
+**A lock stops retention and nothing else.** The Remove-instance dialog's delete-backups checkbox
+names how many locked backups it will take and then takes them: an explicit, confirmed,
+password-gated instruction is not something a lock may veto, because a lock that could would make
+removal uncompletable from the panel. The safety backup a restore takes is lockable and is not
+locked by default — locking it by default converts a safety net into storage retention can never
+reclaim.
+
+### 8.7 Acquisition: the shadow copy
+
+How the world's bytes are obtained, which is a separate question from what format
+they are written in. One toggle per instance, applying to every strategy, and one
+snapshot per run rather than one per strategy — so two formats enabled together
+read the same frozen view.
+
+**What it buys is time, not space.** World saves are held for every backup on a
+running server; with a shadow copy they are held only long enough to take the
+snapshot, and resume before the copy begins. Nothing on the volume can move while
+the copy runs either, and a file another process holds exclusively can still be
+read — LevelDB's `LOCK` being the one that bites. Without it, the world is read
+live and saves stay held until every strategy has finished.
+
+**Backups are not kept in shadow storage.** The snapshot is released as soon as
+the copy is done, so every backup costs its full size on disk whichever format
+wrote it. Retained snapshots were considered and rejected: Windows deletes
+oldest-first when the shadow area fills, which would make retention Windows's
+decision rather than the administrator's, and copy-on-write cost tracks volume
+churn, which an active LevelDB generates hard.
+
+Three rules carry the safety of the operation:
 
 - **The shadow copy is released unconditionally**, in the same spirit as `save
   resume`. One left behind holds volume space until somebody notices, and on a
   schedule it is left behind every single time. A release that fails is logged
   and never fails a backup that otherwise succeeded.
-- **A half-copied folder is deleted**, because it would list in the restore
-  picker looking exactly like a complete one.
+- **A snapshot that cannot be taken falls back to the live world**, warns, and
+  still produces a backup. A failed acquisition is a slower backup — saves held
+  for the whole copy — rather than a lost one, and reporting it as a failure
+  would blank the last-successful time and make the skip rule back up on every
+  tick. The warning reaches the backup's own history row rather than only the
+  log, and it names the consequence before the cause.
+- **A stopped server takes no snapshot at all.** There is nothing holding saves
+  to shorten, so it would be pure cost. The record says so rather than reporting
+  the toggle as off.
 
-Taking a shadow copy is an administrative operation. Off by default, because a
-strategy enabled where the service account cannot use it fails every scheduled
-backup at three in the morning — which is precisely what the Readiness panel
-(§ 14) exists to predict.
+Taking a shadow copy is an administrative operation. Off by default, because an
+account that cannot take one would otherwise fall back on every scheduled backup
+— which is precisely what the Readiness panel (§ 14) exists to predict.
+
+**The broker takes the snapshot and the main service reads it** (milestone 18.5,
+§ 17). The main service sends `CreateShadowCopy` with the instance id and nothing
+else. The broker resolves the server's folder from the configuration, refuses it
+by `BrokerPathRules`, opens it without following a link, snapshots its volume,
+records the shadow id Windows answered with in its own record, and answers with
+that id and the snapshot's device path. The main service copies from the device
+path with its own account's rights, opening each file through `ServerFileReader`
+as it does for a live read, then sends `ReleaseShadowCopy`, which the broker carries
+out only for an id it recorded. An install without the broker (`-NoBroker`)
+takes the snapshot in the main service's own process, which its account has no
+right to do, so every backup on it reads the live world and says so.
 
 The snapshot is taken through `Invoke-CimMethod` against `Win32_ShadowCopy` with
 the `ClientAccessible` context, not `vssadmin` (Server SKUs only) and not
@@ -1139,51 +1713,93 @@ accelerator does not. `ClientAccessible` is what general-purpose backup tools us
 expecting a requester to hold the VSS session open for the life of the copy,
 which this process is not.
 
-### 8.5 Restore
-Picker listing available ZIP archives and VSS snapshots side by side, labelled
-by which they are and with notes shown. Custom-command backups appear in history
-for reference but aren't restorable through the wrapper, since it doesn't know
-their format.
-
-The two shapes go through one flow. A snapshot's world is copied back where an
-archive's is extracted, and both obey the same two rules: the reserved
-`_serverconfig/` name is skipped, so configuration never arrives as a world
-folder called `_serverconfig`, and every target is checked to be inside the
-worlds directory. The wrapper's own backups cannot contain a traversal, which is
-exactly why the check exists — the dangerous one is the folder somebody placed
-there by hand.
-
-Restore flow: stop the server if running → take a safety backup of current
-state first → apply the selected backup → restart.
-
-**Restoring the configuration is a separate, opt-in choice.** The picker offers
-it as a checkbox, shown only when the archive actually carries configuration and
-unticked every time the panel opens rather than remembered. Putting an old
-`server.properties` back can move the port, which is the one change that makes a
-server unreachable rather than merely wrong — so the world and the
-configuration are restored independently and the configuration half is off
-unless asked for.
-
-The two halves are also handled differently on failure, deliberately. The world
-goes through the move-aside dance because a half-extracted world is corrupt;
-the four configuration files are written afterwards, outside it, because their
-previous contents are already in the safety backup and a failure there is worth
-reporting rather than worth unwinding a completed world restore for. The safety
-backup carries configuration too, so undoing a config restore is restoring that
-archive with the box ticked again.
-
 ## 9. Companion Add-In (Behavior Pack)
 
-Installed by default with every instance, toggleable per instance. Gives the
-wrapper visibility the console alone doesn't provide, using the Bedrock
-Scripting API.
+Ships with the wrapper and reaches each server through the add-on library
+(`D77`, `D93`): it is put on the library at every start, a new server gets it
+switched on by default, and an existing server switches it on from its Add-ons
+tab. A world that has it follows the version BedrockSentry ships: just before a
+launch, an older companion is moved to the newest in the library and the console
+says so (`D106`). It is never switched on that way, never moved down, and every
+other pack stays at its version. Gives the wrapper visibility the console alone doesn't provide, using the
+Bedrock Scripting API on stable modules only.
 
-- **Relay mechanism:** `console.log()` calls inside the pack land in the
-  server's content log (not player-visible chat), reaching the wrapper
-  through the same parser already watching console output. An HTTP push via
-  `@minecraft/server-net` is a possible later upgrade, but that module is
-  still pre-release and requires explicitly enabling it in `permissions.json`
-  — console relay is the safer default.
+- **Achievements stay earnable (`T428`).** A world that runs with cheats on can
+  never earn achievements again, even with cheats turned back off, so nothing the
+  wrapper ships needs cheats. Every custom command the companion registers sets
+  `cheatsRequired: false` (the API's default is true), and every pack the wrapper
+  ships or writes (the companion, its resources and the structure pack) carries
+  `"metadata": { "product_type": "addon" }`, without which a world holding it shows
+  an *Achievements disabled* warning. Turning `allow-cheats` on is the
+  administrator's choice alone, and the panel says what it costs wherever it is set.
+- **Relay mechanism:** `console.log()` calls inside the pack reach the server's
+  console as script output, not player-visible chat, and the wrapper reads
+  them there. BDS ships script output to the console switched off
+  (`content-log-console-output-enabled=false`, `D91`), and `content-log-level`
+  at `warning` or `error` hides it too (`D94`), so switching the pack on sets
+  both (`D93`). An HTTP push via `@minecraft/server-net` is a possible later
+  upgrade, but that module is still pre-release and requires explicitly
+  enabling it in `permissions.json` — console relay is the safer default.
+- **The wire (protocol 1).** Each line is `[BedrockSentry] kind|field|…`, after
+  whatever tags BDS puts in front (`[Scripting]` on Linux 1.26.51.1), with the
+  sentence for a person last on the kinds that have one, where it may hold any
+  pipe. The kinds are `hello` (as the world loads, naming the protocol and the
+  pack's version), `death`, `join` and `leave`, and the wrapper's side of the
+  channel: `probe` and `where`/`where-end` answer a console `scriptevent` the
+  wrapper sends. A later protocol adds fields before the sentence, so nothing
+  is recorded from a pack whose hello names another protocol, and a kind the
+  wrapper does not know is ignored.
+- **Commands (`D106`).** From 1.1.0 the pack registers operator-level commands
+  through `customCommandRegistry`, which run in game and from the server console:
+  `listcord [player]` answers with every online player's whole-block x y z and
+  dimension, `Steve: 1 64 2 Nether`, or that one player's. The console counts as an operator and prints
+  the answer; an unknown name answers as a failure. The console's completion reads
+  the companion's commands with the rest of a server's add-ons (§ 5.8). From 1.3.0
+  `syncarea <new|update|show|list> [name] [pos1|pos2|true|false] [x y z]` edits the
+  server's Sync Areas: `new` adds one with both corners on one block, shown in game,
+  and on an area that exists `new <name> pos1|pos2` sets that corner, as `update` does;
+  `update` moves a corner; `show` ticks or unticks Show in game. A corner is the
+  word `pos1` or `pos2`, because BDS 1.26.52.3 refuses a bare number in a `String` or
+  `Enum` parameter, and without x y z it is the block under the player. The pack
+  checks every word, since the console does not hold an enum to its values, and
+  relays a whole request as `area|…`; the wrapper saves it as the Sync tab would and
+  answers a player with `scriptevent bedrocksentry:reply`, which the pack passes on,
+  and the console on its own page. An open Sync tab shows the change, and an edit is
+  refused while a sync runs on that server.
+- **Outlines (`D106`).** From 1.2.0 the pack draws areas the wrapper hands it with
+  `scriptevent bedrocksentry:outline`, a JSON message of a group, its part and how
+  many parts, and each area's dimension, corners and colour. BDS refuses a message
+  over 2,048 characters, so a long set is cut between areas and the pack replaces
+  the group once its last part arrives, answering `outline|group|count`. From 1.7.0
+  (`D109`) it draws each edge as `bedrocksentry:outline_line`, a thin full-bright line
+  in the area's colour defined by the companion's resource pack (`companion-resources/`),
+  in pieces of at most 16 blocks within 128 blocks of each operator, every second, each
+  living 1.25 seconds so the line does not go out between rounds. It draws through
+  `Player.spawnParticle`, so nobody else sees them, and a player who declined the
+  server's resource packs sees nothing. The resources are not a manifest dependency, so
+  a server without them still reports; the wrapper seeds both folders at every start,
+  switches the resources on and off with the companion, and adds them before a launch
+  to a world that has the companion on (`CompanionResources`). The outlines live in the pack's
+  memory, so the wrapper sends them again after each `hello`, and not at all to a
+  pack older than 1.2.0. From 1.4.0 an area may be marked `"circle"`, drawn as a circle inside
+  its box with rings of chords about 4 blocks long at the bottom and top and posts at eight
+  compass points, and the wrapper
+  sends the world's shown ticking areas as the group `tick`. `showtickingarea <name>
+  <true|false>` is relayed as `tickshow|…`; the wrapper reads the areas, shows or hides the one
+  named (a player's own dimension first, every dimension from the console) and answers.
+- **Operator commands (`D106`).** From 1.6.0 a player's run of `listcord`, `syncarea`,
+  `showtickingarea` or `restorearea` prints `cmd|player|command line`, the command rebuilt from
+  its arguments; the console shows *Steve ran /syncarea new Spawn pos1* under an *Operator
+  commands* box. The console's own commands are not relayed, since it shows them as typed. A
+  vanilla command a player types prints nothing on BDS 1.26.52.3 and has no event in
+  `@minecraft/server` 2.8.0, so it cannot be shown.
+- **Area restore (`D108`).** From 1.5.0 `restorearea <name> [backup]` restores one of the
+  server's Sync Areas and `restorearea pos <backup> <x1> <y1> <z1> <x2> <y2> <z2>` the blocks
+  between two corners in the player's dimension (the Overworld from the console). The backup is
+  `latest` or a backup's name on disk and comes before the corners, because BDS 1.26.52.3 refuses
+  a bare number in a `String` parameter. The pack floors the two `Location` corners and relays
+  `restore|…`; the wrapper answers at once whether the restore started, and the countdown that
+  follows is the only warning (§ 8.5).
 - **Death tracking (initial scope):** `world.afterEvents.entityDie` itself
   carries only `deadEntity` and `damageSource` — no location or dimension of
   its own — so both are read off `deadEntity.location` and
@@ -1205,8 +1821,10 @@ Scripting API.
       back to a generic one that still names the cause.** `fall`,
       `entityAttack` (worded as "slain by" when `damagingEntity` is another
       player, "killed by" for a mob), `projectile`, `drowning`, `lava`,
-      `fire`/`fireTick`, `void`, `starve`, and `suffocation` cover what the
-      cause-breakdown list below already names as worth tracking on their own;
+      `fire`/`fireTick`, `starve`, and `suffocation` cover what the
+      cause-breakdown list below already names as worth tracking on their own
+      (a death in the void reports the cause `void`, which has no phrase of its
+      own and reads *died (void)*, measured on Windows under `T294`);
       the enum carries roughly thirty values today and Mojang adds more with
       each update, so a switch that only handles the common ones and prints
       "died (`entityDamageCause`)" for the rest stays correct as the enum
@@ -1224,11 +1842,8 @@ Scripting API.
     coordinates, same dimension, same formatting, so what a player is told
     privately never disagrees with what the console showed
   - Death-cause breakdown (fall, mob, drowning, lava, PvP, etc.) via
-    `damageSource`
-  - Fallback position tracking (sample position on an interval) for edge
-    cases where the death event's location isn't reliable — void falls,
-    instant deaths — carries the same dimension, off the same sampler, for
-    the same reason
+    `damageSource`: each death's cause and killer are stored, and no page
+    groups them yet
 - **Last known location (`D35`):** where each player was when they last logged
   off, per instance, shown beside their last-seen time. The hook is
   `world.beforeEvents.playerLeave`, not the after-event — this is measured from
@@ -1248,8 +1863,9 @@ Scripting API.
     incomplete, it is confidently wrong
   - Rounded to whole blocks; sub-block precision is noise on a page whose
     question is "roughly where"
-  - The interval sampler scoped above for death edge cases doubles as the
-    fallback here, so a leave whose own position reads unusable still has one
+  - A planned stop asks the pack where everyone is first (`D35`), so players
+    still online when the server stops get a position too; a crash, a kill or
+    a power cut leaves none, and the page says so
 - **Position echoed to console on login and logout, independently of the
   storage above.** A visible line — coordinates and a dimension name — on
   both ends of a session, not only the logout half `D35` persists. The two
@@ -1284,17 +1900,25 @@ Scripting API.
 - **The pack relays a gamertag, not an XUID.** Nothing in the scripting API
   exposes one — `playerId` is an opaque entity identifier — so every relayed
   event joins the player database by name and meets `D31`'s mismatch again.
-  The join here is exact where the allowlist's is not: at the moment a leave is
-  relayed the wrapper holds exactly one open session for that gamertag on that
-  instance, and that session names the XUID. It resolves against the most
-  recently open session rather than only currently-open ones, because the
-  pack's relay line and BDS's own disconnect line race, and the disconnect may
-  have closed the session first.
+  The join here is exact where the allowlist's is not. A relayed line matches
+  the sessions on its instance, started on this run, whose connect line carried
+  exactly that gamertag, and that are open or, for a death or a leave, closed
+  within the last ten seconds, because the pack's line and BDS's own disconnect
+  line race. A death needs exactly one player among them and a position
+  exactly one session; anything else writes nothing, because a death or a
+  position put on the wrong player is believed (`CompanionAttribution`).
 - **Planned additions:** blocks placed/broken by type (`playerPlaceBlock` /
   `playerBreakBlock`), mobs killed, PvP kills specifically, distance
   traveled, AFK detection, achievements/advancements earned.
-- **Every stat is independently toggleable** rather than one on/off switch
-  for the whole pack.
+- **Each record is its own toggle per server**, on the Add-ons tab's Settings view: counting
+  deaths, keeping each player's last position (which also asks the pack where
+  everyone is before a planned stop, `D35`), and showing the join and leave
+  positions as arrivals and departures on the console. Each applies from the
+  next line the pack prints. Telling a player where they died is the pack's
+  own setting, under its gear, because only the pack can act on it.
+- **Game chat is not relayed.** The event the pack would need,
+  `world.afterEvents.chatSend`, is pre-release, and a pack depending on a beta
+  module needs the world's Beta APIs experiment (`D95`).
 - Ships as part of the wrapper's own release — updates alongside the wrapper
   at milestone 13.5, not just the wrapper's binaries.
 
@@ -1307,6 +1931,127 @@ behavior/resource packs.
 - Manifest validation (`manifest.json` presence)
 - Enable/disable toggles, which modify the world's `world_behavior_packs.json`
   and `world_resource_packs.json`
+
+**A tab on each instance, over one shared library.** The library is a folder
+under the data root, relocatable like backups and server packages, filled either
+from Explorer or through an upload in the panel. Each instance enables or
+disables each add-on for itself, and `.mcaddon`, `.mcpack` and `.zip` are all
+accepted for both behaviour and resource packs.
+
+**The tab is four views of one server's add-ons** (`T307`). *On this server* lists
+every add-on with its icon, type, version, status and open issues: the companion
+first and the rest by name, switched-on packs above the others, and a line under a
+name only when something about it is unusual. A row's details say where it is, its
+uuid, its scripts and whether they need Beta APIs, what it needs, its author and
+its description. *Settings* is each pack's own settings screen, with the companion's
+recording options first. *Load order* is each of the world's two lists with moves
+up, down and to the top. *Issues* holds the findings, each naming its add-on, and
+any of them can be hidden until what it says changes (`D96`).
+
+**A pack the library has never seen can be copied into it from the server**
+(`D78`). Its row offers *Copy to library* while the library lacks a version the
+server has; it copies one folder per missing version, the world's copy first, and
+leaves the server's own where it was, switched on or not. It reads the server and
+writes only the library, so it works on a running server. The library page shows
+each pack's icon, the newest version's `pack_icon.png`, as the tab does.
+
+**A change made while the server has a process waits for it to exit** (`D85`).
+BDS rewrites a world's pack lists when it stops, so a list written while it runs is
+undone by its own exit. Switching a pack on or off, changing its version, a move in
+*Load order* and a pack's settings are kept in a queue per instance under the data
+root, listed above the views with a Discard on each, and written once the server
+reaches Stopped or Faulted and again before every launch, so a crash or a stop from
+outside the panel cannot skip them. Each is planned again against the world as it
+is then, and writing one twice changes nothing the first did not. One change waits
+per pack, per pack's settings and per list; a later one replaces it. A restart's
+claim lets the queue write between its stop and its start; any other claim may be
+replacing the world and holds it off (`T417`). Removing a
+pack's folder is never queued and needs the server stopped. A pack the world lists
+with no folder on the server is named by its list and version on its Issues card,
+which carries **Remove from this world**: the same switch-off, by uuid (`T416`).
+
+**Identity is the manifest's `uuid`; the version is separate.** That is what
+makes two files that look like different add-ons recognisable as one add-on at
+two versions, and it is why an instance enables a *version* rather than a file.
+The version comes in two shapes — a semver string at `format_version: 3`, an
+array in older packs — and so does `min_engine_version`, so a reader accepts
+both. The author is in `metadata.authors` rather than in `header`, and
+`texts/en_US.lang` may override the displayed name and description through
+`pack.name` and `pack.description`, so the header strings are a fallback rather
+than the answer. Two versions of one uuid enabled at once is refused rather than
+warned about: BDS resolves a uuid to one pack, so the second is an ambiguity
+rather than an addition.
+
+**Activation follows the world, so it follows `level-name`.** The lists above
+live in `worlds/<level-name>/`, which means the tab reads the list of the world
+the instance would actually load rather than keeping its own record of what was
+enabled — the rule `D31` applies to allowlists, for the same reason.
+
+**A pack reaches an instance by being copied into its own `behavior_packs/` or
+`resource_packs/`.** BDS resolves uuids out of the server's own directory, and a
+copy needs no privilege, keeps the instance self-contained across re-homing and
+adoption, and is small beside the disk an instance already costs. Links were
+rejected because a symbolic link on Windows needs a privilege an ordinary
+install does not have.
+
+**A pack's settings screen is a `settings` array in its own manifest**, which
+declares the controls and their defaults. Entries are `label`, `toggle`,
+`slider` and `dropdown`; `label` carries text and nothing else and is most of a
+real screen; the rest carry a namespaced `name`, a `default`, and the bounds or
+options the control needs. Text carries Minecraft's `§` formatting codes, so
+rendering one faithfully means decoding them.
+
+**The values a world actually uses live somewhere else**, in
+`world_behavior_pack_settings.json` beside the world's pack list, keyed by the
+pack's **header** uuid. It holds only what differs from the declared defaults,
+so a faithful view is the manifest's controls overlaid with that file rather
+than either one read alone; it is created lazily, the first time something
+changes, so on a server it very often does not exist yet; and it is exactly what
+the in-game gear writes, so editing it is equivalent to using that screen.
+**Writing there rather than into the pack's manifest is the difference between a
+setting that survives an update and one that does not** — the manifest belongs
+to the pack and is replaced when the pack is, while this file belongs to the
+world.
+
+The neat part is why an add-on needs no config file of its own: Bedrock scripts
+have no filesystem access, but the game reads this file and hands the values to
+the script through `world.getPackSettings()`.
+
+**Three preconditions decide whether an enabled add-on does anything**, and all
+three are cases where the panel says *enabled* and the game shows nothing: a
+`dependencies` entry naming a pack by uuid that is not present — distinct from
+one naming a script API module by name, which is a compatibility gate against
+the server's own runtime rather than against the library — the order of
+`world_behavior_packs.json` — position decides which of two colliding packs is in
+effect, so such a pair can only be reconciled by reordering — and a world
+experiment a script module needs, which lives in `level.dat` rather than in
+`server.properties`. Which end of that list wins is deliberately not stated here
+until it has been measured rather than recalled.
+
+**Removing a pack from the library can change the servers that have it** (`D83`). A
+server has a pack when a world list names it or a copy sits in the world's or the
+server root's pack folders; the development folders are the administrator's and are
+neither counted nor touched. The companion pack is never removed, since it is put
+back at every start. A pack a server that is not stopped has is refused, naming the
+server: its world's files are rewritten when its process exits, so nothing written
+now would last. A pack only stopped servers have is removed once the administrator
+has confirmed a warning naming them, and it comes off each of them first: its
+registrations in both lists, its entries in the history and settings files, and its
+copies. Every file on a server is planned before any is written, so one this cannot
+read refuses the removal there with nothing changed, and the library copy stays
+until every server is done. The plan is asked again when it is carried out, and one
+that has changed since the page showed it is shown again rather than carried out.
+
+**Uploading is the one place this wrapper extracts a file it did not produce.**
+Archive entries are resolved against the destination root and an archive is
+refused whole on the first one that escapes it, rather than entry by entry — a
+partly extracted hostile archive is worse than a rejected one. An archive
+carrying no `manifest.json` is not an add-on and is refused saying so.
+
+**An add-on's commands complete in the console** (§ 5.8). Switching on a script pack starts a
+throwaway run with it, its dependencies and the world's `level.dat`, which reads the commands it
+registers; a pack without a script module registers none and needs no run. Its declared blocks,
+items, entities and functions are read from its files at once.
 
 ## 11. BDS Auto-Update
 
@@ -1349,6 +2094,15 @@ asked to check at 4am. Mode `None` means no timer: the check on service startup
 still runs and **Check now** still works, which is why the page never calls it
 "never". To stop contacting Mojang at all there is a separate switch.
 
+**Every check also asks npm for Mojang's `@minecraft/vanilla-data`**, the names console
+completion offers (§ 5.8), and an install asks again for the new build. With the check switched
+off, nothing is fetched, and the Commands view says that blocks, items and entities do not
+complete.
+
+The Configuration tab and the Settings page say when the feed was last read and,
+when a check since could not read it, when and why. That mark is held in memory,
+like the last read, and cleared by the next read that works (`T52`).
+
 Two details the loop gets right because neither is obvious:
 
 - **The schedule is re-read every time round**, so a change from the Settings
@@ -1379,11 +2133,39 @@ any one server.
   unzipped over by hand stops matching the package it was installed from. A
   server that has not run under the wrapper has told it nothing, and the page
   says so rather than offering an update that may already be applied.
+- **When the announcement does not parse, the package the wrapper installed
+  decides** (`D53`). A Preview build installed from `bedrock-server-1.26.60.21.zip`
+  announces `1.26.60-beta21`. The wrapper records which package it laid down, on
+  an update and on a server created from a package, and what the server
+  announced on its first start on those files; the package is the build while
+  the announcement still matches. A changed announcement that does not parse is
+  an unknown build, and the page names what the server calls itself rather than
+  telling a running server to start.
 
 Checking and downloading are separate from applying. A downloaded build lands in
 the package store under Mojang's own file name — the same folder an
 administrator can drop a zip into (`D19`) — so there is one install path and a
 downloaded build is not a special case.
+
+**An empty store gets a first build (`T330`).** The updater only replaces a build a
+server already has, so without this no first server could be made until a zip was
+put in the store by hand. Opening the new-server form with the store empty, or
+**Check now** on Settings, downloads the Release build the feed offers; callers
+asking at once share one download, which runs to the end if the page goes away.
+With checking turned off, or the feed unreadable, nothing arrives and the form says
+why and names the folder a zip goes in. Mojang's download page asks for its EULA
+before its link works and the wrapper's download passes no such page, so the first
+download waits for somebody to press **I accept and download** beside a link to it;
+the acceptance is recorded and the button does not appear again (`D102`).
+
+**The package log records each zip's channel (`T333`).** Mojang names a Preview zip
+the way it names a Release one, so nothing in the store says which is which; the
+feed does, link by link. `data\server-packages.json` under the data root takes a line
+when a zip is downloaded from an offer, and when a check finds an offer naming a zip
+already in the store, so a build that arrived by hand is tagged while Mojang still
+offers it. A zip no line names is shown untagged rather than guessed. The file is
+appended to and read by its latest line per name; it lives under the data root so a
+moved package store keeps its tags, and it holds the EULA acceptance too.
 
 ### 11.1 Applying a build
 
@@ -1535,12 +2317,16 @@ Updates the wrapper's own code from its repository — separate from BDS
 auto-update (Section 11). Deliberately split across two milestones so the
 core mechanism is available early:
 
-- **Core mechanism (milestone 3.5):** branch selection (`build` or `prod`),
+- **Core mechanism (milestone 3.5):** channel selection (Stable or Build),
   version check, download of the artifact published by the release pipeline
   (Section 12.1), and applying the update via a small, rarely-
   changing helper process — a running service can't overwrite its own loaded
-  files, so the wrapper stops itself, the helper swaps the files, then starts
-  the wrapper back up.
+  files, so the wrapper stages the build and launches the helper, which stops
+  the service through the service control manager, switches the files, then
+  starts the service back up. With the privilege broker (milestone 18.5) the
+  service sends only the build identity; the broker fetches the manifest itself,
+  unpacks a fresh version folder, writes the plan, and the helper stops and
+  starts both services, since both services' executables sit behind one `current` link.
 - **Graceful integration (milestone 13.5):** once process management and
   backups exist, the update runs through the same sequence as any other
   shutdown — warn online players → stop the server → optional backup-on-
@@ -1548,7 +2334,47 @@ core mechanism is available early:
 - Update mode: automatic / notify-only with a manual button and a
   description of the pending update / don't check for updates (manual "check
   now" stays available even in "don't check" mode)
+- The Settings page says when the channel was last read and, when a check
+  since could not read it, when and why. That mark is held in memory and
+  cleared by the next read that works (`T196`).
 - Service Update page shows a changelog
+
+**Two executables in one version folder (milestone 18.5).** A version folder holds
+`BedrockSentry.Host.exe` at its top, the broker at `broker\BedrockSentry.Broker.exe`
+and the updater at `updater\BedrockSentry.Updater.exe`. Each is a self-contained
+publish in a folder of its own, since two in one folder would overwrite each other's
+libraries. Both services' ImagePaths go through `current`, so one switch of the
+junction moves both, and the contract handshake (§ 17.3) refuses only a
+half-applied update or a hand-copied file.
+
+**The broker owns staging and applying** (`BrokerUpdates`). The main service sends
+`StageUpdate` and then `ApplyUpdate` with a build identity and nothing else. The
+broker reads the manifest from the install policy's `updateFeedUrlTemplate`, or the
+built-in feed, and takes only the channel, the health port and the timeouts from
+the main service's configuration. It refuses a manifest naming another build, a build
+whose install epoch is above its own, and a download address that is not https; it
+checks the archive's SHA-256, unpacks it into a fresh `versions\<id>`, copies the
+running build's updater to `update\helper` and writes every field of the plan
+itself. The download, the helper, the plan, the log and the result all sit under
+`update` in the install root, which the main service's account cannot write, so a
+link that account planted cannot redirect a LocalSystem write. `ApplyUpdate` launches
+only the build `BrokerRecord` names as staged last. The updater stops the main
+service and then the broker, switches `current`, starts them in reverse order, and
+refuses to run from inside `versions` or `current`. The panel checks the broker's
+feed (`IWrapperUpdateInstaller.FeedUrlTemplate`), so the check and the stage read
+one feed. On an install without the broker, under an account that cannot write
+the install tree, Settings and Readiness say self-update is unavailable.
+
+**An install epoch keeps a build that needs a reinstall out of self-update**
+(`D114`). `BedrockSentryInstallEpoch` in `Directory.Build.props` is stamped into
+each build as `BuildInfo.InstallEpoch` and into its manifest as `installEpoch`; it
+is raised by one on a build that cannot be reached by self-update and never
+lowered. A missing field reads as `0`. A manifest whose epoch is above the running
+build's is refused before the download, in the main service (`UpdateService.ApplyAsync`)
+and again in the broker, and Settings shows `UpdateManifest.ReinstallNotice` in
+place of the button: run `uninstall.ps1`, then `install.ps1` from that release.
+The refusal is not counted as a failed update, since three of those pause automatic
+updates (`D101`). A wrapper older than the field ignores it.
 
 ### 12.1 Release Pipeline & Installer
 
@@ -1558,14 +2384,72 @@ fetching a newer build. Both pull the same published output, so it's built
 once rather than improvised separately for each.
 
 - CI (GitHub Actions) builds, tests, and publishes on every push to `build`
-  and `prod`. No local `dotnet build` is ever required to install or update
+  and `main`. No local `dotnet build` is ever required to install or update
   the wrapper — the SDK is a contributor prerequisite, not an operator one.
-- Each branch has its own published artifact stream, matching the branch
-  selection in the update settings above.
+- Each branch has its own published artifact stream, one per channel: `main`
+  publishes Stable and `build` publishes Build.
 - The installer registers the Windows Service and hands off to the first-run
   setup wizard (Section 13).
-- **Uninstall is non-destructive to data.** It removes the service
-  registration and the wrapper's own binaries; instance working directories,
+- **Two services (milestone 18.5).** The main service runs as its own virtual
+  account, `NT SERVICE\<ServiceName>`, or as a named account passed with
+  `-ServiceAccount`; LocalSystem, LocalService and NetworkService are refused by
+  SID. A named account's password is checked with `LogonUser` before anything
+  stops, it is given `SeServiceLogonRight` through the LSA, and the password is set
+  through CIM, never on a command line. `sc.exe privs` leaves the main service
+  `SeChangeNotifyPrivilege` and `SeCreateGlobalPrivilege` only, so the servers and
+  backup commands it starts cannot reach SYSTEM through impersonation, and
+  `sc.exe sidtype unrestricted` puts the service SID in its token on a named
+  account too, so the pipe lists and the panel's firewall rule can name it. The
+  administrative work is the broker's (§ 17): `<ServiceName>Broker`, LocalSystem,
+  automatic start, while the main service starts delayed. The installer writes
+  `--broker pipe` into the main service's ImagePath in the same run that registers
+  the broker, so only an administrator changes which one does the work. `-NoBroker`
+  leaves both out and removes a broker service an earlier run registered; the
+  firewall, Defender and loopback fixes, shadow copies and self-update are then
+  unavailable, and Readiness says so (§ 13.3).
+- **The data root is granted to the service's account** (`AccessPlan`). The
+  installer runs the staged `BedrockSentry.Broker.exe --prepare-data-root`
+  elevated, before the drain, so a refusal costs no outage. It gives the account
+  `Modify`, never `FullControl`, beneath the root, and on the root itself read and
+  create without `DELETE`, so the service cannot rename the root away and leave a
+  junction in its place. Each secret file (the credential, the setup token, the
+  certificate and its password, `SecretFiles`) breaks inheritance, so each one
+  that exists is granted again on every run. A new root is created carrying its list. An existing root is
+  written over only when it and every folder beneath it are owned by LocalSystem
+  or Administrators, only they could write there, and no link is among them; it
+  is left alone when it already carries that list, and anything else is refused.
+  The virtual account's SID is worked out from the service name (`ServiceSid`), so
+  the grant can be written before the service is registered. The installer writes
+  nothing else into the data root: `-AllowRemoteSetup` and
+  `-AllowCustomBackupCommand` go to `policy.json` in the install root, which only an
+  administrator can write.
+- **An install that runs as LocalSystem is not converted in place.** Everything it
+  wrote, in the data root and outside it, was written by SYSTEM, and a switch made
+  halfway would leave a service that cannot read its own files. The installer
+  refuses it before anything stops and names the way across: `uninstall.ps1`,
+  which keeps the data, then `install.ps1` with the same roots (`T129`). Changing
+  the account of an existing install is the same uninstall, then install, since
+  the grant refuses a tree the old account could have left links in.
+- **Each server runs restricted (milestone 18.5).** `bedrock_server.exe`, the
+  throwaway runs included, starts under a restricted copy of the service's
+  token: every privilege but `SeChangeNotifyPrivilege` removed, and a
+  restricting list of a SID for its own folder (worked out from the folder's
+  path) and the groups Windows grants its own files to. An access passes only
+  where both the account and that list allow it, so the server can change its
+  own folder and read none of what is granted to the service alone: the
+  certificate and its password, the credential, the setup token, the
+  DataProtection keys, the database, the backups and the update folder. The
+  service grants a folder it created as its owner; the installer grants the
+  data root's server folders when it first takes the root over, and the broker
+  a server folder it makes; an administrator grants an existing folder outside
+  the data root with `install.ps1 -GrantFolder` (§ 17.7). A folder none of them
+  granted refuses the start and says so. The shape is measured on Windows by
+  `T385`. The server is less trusted than the service from here on, so what it
+  writes is read as data (§ 17.6).
+- **Uninstall is non-destructive to data.** It removes both services'
+  registrations, both event log sources and the wrapper's own binaries; it leaves
+  the named account's right to log on as a service, which another service may
+  share; instance working directories,
   `worlds/`, backups, and player data survive it. Removing those is a
   separate, explicit action.
 
@@ -1582,8 +2466,8 @@ to poll rather than having to enumerate releases.
 
 **Resolved as D12.** The generated PFX's export password is protected with
 `ProtectedData` at `LocalMachine` scope rather than written to a plaintext
-sidecar file. The directory ACL — SYSTEM and Administrators only, with
-inheritance broken — is the primary control; DPAPI is defence in depth for the
+sidecar file. The file's own access list — SYSTEM, Administrators and the
+service's account only, with inheritance broken — is the primary control; DPAPI is defence in depth for the
 case where the file is copied somewhere less protected, since LocalMachine-scoped
 ciphertext is useless on another machine. The ASP.NET Core DataProtection key
 ring was rejected for this: it lives under the same data root, so using it to
@@ -1651,6 +2535,20 @@ all** — a detached updater swapping versions and issuing a service stop in the
 middle of an operating-system shutdown is strictly worse than not updating, and
 the staged build is still there for the next start.
 
+**Every server the drain stopped comes back after the update** (milestone 13.5).
+The drain records the ids it stopped in `<data>\update\start-again.json`, and the
+wrapper that starts next starts them whether or not they auto-start, saying so on
+each console. The build under test starts once before its health check can fail, so
+its take moves the list to `start-again.taken.json` under its own identity; the old
+build, started again by a rollback, takes it from there, and the taking build's next
+start or the next drain drops it (`T402`). A
+put-back the drain's own caller makes, when the helper cannot be launched, takes its
+ids off first. The installer's drain (§ 12.4) goes through the same method. Each of
+those launches is where the companion pack moves: the new build's companion is on
+the add-on library before any server starts, because `CompanionPackSeeder` is
+registered ahead of `InstanceHostedService`, and `CompanionPackUpgrade` moves each
+world to it at its launch (`D106`).
+
 ### 12.4 A hand-run installer upgrade
 
 `install.ps1` run over an existing install is a second update path, and it was
@@ -1660,26 +2558,63 @@ real `stop` and a chance to save — but it is the **service-stop** path of § 5
 about five seconds of warning, and no backup-on-shutdown, because there the
 service control manager is waiting.
 
-Nothing is waiting on the installer. So it asks first: a POST to
-`/prepare-shutdown` on the same loopback listener the updater polls for health,
-which runs the same warn-drain-back-up sequence § 12.3 does, and only then stops
-the service. By that point every server is already down and the short budget has
-nothing left to hurry.
+Nothing is waiting on the installer. So it asks first, on the wrapper's **admin
+pipe**, which runs the same warn-drain-back-up sequence § 12.3 does, and only then
+stops the service. By that point every server is already down and the short budget
+has nothing left to hurry.
 
-- **The path is part of the frozen contract**, like `/healthz` and the port, and
-  for the same reason: `install.ps1` from a new release talks to the wrapper from
-  an old one. A build that does not know the path answers 404, the installer
-  reads that as "no drain available" and carries on — the contract degrades
-  rather than breaking. Same for a wrapper that is not running, or one whose
-  health port has been moved and whose config the installer then reads to find
-  out.
-- **Unauthenticated, and loopback-only three times over**: Kestrel binds the port
-  with `ListenLocalhost`, middleware 404s the path on any other port, and the
-  remote address is checked again in the handler. Anyone who can reach it can
-  already run `Stop-Service`, so it grants nothing local access did not.
+- **The admin pipe is part of the frozen contract**, like `/healthz` and the port,
+  and for the same reason: `install.ps1` from a new release talks to the wrapper
+  from an old one. Its name is `<ServiceName>.admin` (`BedrockSentry.admin` by
+  default). A message is a four-byte little-endian length and that many bytes of
+  UTF-8 JSON, one request and one answer per connection, with no handshake:
+  `{"operation":"drain"}` answers `stopped`, `failed`, `calledOff`,
+  `warningSeconds` and `version`; `{"operation":"callOff"}` answers `calledOff`
+  and `tooLate`; anything else answers `error` and does nothing.
+- **Only an elevated administrator or LocalSystem may open it** (`D62`). Its access
+  list names those two and denies NETWORK; an administrator's unelevated token and
+  an ordinary local account, which cannot stop the service either, can no longer
+  drain its servers (`T177`). The installer connects at Identification level and
+  checks that the process serving the pipe is the service's before it sends.
+  The service's own account holds only the right to create the pipe's second
+  instance, and OWNER RIGHTS is named with that one right, so no process carrying
+  the account, a server included, can add a third instance or rewrite the list.
+  A local account can still create the name while the service is stopped; that
+  costs the next upgrade its drain, never its saves, and the Readiness panel
+  names it (§ 13.3).
+- **Older wrappers.** Every wrapper older than the pipe runs as LocalSystem, and the
+  installer refuses those before it drains, naming uninstall then install (§ 12.1,
+  `T387`). So when nothing serves the pipe, it is a current wrapper whose pipe was
+  not created: the installer says "No graceful drain available" and stops the
+  service the ordinary way, which still saves every world. It asks nothing over
+  HTTP (`T386` clause 4). An installer older than the pipe posts to
+  `/prepare-shutdown`, which this build maps to nothing; its authentication
+  redirects the request to the login page, and that installer reads the redirect as
+  no drain (`T111`).
 - **`-SkipDrain`** gives back the old behaviour for somebody who wants the
   upgrade over with. Worlds are still saved; only the countdown and the backup
   are given up.
+- **Ctrl+C calls the countdown off** (`D100`). The drain runs on
+  `CancellationToken.None`, because its token means "stop waiting" and a cancelled
+  countdown goes straight to the stop, so the installer's `finally` sends
+  `callOff` on a second connection to the pipe instead (a `DELETE` to the HTTP
+  path for an older wrapper). Until the stops begin that ends the countdown with
+  every server running and tells the players; after, it is too late and the answer
+  says so. The installer reads the pipe's answer by polling, so Ctrl+C reaches it
+  mid-drain.
+- **`/readyz` writes at most once in 30 seconds.** Its data-root check tests by
+  creating and deleting a file, and the result stands for 30 seconds, so an
+  anonymous request is not a way to make the service write.
+
+**Every name derives from the installed service name.** `install.ps1` takes
+`-ServiceName` (letters, digits, `-` and `_`, up to 64 characters) and writes it
+into the ImagePath as `--service`. From it come the broker service
+(`<ServiceName>Broker`), the broker's pipe (`<ServiceName>.broker`), the admin pipe,
+the virtual account `NT SERVICE\<ServiceName>` and its SID, and the event log
+source. A `--service` with no usable name fails the start rather than answering as
+the default install. The application's own names do not follow it: the default
+data root folder, the data protection application name and the companion pack's
+author stay `BedrockSentry`, since changing them would orphan keys and data.
 
 ## 13. Settings & Status
 
@@ -1688,8 +2623,9 @@ nothing left to hurry.
 - Status: uptime, current BDS version, resource usage, last backup timestamp
 - Self-diagnostics/health-check panel: confirm VSS availability, admin
   rights, and free ports before something fails at runtime
-- First-run setup wizard: EULA acceptance, initial BDS download,
-  `server.properties` walkthrough, initial admin credentials (Section 3)
+- First-run setup wizard: initial admin credentials (Section 3). The EULA
+  acceptance and the initial BDS download are the new-server form's and Settings'
+  (§ 11), and the `server.properties` walkthrough is the new-server form's
 - Full config export/import: instance definitions, backup configuration,
   update settings, chat command settings, add-on paths — same pattern as the
   player-data export/import (Section 7), pointed at wrapper settings instead.
@@ -1743,12 +2679,22 @@ relying on actually work when it runs".
   and spends almost all of its life stopped on a perfectly healthy machine, so a
   check that reported "stopped" as a fault would train people to ignore the
   panel — which is the failure mode a diagnostics page can least afford.
-- **The service account.** Run under a plain user the wrapper still starts, still
-  serves the panel and still runs servers, and then every firewall fix, Defender
-  exclusion and shadow copy fails with its own unrelated-looking error. One row
-  saying why beats three reporting `Unknown`. It is a report and never a fix: a
-  process cannot grant itself privileges, and a button implying otherwise would
-  be a lie.
+- **The service account.** The service runs under its own account and hands every
+  firewall, Defender and loopback fix, shadow copy, orphan's end and self-update to
+  the privilege broker (§ 17). The row asks the broker its `Status` and names one of
+  three cases:
+  it answers; it does not, with its reason and "start it or run `install.ps1`
+  again"; or the install left it out (`-NoBroker`). Without the broker, under an
+  account that is not an administrator, each of those fails with its own
+  unrelated-looking error, so the row says why once and the fix buttons elsewhere
+  give way to a sentence pointing at it. It is a report and never a fix: a process
+  cannot grant itself privileges, and a button implying otherwise would be a lie.
+  What the account cannot read is said rather than guessed: Defender's
+  administrators-only answer reads Unknown, never "not excluded", and the Status
+  page names a restart key it cannot read rather than taking it as clear.
+- **The installer drain.** The admin pipe (§ 12.4) is created at start. When another
+  process already holds the name the service logs it and this row names it, since
+  the next upgrade then stops servers without draining them first.
 - **Port availability**, from the ports already saved rather than one being
   typed. The properties tab checks a port before it is committed; this catches a
   collision that appears afterwards — another program installed, a second
@@ -1775,11 +2721,33 @@ night.
   **Apply fix** button; neither changes anything on its own, and each says what
   it will do before it is pressed, because "fix" describes nothing.
 
+  Rows are grouped under each server's name, with the local-client rows under
+  "This machine" last, and each server's own group also sits at the foot of its
+  Status tab, under its play-port advice. A fix re-reads only the source its row
+  is decided against (the firewall, Defender, the client exemptions, or the
+  identity key file) and re-decides that source's rows; the rest keep their
+  answers rather than going back to "Checking…".
+
+  A rule the wrapper adds is named for the server and its port and carries the
+  description `BedrockSentry server <id>`, so it stays the server's through a
+  rename: renaming a server relabels its rules. When a rule named for a server
+  opens a port it no longer uses, a strip under the server's controls on every
+  tab says so and offers **Update firewall rules**, which moves that rule to the
+  current port rather than adding a second beside it, and **Dismiss**, which
+  hides that notice until the rules or ports it names change; the firewall row's
+  **Apply fix** does the same as Update (`T411`, `T414`). Readiness groups the
+  firewall, Defender and loopback rows under each server, the same rows close that
+  server's Status tab, and Apply fix rechecks only the row it fixed (`T418`).
+
   Three states, not two. `Unknown` — the check could not run — is deliberately
   not folded into `Missing`. "Defender is not excluding your world" and "we could
   not ask Defender anything" call for different actions, and reporting the second
   as the first would have people changing a machine nothing had inspected.
-  A check that could not run offers no fix at all.
+  A check that could not run offers no fix at all. Defender answers an account
+  that is not an administrator with a one-item list, "N/A: Must be an
+  administrator to view exclusions"; that reads as `Unknown`, never as a list
+  that excludes nothing. A pending-reboot key the account cannot read is named
+  beside the reboot notice rather than taken as clear.
 
   The Defender exclusion is the one thing in the wrapper that makes a machine
   *less* protected, so it is scoped as narrowly as the problem allows — the
@@ -1840,11 +2808,23 @@ night.
   slowest one returned, which is indistinguishable from the page being broken.
 - **Capacity.** Free space, and what instances, backups and packages each
   consume. A backup schedule quietly filling a disk is the most common way an
-  installation like this dies.
+  installation like this dies. The Storage table lists the system volume and
+  every volume the wrapper writes to (the data root, backups, server packages,
+  new servers and each server's folder; a volume mounted in a folder is a row of
+  its own). Each row gives the drive type (*SSD*, *HDD*, *Array* for a Storage
+  Space, or a dash), and Free and Used with their share of the volume. Free turns
+  amber under 15% free and red under 10%, where File Explorer marks a drive low,
+  and a line under the table names the volume (`T430`). On a machine with Data
+  Deduplication, three columns give the rate and ratio of the saving against the
+  data stored, never the volume, the bytes saved, and the last optimisation
+  (`T429`); without the role one sentence under the table says so.
 - **Clock.** Local time and time zone, because scheduled restarts are written in
   local time (Section 5.3) and a machine set to UTC runs an 05:00 restart at
   midnight — discoverable otherwise only from player complaints.
-- **Pending reboot.** Windows will take every server down without asking.
+- **Pending reboot.** Windows will take every server down without asking. Read
+  from the two flags that can restart the machine by themselves, component
+  servicing's and Windows Update's. The file-rename queue is not read: it cannot
+  cause a restart and is non-empty on most healthy machines (`T188`, `D64`).
 
 **Public IP discovery (resolved as `D20`).** A machine cannot know its own public
 address, so this is an outbound request to a third-party echo service — enabled
@@ -1865,6 +2845,13 @@ including port assignment and per-instance working directory. The
 architecture supports multiple instances from milestone 4 onward; this
 milestone is where that gets a proper UI instead of being config-file-only.
 
+A server's page draws one row above its tabs, whichever tab is showing: the
+server's state and process id, the players online against `max-players`, and
+Start, Stop and Restart. The Status tab's Players card shows the same count
+from the same reading and adds how many of those online are operators, by the
+rule the Players tab's Role column uses: the player's `permissions.json` entry,
+else `default-player-permission-level`.
+
 ## 15. Telegram & Discord Bots
 
 Scope: admin commands/remote control, and external player notifications.
@@ -1883,3 +2870,255 @@ command and notification list still to be defined.
   infrastructure used by multiple features rather than duplicated per feature
 - Sensitive credentials (Section 3) are hashed, and excluded from the
   config export/import tooling (Section 13)
+- The panel's service never runs as LocalSystem. Administrative work is a closed
+  list of broker operations, each naming what it acts on by an id the broker
+  resolves itself; there is no operation that runs a command or takes a path
+  (§ 17)
+- The panel writes every time of day on the twelve-hour clock, `2:05 PM`,
+  through one helper (`ClockText`) in the invariant culture, so a moment reads
+  the same on every page and every machine (`T304`). Two exceptions: an
+  `<input type="time">`, whose value HTML defines as 24-hour and which the
+  browser shows in its own locale, and the lines BDS prints, which the console
+  shows as BDS wrote them
+
+## 17. The privilege broker
+
+Milestone 18.5, `D46`. The wrapper is two Windows services. The main service serves
+the panel, runs the servers and takes the backups under an account of its own
+(§ 12.1). The broker, `<ServiceName>Broker`, runs as LocalSystem and does the
+administrative work the main service cannot, from a closed list of operations. No
+operation runs a command, and none takes a path, a port or a script from its
+caller: each names what it acts on by an id the broker resolves from the
+configuration itself. That absence is what makes the broker a boundary rather than
+a second shell for whoever controls the main service.
+
+The broker trusts nothing the main service's account can write. It reads the main
+service's configuration, `config\bedrocksentry.json` under the data root named by
+its own `--dataroot`, and never writes it; every folder that configuration names
+passes the path rules (§ 17.4), and every port must be one the server's own files
+name. The feed it updates from is the install policy's, in the install root.
+
+### 17.1 The operations
+
+`BrokerOperation` in `Core/Broker/BrokerContract.cs`, numbered explicitly because
+the values cross a pipe between two executables. `BrokerArguments` states the
+fields each takes; every one of them is required, and a request that carries a
+field its operation does not take is refused as well as one that lacks a field.
+
+| Operation | Fields | What the broker does |
+|---|---|---|
+| `AllowServerPorts` | instance id, port span, protocol | Adds an inbound firewall rule for a socket the instance's own `server.properties` names and no other server's does; refuses the well-known ports and the administration and database ports in `BrokerPortRules` |
+| `ExcludeServerFolder` | instance id | Adds a Defender exclusion for the instance's folder, only one under the data root's instances folder or one the broker granted (`D115`) |
+| `ReadDefenderExclusions` | none | Reads Defender's exclusion list, which a non-administrator is shown as a refusal |
+| `ExemptLoopback` | package family | A loopback exemption for Minecraft or Minecraft Preview, the two families in `BrokerArguments.LoopbackFamilies` |
+| `EnableVss` | none | Sets the Volume Shadow Copy service back to demand start |
+| `CreateShadowCopy` | instance id | Snapshots the volume holding the instance's folder and records the shadow id (§ 8.7) |
+| `ReleaseShadowCopy` | shadow id | Releases a snapshot, only one the record says the broker took |
+| `FindOrphans` | instance id | Lists Bedrock servers running from the instance's folder (`D56`); the main service leaves out the ones it started |
+| `TerminateOrphan` | instance id, process id | Ends one, after checking the live process is a Bedrock server running from that folder |
+| `GrantFolder` | grant target, and an instance id for a server's folder | `Modify` for the main service's account on the instance's folder, the backups root or the server-packages root, only when the folder is missing or empty (§ 17.7) |
+| `StageUpdate` | build identity | Fetches, verifies and unpacks that build (§ 12) |
+| `ApplyUpdate` | build identity | Launches the updater for the build staged last |
+| `Status` | none | Answers with the broker's build, for the Readiness panel (§ 13.3) |
+| `ReadFirewallRules` | none | Reads the inbound firewall rules, which the firewall's cmdlets refuse a service's virtual account |
+| `ReadLoopbackExemptions` | none | Reads the Minecraft packages installed for every user and the loopback exemptions; listing every user's packages needs an administrator |
+| `RemoveServerRules` | instance id | Removes the inbound rules `AllowServerPorts` named for the instance, matched on the name the broker reads from the configuration; a removal sends it before the configuration forgets the server (`T400`) |
+| `RenameServerRules` | instance id | Relabels the instance's rules, found by the description `AllowServerPorts` gives them (`BedrockSentry server <id>`) or by the name, with the name the configuration gives it now; a rename sends it under the old name and again under the new one (`T411`) |
+| `UpdateServerRules` | instance id | Moves the instance's rules to the sockets its own `server.properties` names, adding one only where none is left to move and removing a leftover; refused when a socket is another server's or one `BrokerPortRules` refuses (`T411`) |
+
+The main service reaches the broker through the same seams the in-process code
+sits behind (`IFirewallService`, `IDefenderService`, `ILoopbackExemptionService`,
+`IVssServiceControl`, `IShadowCopyService`, `IOrphanInspector`,
+`IWrapperUpdateInstaller`). `--broker pipe` in the main service's ImagePath swaps in
+the broker clients; without it the same seams run in the main service's process
+with its own account's rights.
+
+### 17.2 The pipe and who may ask
+
+The broker serves the pipe `<ServiceName>.broker`. Its access list gives LocalSystem
+full control, Administrators and the main service's service SID read and write only,
+so neither of those two can create another instance of the name, and denies
+NETWORK outright. The broker creates its eight instances at start, the
+first with `FirstPipeInstance`, and reuses them until it stops, so another process
+can never hold the name while the broker runs. A broker that cannot create the
+first instance stops rather than serve a pipe somebody else made. An instance whose
+caller left before its answer is disconnected all the same, or it never accepts
+again; and the main service sends one read at a time per question (`SharedRead`),
+since a firewall or Defender read holds an instance for a whole PowerShell run and a
+few open pages asking at once held every instance (`T412`).
+
+The access list alone is not enough, because every process the main service
+starts carries its service SID, a server included. So the broker asks the service
+control manager for the main service's process id on every connection and compares
+it with the client's (`ServiceProcessCallerCheck`). Anything else is turned away
+before a byte is read. The main service checks the other end the same way: the
+pipe's server process must be the broker service's (`ServiceProcessServerCheck`),
+and it connects at Identification level, so whatever answers on the name can learn
+who called and never act as them.
+
+### 17.3 The handshake and the wire
+
+A message is a four-byte little-endian length and that many bytes of UTF-8 JSON, at
+most 1 MiB. One connection carries one exchange: each side sends a `BrokerHello`
+with its `BrokerContract.Version`, then the main service sends one `BrokerRequest`
+and the broker answers with one `BrokerResponse`. The broker answers the hello
+before it judges it, so a caller of another version learns why from the broker's
+hello rather than from a closed pipe. Versions must be equal, not "at least":
+neither side can know what a newer peer's operations mean, and both executables
+ship in one version folder, so a mismatch means a half-applied update or a
+hand-copied file. The contract version is raised whenever an operation, a request
+field or an argument rule changes.
+
+The JSON is read strictly: an unknown member or a duplicate property refuses the
+request whole, so a field `BrokerArguments` does not know never reaches the
+dispatcher. A caller has five seconds to send its hello and its request; the work
+itself has no such deadline. A refusal is an answer with `refused` set and a
+sentence saying which rule refused it; nothing ran.
+
+### 17.4 Arguments and folders
+
+Every request meets the same order in `BrokerDispatcher`: the shape of its fields
+(`BrokerArguments`), then the instance from the configuration, then the rules on
+what that resolves to, then the work. An instance id must be what the wrapper makes,
+lower-case letters, digits and single hyphens; a shadow id a GUID; a build identity a
+version with an optional pre-release and commit, since it becomes a folder name
+under `versions`. An instance whose executable is not a plain `.exe` file name is
+refused.
+
+`BrokerPathRules` refuses, for a grant, an exclusion or a snapshot: the operating
+system's folders (`D43`), a drive root, Program Files, the install tree and anything
+above it, the data root, anything above it and anything in it, and a path through a
+junction or symbolic link. The one exception inside the data root is a server folder
+under its instances folder, which may be excluded or snapshotted and is refused for
+a grant as unneeded. Spellings that
+would slip past the comparisons are refused outright: a path not starting with a
+drive letter, a stream (a colon after the drive's), a segment ending in a dot or a
+space, and an 8.3 short name. The rules are asked of the path as given and again
+once it is resolved.
+
+A folder that passes is then held open without following a link (`FolderPin`) and
+refused unless the handle's own name is the path asked for. The grant is written
+through that handle, so what was checked is what is changed.
+
+### 17.5 The record
+
+`BrokerRecord` is what the broker itself made: the shadow copies it took and has
+not released, the folders it granted, and the build it staged last. It is
+`record.json` in `broker-state` under the install root, a folder locked to
+LocalSystem and Administrators, written beside and moved over so a crash leaves
+the previous record. A shadow id enters it only from Windows' answer to
+`CreateShadowCopy`, never from a request, so `ReleaseShadowCopy` can never delete a
+snapshot somebody else's backup tool took. `ApplyUpdate` launches only the staged
+build, and `ExcludeServerFolder` accepts a folder outside the instances folder only
+when the record says the broker granted it. An unreadable record reads as empty,
+which costs disk space and never a backup.
+
+### 17.6 Each server at low integrity
+
+`bedrock_server.exe`, the throwaway runs included, starts through
+`IServerProcessStarter`. On Windows `RestrictedServerStarter` takes the main
+service's own token, removes every privilege but `SeChangeNotifyPrivilege`, lowers
+it to low integrity (`S-1-16-4096`) and creates the process with
+`CreateProcessAsUserW`, with only the console's three pipe ends inherited, which a
+restricted copy of its own token lets the service do without
+`SeAssignPrimaryTokenPrivilege` (`D126`). No other account is involved.
+
+A low-integrity token writes nothing that does not carry a low label, and reads
+nothing labelled no-read-up. The installer creates the instances folder with a low
+label (`S:(ML;OICI;NW;;;LW)`) of its own, written before the root's no-read-up
+label, that every server folder made in it inherits, and the broker labels a folder
+it grants for a server. Each label is written on one object at a time through
+`SetKernelObjectSecurity`, the folder and then each folder and file already in it:
+one `SetSecurityInfo` write carried down the tree was refused over an empty new
+folder and over a server's files (`T419`, `T422`). Setting a label takes
+`WRITE_OWNER`, which the service's account does not hold. A server
+folder without the label refuses the start with `ServerFolderNotGrantedException`'s
+sentence, recorded as a refusal and never counted as a crash. The rest of the data
+root is labelled `S:(ML;OICI;NRNW;;;ME)` on every install: the root itself, inherited
+by what is made there later, and each folder and file already in it, one at a time
+through a handle that refuses a link, so nothing is labelled by name over a tree the
+service's account can change. So the certificate and its password, the DataProtection
+keys, the credential, the setup token, the database, the backups and the update folder
+stay out of a server's reach. Servers can read one another's folders, which the
+operator accepted (`D126`).
+
+An AppContainer per server folder (`D124`) came first and took no connection from
+another process on its own machine (`T409`), so a player on the server's PC could not
+join; only `CheckNetIsolation LoopbackExempt -is` lifted it, and only while it ran. A
+token restricted by a list of SIDs (`D121`) got Bedrock as far as "Signed in to
+signaling service successfully" and stopped at "Could not connect to Minecraft
+services" (`T385` clause 1). A low-integrity token outside an AppContainer signed in
+and took a localhost join over NetherNet (2026-10-28). The entry `D124` gave
+each server folder for its container SID (`ServerSandbox.SidFor`) refused a
+low-integrity token outside an AppContainer everything in the folder, its listing
+included, though no SID in the token matched it (`T409`); the installer, the broker's
+grant and the service at a server's start now remove it. The server's executable
+inherits the folder's low label, so the process runs at low integrity whatever its
+token asks. A server starts on the service's own window station and
+desktop: a desktop of its own, which `D124` needed, killed a low-integrity server with
+0xC0000142 before its first line (`T409`).
+
+The server is less trusted than the service, so what it writes is read as data:
+
+- `SaveManifest` refuses a `save query` path outside `worlds`.
+- The backups open each file through `ServerFileReader`, without following a link,
+  and refuse a file whose handle names another path or that has a second hard link.
+- A restore and the add-on copy refuse a server folder with a link in it
+  (`ServerTree`), and the size count skips links.
+- Both services turn on Windows' RedirectionGuard at start where Windows has it, so
+  no open in either process follows a junction a non-administrator made; where it
+  is missing, the reason is logged and the checks above still hold.
+
+A server's profile folders are its own (`D123`). Bedrock creates
+`Minecraft Bedrock Server` under the roaming application-data folder and `minecraftpe`
+under the temporary folder before it signs in to Minecraft services; inherited from
+the service, both were the service account's profile, which the server's token is
+kept out of. The
+server now starts with `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP` and `TMP`
+pointing into `sentry-profile` in its own folder, which the service makes before the
+start, refusing a link on the way, and which the folder grant and label cover.
+
+The container's shape is measured on Windows by `T385`.
+
+### 17.7 A folder outside the data root
+
+The data root is the installer's to grant (§ 12.1), and covers every server
+created in its instances folder. A server folder, backups folder or server-packages
+folder elsewhere needs a grant of its own, and who may give it depends on whether
+the folder already holds anything (`D115` (b)). The broker grants only a folder that
+is missing, which it creates, or one that is empty: the folder it is asked for comes
+from a configuration the main service's account writes, and a folder that already
+holds files belongs to something.
+
+Who asks is a switch only an administrator sets (`D120`): `allowPanelFolderGrants` in
+`policy.json` in the install root, written by `install.ps1 -AllowPanelFolderGrants`
+and cleared by `-DenyPanelFolderGrants`, or edited there by hand. Anything but a
+literal `true` leaves it off, which is the default: every such folder is then granted
+by the command an administrator runs, and the broker refuses `GrantFolder` from the
+service. Wherever the panel takes a folder outside the data root (a new server's
+folder, a server added from a folder, a moved server, the backups or server-packages
+root), `OutsideFolders` says why the service cannot use it and prints the exact
+command, with the installed script's full path and the folder's:
+
+```powershell
+& "C:\Program Files\BedrockSentry\current\install.ps1" -GrantFolder "D:\Minecraft\survival"
+```
+
+A refused start names `install.ps1 -GrantFolder` on the folder too. With the switch on, the panel writes the
+folder into the configuration first, since the broker reads what it grants from
+there, asks the broker, and writes the previous value back when the broker refuses;
+a folder that already holds files is refused and its command printed. The switch is
+not in the data root's configuration because the service's account can write that,
+and the switch decides what the service may have granted.
+
+Run elevated against an installed service, it installs nothing. The installed
+broker executable applies the same path rules, walks the tree and refuses it
+whole when a link or a file with a second name is anywhere in it, since either
+would carry the inherited grant outside the folder, then grants the main service's
+account and the folder's server SID and adds the folder to the record, after which
+it may be excluded from Defender. It also takes a server's folder in the data root's
+instances folder, which the broker's grant refuses as already covered, so a folder
+made before its server SID existed can be given it, but only where RedirectionGuard
+is on: the main service's account can write there while the grant spreads, and
+could otherwise plant a junction for it to follow. An install without the broker
+has nothing to run it with.

@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
 using BedrockSentry.Core;
+using BedrockSentry.Core.Broker;
 using BedrockSentry.Core.Configuration;
 using BedrockSentry.Core.Diagnostics;
 using BedrockSentry.Core.Instances;
@@ -9,19 +10,25 @@ using BedrockSentry.Core.Security;
 using BedrockSentry.Host;
 using BedrockSentry.Host.Components;
 using BedrockSentry.Host.Middleware;
+using BedrockSentry.Services.Addons;
 using BedrockSentry.Services.Backups;
+using BedrockSentry.Services.Broker;
+using BedrockSentry.Services.Commands;
 using BedrockSentry.Services.Configuration;
 using BedrockSentry.Services.DependencyInjection;
 using BedrockSentry.Services.Diagnostics;
 using BedrockSentry.Services.Instances;
+using BedrockSentry.Services.Players;
 using BedrockSentry.Services.Security;
 using BedrockSentry.Services.Updates;
+using BedrockSentry.Services.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Options;
 
@@ -39,7 +46,11 @@ using Microsoft.Extensions.Options;
 // silently appears on neither endpoint.
 const string DetailedTag = "detailed";
 
-var paths = new SentryPaths(DataRootArgument(args));
+var paths = new SentryPaths(SentryPaths.DataRootArgument(args));
+
+// Milestone 18.5: before the first file is opened, so no open this process makes
+// follows a junction a server made in its own folder. Logged once there is a logger.
+var redirectionGuard = OperatingSystem.IsWindows() ? RedirectionGuard.Enforce() : null;
 
 // `T143`: registered here rather than wrapped around `app.Run()`, which is where
 // this started and where it caught almost nothing. The certificate, the
@@ -75,42 +86,18 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     }
 };
 
+// The installed service's name, which install.ps1 writes into the ImagePath with
+// --service, and from which every name that identifies the install derives
+// (BrokerNames, docs/design.md § 12.4). Read after the handler above, so a value it
+// refuses is recorded, under the default event source and in the log folder.
+var serviceName = BrokerNames.MainServiceArgument(args) ?? BrokerNames.DefaultMainService;
+StartupFailure.EventSource = serviceName;
+var brokerMode = BrokerNames.ModeArgument(args);
+
 // Now covered by the handler above, which is the whole point of the ordering:
 // this is the first thing in the process that touches the disk, and a bad
 // `--dataroot` fails right here.
 paths.EnsureCreated();
-
-static string? DataRootArgument(string[] args)
-{
-    for (var i = 0; i < args.Length; i++)
-    {
-        var argument = args[i];
-
-        if (argument.StartsWith("--dataroot=", StringComparison.OrdinalIgnoreCase))
-        {
-            return NonEmpty(argument["--dataroot=".Length..]);
-        }
-
-        if (!argument.Equals("--dataroot", StringComparison.OrdinalIgnoreCase))
-        {
-            continue;
-        }
-
-        return NonEmpty(i + 1 < args.Length ? args[i + 1] : null);
-    }
-
-    return null;
-
-    // A registration carrying --dataroot with nothing usable after it is malformed.
-    // Falling through to ProgramData would put the data somewhere the operator
-    // explicitly did not ask for, and would look like it had worked, so this fails
-    // the start instead. It throws before logging exists — see T104 — which is a
-    // known gap in its own right rather than something this switch introduces.
-    static string NonEmpty(string? value) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("--dataroot was given without a path.")
-            : value;
-}
 
 // Before the configuration is read, so a first run picks up the file it just
 // wrote rather than seeing it appear on the next restart.
@@ -129,13 +116,22 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     ContentRootPath = AppContext.BaseDirectory,
 });
 
-builder.Services.AddWindowsService(options => options.ServiceName = "BedrockSentry");
+builder.Services.AddWindowsService(options => options.ServiceName = serviceName);
+
+// Windows is told the service stopped once the host has, every server's drain
+// included, rather than at the shutdown timeout (`T167`, `D32`). AddWindowsService
+// registers the framework's lifetime only when running as a service, so the
+// replacement is made on the same condition.
+if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())
+{
+    builder.Services.Replace(ServiceDescriptor.Singleton<IHostLifetime, DrainingServiceLifetime>());
+}
 
 if (OperatingSystem.IsWindows())
 {
     builder.Logging.AddEventLog(settings =>
     {
-        settings.SourceName = "BedrockSentry";
+        settings.SourceName = serviceName;
         settings.LogName = "Application";
     });
 }
@@ -214,6 +210,8 @@ builder.Services.AddOptions<InstanceOptions>()
 
 builder.Services.AddOptions<HostDetailsOptions>()
     .Bind(builder.Configuration.GetSection(HostDetailsOptions.SectionName));
+builder.Services.AddOptions<PlayerFacesOptions>()
+    .Bind(builder.Configuration.GetSection(PlayerFacesOptions.SectionName));
 
 builder.Services.AddOptions<BdsUpdateOptions>()
     .Bind(builder.Configuration.GetSection(BdsUpdateOptions.SectionName));
@@ -221,12 +219,35 @@ builder.Services.AddOptions<BdsUpdateOptions>()
 builder.Services.AddOptions<TestingOptions>()
     .Bind(builder.Configuration.GetSection(TestingOptions.SectionName));
 
-// D45. No ValidateOnStart, for the same reason TestingOptions has none: a config
-// file that has never heard of this section must mean "off", not "refuse to start".
-builder.Services.AddOptions<BackupPolicyOptions>()
-    .Bind(builder.Configuration.GetSection(BackupPolicyOptions.SectionName));
-
 builder.Services.AddBedrockSentryServices(paths);
+
+// Milestone 18.5. From the command line install.ps1 wrote, read once at start: the
+// seams are singletons, and a mode changed under a running service would leave half
+// of them pointing each way.
+if (brokerMode == BrokerMode.Pipe)
+{
+    builder.Services.AddBrokerClients(_ => new PipeBrokerChannel(
+        BrokerNames.Pipe(serviceName), new ServiceProcessServerCheck(BrokerNames.Service(serviceName))));
+}
+
+builder.Services.AddSingleton(new InstalledService(serviceName));
+builder.Services.AddSingleton(services => new PrivilegedWork(
+    brokerMode,
+    BrokerNames.Service(serviceName),
+    services.GetService<IBrokerChannel>(),
+    ProcessAccount.Current()));
+
+// `D62`: the installer's drain and call-off, on a pipe only an elevated administrator
+// or LocalSystem may open, in place of the loopback HTTP endpoint any local account
+// could reach (`T177`). Windows only: nothing else runs an installer.
+builder.Services.AddSingleton<AdminDrain>();
+builder.Services.AddSingleton<AdminPipeStatus>();
+
+if (OperatingSystem.IsWindows())
+{
+    builder.Services.AddSingleton<IAdminPipeFactory>(_ => new WindowsAdminPipeFactory(BrokerNames.AdminPipe(serviceName)));
+    builder.Services.AddHostedService<AdminPipeServer>();
+}
 
 // Scoped, which for Blazor Server means one per circuit. Removing an instance
 // navigates off that instance's page — it stops describing anything the moment it is
@@ -240,6 +261,7 @@ builder.Services.AddScoped<PendingRemoval>();
 // every world for every browser tab. Its walks run on the thread pool and it
 // hands pages the last answer instantly (`D48`).
 builder.Services.AddSingleton<InstanceSizeSampler>();
+builder.Services.AddHostedService<InstanceSizeSchedule>();
 
 // One reader for the three destructive dialogs, so the rule is stated once.
 builder.Services.AddSingleton<DestructiveConfirmPolicy>();
@@ -315,6 +337,19 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 
             return Task.CompletedTask;
         };
+    })
+    // D125. The half-signed-in cookie between a right password and a right code. Its
+    // own scheme, so the fallback policy (default scheme only) never reads it: it
+    // opens the code page and nothing else. Fixed life, no sliding.
+    .AddCookie(SecondStepSignIn.Scheme, options =>
+    {
+        options.LoginPath = "/account/login";
+        options.ExpireTimeSpan = SecondStepSignIn.Lifetime;
+        options.SlidingExpiration = false;
+        options.Cookie.Name = SecondStepSignIn.CookieName;
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
     });
 
 builder.Services.AddAuthorization(options =>
@@ -344,6 +379,7 @@ builder.Services.AddRazorComponents()
 // predicate below, so it was wrong in the one place being relied on. Registering a check that can fail on THAT endpoint would roll back a
 // replacement build whenever any server was down, and a server refused for a held
 // port (`T151`) is the wrapper working correctly.
+builder.Services.TryAddSingleton<DataRootProbe>();
 builder.Services.AddHealthChecks()
     .AddCheck<InstanceStateHealthCheck>(
         InstanceStateHealthCheck.CheckName, tags: [DetailedTag])
@@ -360,6 +396,9 @@ builder.Services.AddHealthChecks()
 // legitimately mid-save — which is the one failure this whole path exists to avoid.
 // Derived from the configured values rather than hardcoded, so raising the drain
 // budget cannot silently push it past the timeout that is supposed to contain it.
+// Windows is told the service stopped when the host has, not at this timeout
+// (DrainingServiceLifetime, `T167`), so a drain that overruns it is still waited for
+// by the updater, up to the updater's own stop timeout.
 var instanceOptions = builder.Configuration
     .GetSection(InstanceOptions.SectionName).Get<InstanceOptions>() ?? new InstanceOptions();
 
@@ -389,11 +428,13 @@ builder.Services.Configure<HostOptions>(options =>
 // Configured through the options system rather than builder.WebHost.ConfigureKestrel so
 // the certificate provider and first-run state can be injected.
 builder.Services.AddOptions<KestrelServerOptions>()
-    .Configure<ServerCertificateProvider, IOptions<TlsOptions>, IOptions<UpdateOptions>, SetupState, IConfiguration>(
-        (kestrel, certificates, tls, update, setup, configuration) =>
+    .Configure<ServerCertificateProvider, IOptions<TlsOptions>, IOptions<UpdateOptions>, SetupState, IServiceProvider>(
+        (kestrel, certificates, tls, update, setup, services) =>
         {
             var certificate = certificates.GetCertificate();
-            var allowRemoteSetup = configuration.GetValue("Sentry:AllowRemoteSetup", false);
+            var allowRemoteSetup =
+                services.GetRequiredService<IConfiguration>().GetValue("Sentry:AllowRemoteSetup", false)
+                || services.GetRequiredService<IInstallPolicy>().AllowRemoteSetup;
 
             void UseHttps(ListenOptions listen) => listen.UseHttps(certificate);
 
@@ -422,6 +463,11 @@ var app = builder.Build();
 
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("BedrockSentry.Startup");
 
+if (redirectionGuard is { } notGuarded)
+{
+    startupLogger.LogWarning("{Warning}", RedirectionGuard.NotOn(notGuarded));
+}
+
 // Anything the configuration had to be talked out of before binding. Warning rather
 // than Information because the EventLog sink filters at Warning, and a value the
 // wrapper silently overrode is exactly the kind nobody discovers otherwise.
@@ -445,8 +491,8 @@ if (!app.Services.GetRequiredService<DestructiveConfirmPolicy>().PasswordRequire
 }
 
 // D45, and the warning is in the ON direction because that is the weakened state
-// here. It doubles as proof the binding above exists: an administrator who runs
-// install.ps1 with the switch and sees no warning at startup knows the bind is
+// here. It doubles as proof the policy file is read: an administrator who runs
+// install.ps1 with the switch and sees no warning at startup knows the read is
 // broken, rather than chasing a panel that still says the command is blocked.
 if (app.Services.GetRequiredService<CustomCommandPolicy>().Allowed)
 {
@@ -454,7 +500,7 @@ if (app.Services.GetRequiredService<CustomCommandPolicy>().Allowed)
         "{Setting} is on: a backup command typed into the panel will run on this machine as "
         + "the account this service runs as. Anyone who can sign in to the panel can use it. "
         + "Turn it off unless you are using the custom-command backup strategy.",
-        $"{BackupPolicyOptions.SectionName}:{nameof(BackupPolicyOptions.AllowCustomCommand)}");
+        $"{InstallPolicyFile.AllowCustomBackupCommandKey} in {InstallPolicyFile.FileName}");
 }
 
 // One line that makes the whole class of "the service cannot find its config" problems
@@ -485,6 +531,11 @@ if (!setupState.IsConfigured)
 {
     setupState.GetOrCreateToken();
 }
+
+// First: a request that arrives once the stop has begun is refused before anything
+// else runs for it, or a panel tab reconnecting holds the web server's stop open until
+// the shutdown timeout (`T112`).
+app.UseStoppingRequestGate();
 
 if (!app.Environment.IsDevelopment())
 {
@@ -545,55 +596,10 @@ app.UseAntiforgery();
 // redirected to the login page when it asks for blazor.web.js, and the app never boots.
 app.MapStaticAssets().AllowAnonymous();
 
-// Asked for by install.ps1 before it stops the service, so a hand-run upgrade
-// gets the same warning, drain and backup a self-update does (docs/design.md § 12.4).
-// Without it the installer's Stop-Service falls through to the service-stop path,
-// which gives players five seconds and takes no backup — deliberately, because
-// there the SCM is waiting. Here it is not: the installer is, and it can wait.
-//
-// Unauthenticated, and loopback-only three times over: Kestrel binds this port
-// with ListenLocalhost, the middleware above 404s the path on any other port, and
-// the remote address is checked again below.
-//
-// `T177`. This used to go on to say "anyone who can reach it can already run
-// Stop-Service, so this grants no capability that local access did not", and that
-// is FALSE for an ordinary local account. The service's own SDDL gives Interactive
-// Users `CCLCSWLOCRRC` — query and interrogate, no RP/WP — so a non-administrator
-// cannot start or stop the service, and can still POST here and drain every managed
-// server. Local only, never remote, and a graceful drain rather than data loss; the
-// capability it grants is a denial of service to somebody who already has an account
-// on the box.
-//
-// Left open rather than gated, because install.ps1 has to reach it before it stops
-// the service and that is the whole reason it exists. Whether it should carry an
-// authority check, and what the installer would then present, is
-// `D62-DrainEndpointAuthority`. The comment is corrected now so the next reader is
-// not told the question has already been answered.
-app.MapPost(UpdateOptions.DrainPath, async (
-    HttpContext context,
-    IManagedServerShutdown shutdown,
-    IOptionsMonitor<UpdateOptions> updateOptions) =>
-{
-    if (context.Connection.RemoteIpAddress is not { } remote || !IPAddress.IsLoopback(remote))
-    {
-        return Results.NotFound();
-    }
-
-    var warning = updateOptions.CurrentValue.PlayerWarning;
-
-    // CancellationToken.None: the caller is an installer that is about to stop
-    // this service anyway, and a drain abandoned half-way is worse than either
-    // finishing it or never starting it.
-    var drained = await shutdown.DrainAsync(StopReason.WrapperUpdate, warning, CancellationToken.None);
-
-    return Results.Json(new
-    {
-        stopped = drained.Stopped,
-        failed = drained.Failed,
-        warningSeconds = (int)warning.TotalSeconds,
-        version = BuildInfo.Identity,
-    });
-}).AllowAnonymous();
+// The installer's drain and call-off are on the admin pipe (AdminPipeServer, `D62`).
+// UpdateOptions.DrainPath stays among the loopback-only paths and maps to nothing, so
+// an installer older than the pipe gets no drain and stops the service the ordinary
+// way, which still saves every world (`T111`).
 
 // Liveness, and nothing more. This is the endpoint the updater polls across a
 // version boundary, so what it answers is a frozen contract: `status` must read
@@ -669,6 +675,121 @@ app.MapHealthChecks(HealthContract.ReadyPath, new HealthCheckOptions
         }));
     },
 }).AllowAnonymous();
+
+// A pack's own icon for the Add-ons tab. Signed-in only, like everything the
+// fallback policy covers, and answered from AddonIcons: the request names an
+// instance and a uuid, and only a file the tab's own read found is served.
+app.MapGet(AddonIcons.Route, (string instanceId, string uuid, AddonIcons icons, HttpContext context) =>
+{
+    if (icons.Find(instanceId, uuid) is not { } file || !File.Exists(file))
+    {
+        return Results.NotFound();
+    }
+
+    // The URL carries the file's timestamp, so a changed icon is a new URL.
+    context.Response.Headers.CacheControl = "private, max-age=86400";
+
+    return Results.File(file, "image/png", lastModified: File.GetLastWriteTimeUtc(file));
+});
+
+// The same for the add-on library page: the request names a uuid, and only a file the
+// page's own read of the shelf found is served.
+app.MapGet(AddonIcons.LibraryRoute, (string uuid, AddonIcons icons, HttpContext context) =>
+{
+    if (icons.FindInLibrary(uuid) is not { } file || !File.Exists(file))
+    {
+        return Results.NotFound();
+    }
+
+    context.Response.Headers.CacheControl = "private, max-age=86400";
+
+    return Results.File(file, "image/png", lastModified: File.GetLastWriteTimeUtc(file));
+});
+
+// D47. One player's face for the player lists. Signed-in only, like everything the
+// fallback policy covers. Always an image for a XUID: the generated face when faces are
+// off or the source has nothing, so a row never shows a broken picture.
+app.MapGet(PlayerFaces.Route, async (string xuid, PlayerFaces faces, HttpContext context) =>
+{
+    if (await faces.GetAsync(xuid, context.RequestAborted) is not { } png)
+    {
+        return Results.NotFound();
+    }
+
+    // The URL says whether faces are on, so turning them on is a new address.
+    context.Response.Headers.CacheControl = "private, max-age=3600";
+
+    return Results.Bytes(png, "image/png");
+});
+
+// D110. One backup as a file to keep: a .zip laid out as the server's own folder, or a
+// .mcworld of its world. Signed-in only, like everything the fallback policy covers, and
+// answered from the server's own listing: the name reaches here from a URL. A ZIP already
+// one is sent as it is; anything else is packed as it is sent, which ZipArchive does with
+// synchronous writes.
+app.MapGet(BackupExporter.Route, (string instanceId, string name, string? @as, BackupExporter exporter, HttpContext context) =>
+{
+    if (BackupExporter.FormatNamed(@as) is not { } format)
+    {
+        return Results.BadRequest("Ask for as=zip or as=mcworld.");
+    }
+
+    BackupDownload? download;
+
+    try
+    {
+        download = exporter.Prepare(instanceId, name, format);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(ex.Message);
+    }
+
+    if (download is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (download.AsIs is { } file)
+    {
+        return Results.File(file, download.ContentType, download.FileName, enableRangeProcessing: true);
+    }
+
+    context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpBodyControlFeature>()!.AllowSynchronousIO = true;
+
+    return Results.Stream(
+        output =>
+        {
+            download.Pack!(output);
+            return Task.CompletedTask;
+        },
+        download.ContentType,
+        download.FileName);
+});
+
+// D105. One instance's completion data for the console's script: its commands, option
+// lists, Mojang's names and its add-ons'. Signed-in only, like everything the fallback
+// policy covers. The tag changes whenever the data does, so the script revalidates with
+// If-None-Match and is told nothing changed rather than sent 120 KB again.
+app.MapGet(CompletionPayload.Route, (string instanceId, InstanceRegistry instances, CompletionData completion, HttpContext context) =>
+{
+    if (!instances.TryGet(instanceId, out var supervisor))
+    {
+        return Results.NotFound();
+    }
+
+    var view = completion.For(supervisor);
+    var tag = $"\"{view.Tag}\"";
+    context.Response.Headers.ETag = tag;
+    context.Response.Headers.CacheControl = "private, no-cache";
+
+    if (context.Request.Headers.IfNoneMatch.Any(v => v == tag))
+    {
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    return Results.Text(CompletionPayload.Write(view), "application/json; charset=utf-8");
+});
 
 app.MapPost("/account/logout", async (HttpContext context) =>
 {

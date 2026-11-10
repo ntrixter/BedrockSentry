@@ -1,3 +1,5 @@
+using BedrockSentry.Core.Addons;
+
 namespace BedrockSentry.Core.Instances;
 
 /// <summary>Something a player said, and who said it.</summary>
@@ -16,7 +18,8 @@ public sealed record ChatMessage(string Player, string Text);
 /// the format is ours to choose, and it is chosen to be unambiguous rather than
 /// pretty: a fixed marker and pipe delimiters, so a player called
 /// <c>&lt;Steve&gt;</c> saying <c>hello | goodbye</c> still parses into exactly
-/// two fields.
+/// two fields. <see cref="CompanionRelayReader"/> reads it, as it reads every
+/// kind the pack prints, so chat takes the same tags before the marker.
 /// </para>
 /// <para>
 /// The <b>bare</b> <c>&lt;name&gt; text</c> shape is the classic Minecraft form
@@ -31,10 +34,10 @@ public sealed record ChatMessage(string Player, string Text);
 public static class ChatParser
 {
     /// <summary>
-    /// What the companion pack prints. Changing this changes the pack too — they
-    /// are two ends of one wire.
+    /// A chat relay's start: the pack's marker and the <c>chat</c> kind
+    /// (<see cref="ChatRelay"/>).
     /// </summary>
-    public const string RelayMarker = "[BedrockSentry] chat|";
+    public const string RelayMarker = CompanionPack.Marker + "chat|";
 
     /// <summary>
     /// Reads <paramref name="message"/> — the text after any
@@ -56,22 +59,12 @@ public static class ChatParser
     {
         chat = default!;
 
-        if (!message.StartsWith(RelayMarker, StringComparison.Ordinal))
+        if (!CompanionRelayReader.TryRead(message, out var relay) || relay is not ChatRelay said)
         {
             return false;
         }
 
-        var body = message[RelayMarker.Length..];
-
-        // Split once. Everything after the first delimiter is the message,
-        // including any further pipes the player typed.
-        var separator = body.IndexOf('|');
-        if (separator <= 0)
-        {
-            return false;
-        }
-
-        chat = new ChatMessage(body[..separator], body[(separator + 1)..]);
+        chat = new ChatMessage(said.Gamertag, said.Text);
         return true;
     }
 

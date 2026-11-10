@@ -16,12 +16,38 @@ namespace BedrockSentry.Services.Backups;
 /// that — a second kind of data in it is how "the player database" stops meaning
 /// anything.
 ///
-/// Reads and writes are serialised per instance by the orchestrator, which is
-/// the only writer.
+/// Four things write it: the orchestrator's runs, the restorer's safety backups, the
+/// orphan cleanup's notes, and the trim and removal <c>D98</c> added. Each write reads,
+/// changes and replaces the whole file, so they are serialised per instance here.
+/// Reads are not: the instance Backups tab, the all-instances Backups page, the Status
+/// page, the scheduler's skip check, both restorers and the orphan cleanup all read
+/// the file directly, so a read can land inside the replace a write ends with.
+/// <see cref="ReadAsync"/> is what makes that safe (<c>T305</c>).
 /// </remarks>
 public sealed class BackupHistory
 {
+    /// <summary>How many times a read tries to open the file before it gives up.</summary>
+    private const int OpenAttempts = 10;
+
+    /// <summary>The pause between those attempts.</summary>
+    private static readonly TimeSpan OpenRetryDelay = TimeSpan.FromMilliseconds(25);
+
     private readonly ISentryPaths _paths;
+
+    /// <summary>One writer at a time per instance, across every caller.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _writers =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Opens the file for a read. A seam: the suite cannot hold a file the way Windows does.</summary>
+    /// <remarks>
+    /// Shares write and delete, so a read in progress never stands in the way of
+    /// the writer's replace, which <see cref="AtomicFile"/> already retries from its
+    /// side.
+    /// </remarks>
+    internal Func<string, Stream> OpenForRead { get; init; } = path =>
+        new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096, FileOptions.Asynchronous);
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -47,7 +73,12 @@ public sealed class BackupHistory
 
         try
         {
-            await using var stream = File.OpenRead(file);
+            await using var stream = await OpenAsync(file, cancellationToken).ConfigureAwait(false);
+            if (stream is null)
+            {
+                return [];
+            }
+
             return await JsonSerializer
                 .DeserializeAsync<List<BackupRecord>>(stream, Json, cancellationToken)
                 .ConfigureAwait(false) ?? [];
@@ -63,6 +94,46 @@ public sealed class BackupHistory
         }
     }
 
+    /// <summary>
+    /// Opens the file, trying again for a moment while Windows says it is in use.
+    /// Null when it is gone.
+    /// </summary>
+    /// <remarks>
+    /// <para><strong>The retry is for the write's replace.</strong> A write ends
+    /// with <c>MoveFileEx</c> replacing the file, and for that instant Windows holds
+    /// it, so an open landing there throws a sharing violation (<c>T305</c>,
+    /// measured by the suite under load on Windows). <c>rename()</c> on Linux has
+    /// no such window. Ten tries 25 ms apart outlast the replace by a wide margin;
+    /// a file still refused after them is refused for another reason, and that
+    /// exception is the one the caller gets, never an empty history.</para>
+    ///
+    /// <para><strong>Gone is not in use.</strong> A file removed between the
+    /// existence check and the open (an instance's backups being deleted) reads as
+    /// no history, the answer the check itself would have given.</para>
+    /// </remarks>
+    private async Task<Stream?> OpenAsync(string file, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return OpenForRead(file);
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return null;
+            }
+            catch (IOException) when (attempt < OpenAttempts)
+            {
+                await Task.Delay(OpenRetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     /// <summary>When the last backup that actually ran and succeeded finished.</summary>
     public async Task<DateTimeOffset?> LastSuccessfulUtcAsync(
         string instanceId, CancellationToken cancellationToken = default)
@@ -72,8 +143,9 @@ public sealed class BackupHistory
         // Skipped records do not count: a skip is the *absence* of a backup, and
         // treating it as one would let a quiet week push the "since" window
         // forward until a backup never happens again.
+        // An import is not this server's backup (`D110`).
         return records
-            .Where(r => r.Succeeded && !r.Skipped)
+            .Where(r => r.Succeeded && !r.Skipped && !r.IsImported)
             .Select(r => (DateTimeOffset?)r.FinishedUtc)
             .Max();
     }
@@ -108,7 +180,7 @@ public sealed class BackupHistory
         {
             var record = records[i];
 
-            if (record.Skipped || !record.Succeeded)
+            if (record.Skipped || !record.Succeeded || record.IsImported)
             {
                 continue;
             }
@@ -136,27 +208,199 @@ public sealed class BackupHistory
         return null;
     }
 
-    public async Task AppendAsync(
-        string instanceId, BackupRecord record, CancellationToken cancellationToken = default)
-    {
-        Directory.CreateDirectory(DirectoryFor(instanceId));
-
-        var records = (await ReadAsync(instanceId, cancellationToken).ConfigureAwait(false)).ToList();
-        records.Add(record);
-
-        var file = FileFor(instanceId);
-
-        // Write-then-move, so a crash mid-write leaves the old history intact
-        // rather than half a JSON document.
-        await AtomicFile.WriteAsync(
-            file,
-            async temp =>
+    public Task AppendAsync(
+        string instanceId, BackupRecord record, CancellationToken cancellationToken = default) =>
+        ChangeAsync(
+            instanceId,
+            records =>
             {
-                await using var stream = File.Create(temp);
-                await JsonSerializer
-                    .SerializeAsync(stream, records, Json, cancellationToken)
-                    .ConfigureAwait(false);
+                records.Add(record);
+                return true;
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Adds a row where its start puts it, rather than at the end (<c>D110</c>).
+    /// </summary>
+    /// <remarks>
+    /// An imported backup carries the time it was taken, which can be years before the
+    /// newest run. The file is oldest first, and readers take its last row as the newest.
+    /// </remarks>
+    public Task InsertAsync(
+        string instanceId, BackupRecord record, CancellationToken cancellationToken = default) =>
+        ChangeAsync(
+            instanceId,
+            records =>
+            {
+                var at = records.FindIndex(r => r.StartedUtc > record.StartedUtc);
+                records.Insert(at < 0 ? records.Count : at, record);
+                return true;
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Drops rows older than <paramref name="keepDays"/> that nothing still needs
+    /// (<c>D98</c>, <see cref="BackupHistoryRetention.Keep"/>).
+    /// </summary>
+    /// <returns>How many rows went.</returns>
+    public async Task<int> TrimAsync(
+        string instanceId, int keepDays, DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        var removed = 0;
+        var onDisk = OnDisk(instanceId);
+
+        await ChangeAsync(
+            instanceId,
+            records =>
+            {
+                var kept = BackupHistoryRetention.Keep(records, now, keepDays, onDisk);
+                removed = records.Count - kept.Count;
+
+                if (removed == 0)
+                {
+                    return false;
+                }
+
+                records.Clear();
+                records.AddRange(kept);
+                return true;
             },
             cancellationToken).ConfigureAwait(false);
+
+        return removed;
+    }
+
+    /// <summary>
+    /// Removes one run's row when an administrator asks (<c>D98</c>).
+    /// </summary>
+    /// <returns>
+    /// False when the run is not in the history, or when a backup it describes is still
+    /// on disk (<see cref="BackupHistoryRetention.CanRemove"/>).
+    /// </returns>
+    public async Task<bool> RemoveAsync(
+        string instanceId, BackupRecord run, CancellationToken cancellationToken = default)
+    {
+        var removed = false;
+        var onDisk = OnDisk(instanceId);
+
+        await ChangeAsync(
+            instanceId,
+            records =>
+            {
+                var index = records.FindIndex(r => BackupHistoryRetention.SameRun(r, run));
+
+                if (index < 0 || !BackupHistoryRetention.CanRemove(records[index], onDisk))
+                {
+                    return false;
+                }
+
+                records.RemoveAt(index);
+                removed = true;
+                return true;
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return removed;
+    }
+
+    /// <summary>
+    /// The runs among <paramref name="records"/> an administrator may remove now, with
+    /// the backup folder listed once for all of them.
+    /// </summary>
+    public IReadOnlyList<BackupRecord> Removable(string instanceId, IReadOnlyList<BackupRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        var onDisk = OnDisk(instanceId);
+        return records.Where(r => BackupHistoryRetention.CanRemove(r, onDisk)).ToList();
+    }
+
+    /// <summary>
+    /// Whether a backup a row names is on disk, by its name in this instance's backup
+    /// folder.
+    /// </summary>
+    /// <remarks>
+    /// By name rather than by the path recorded, as retention decides (<c>T198</c>): a
+    /// backups folder that has been moved keeps its names and not its paths. Only
+    /// ZIP archives, imported worlds and folder copies count. A custom command's manifest file is left
+    /// behind by design and is not a backup, so it keeps no row alive.
+    /// </remarks>
+    private Func<string, bool> OnDisk(string instanceId)
+    {
+        var directory = DirectoryFor(instanceId);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                names.UnionWith(Directory
+                    .EnumerateFiles(directory, $"{ZipBackupStrategy.ArchivePrefix}*{ZipBackupStrategy.ArchiveSuffix}")
+                    .Select(Path.GetFileName)
+                    .OfType<string>());
+
+                names.UnionWith(Directory
+                    .EnumerateFiles(directory, $"{ZipBackupStrategy.ArchivePrefix}*{ZipBackupStrategy.McWorldSuffix}")
+                    .Select(Path.GetFileName)
+                    .OfType<string>());
+
+                names.UnionWith(Directory
+                    .EnumerateDirectories(directory, $"{FolderBackupStrategy.FolderPrefix}*")
+                    .Select(Path.GetFileName)
+                    .OfType<string>());
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A folder that cannot be listed says nothing is gone, so nothing is
+            // trimmed or removed on its account: keep everything rather than guess.
+            return _ => true;
+        }
+
+        return pathOrName =>
+        {
+            var trimmed = pathOrName.TrimEnd('\\', '/');
+            return names.Contains(trimmed[(trimmed.LastIndexOfAny(['\\', '/']) + 1)..]);
+        };
+    }
+
+    /// <summary>
+    /// Reads, changes and replaces the file, one writer per instance at a time.
+    /// </summary>
+    /// <param name="change">Edits the rows; returns false when nothing needs writing.</param>
+    private async Task ChangeAsync(
+        string instanceId, Func<List<BackupRecord>, bool> change, CancellationToken cancellationToken)
+    {
+        var writer = _writers.GetOrAdd(instanceId, _ => new SemaphoreSlim(1, 1));
+        await writer.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            Directory.CreateDirectory(DirectoryFor(instanceId));
+
+            var records = (await ReadAsync(instanceId, cancellationToken).ConfigureAwait(false)).ToList();
+
+            if (!change(records))
+            {
+                return;
+            }
+
+            // Write-then-move, so a crash mid-write leaves the old history intact
+            // rather than half a JSON document.
+            await AtomicFile.WriteAsync(
+                FileFor(instanceId),
+                async temp =>
+                {
+                    await using var stream = File.Create(temp);
+                    await JsonSerializer
+                        .SerializeAsync(stream, records, Json, cancellationToken)
+                        .ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            writer.Release();
+        }
     }
 }

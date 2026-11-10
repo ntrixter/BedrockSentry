@@ -35,9 +35,18 @@
       update". They are not interchangeable — on the build channel this prefix
       never moves, so comparing versions alone would never detect an update.
     -->
-    <VersionPrefix>0.3.0</VersionPrefix>
+    <VersionPrefix>0.4.0</VersionPrefix>
 
-    <!-- Overridden by CI with -p:BedrockSentryChannel=build|prod. -->
+    <!--
+      D114. Raised by one on a build an installed wrapper must not reach by
+      self-update, and never lowered. The build carries it (BuildInfo.InstallEpoch)
+      and release.yml writes it into the channel manifest as installEpoch; a wrapper
+      refuses a manifest whose epoch is above its own and offers a reinstall instead.
+      1 from the broker build (D118): a LocalSystem install reinstalls rather than updates.
+    -->
+    <BedrockSentryInstallEpoch>1</BedrockSentryInstallEpoch>
+
+    <!-- Overridden by CI with -p:BedrockSentryChannel=build|stable. -->
     <BedrockSentryChannel Condition="'$(BedrockSentryChannel)' == ''">local</BedrockSentryChannel>
   </PropertyGroup>
 
@@ -49,6 +58,40 @@
       rebuild between 'build' and 'publish' and defeats reproducible builds.
     -->
     <AssemblyMetadata Include="Channel" Value="$(BedrockSentryChannel)" />
+    <AssemblyMetadata Include="InstallEpoch" Value="$(BedrockSentryInstallEpoch)" />
   </ItemGroup>
+
+  <!--
+    The branch the build came from, shown in the panel's footer and top row
+    (BuildInfo.Branch). -p:BedrockSentryBranch wins; on GitHub Actions the pull
+    request's head or the pushed branch; otherwise git, asked once at build time.
+    A detached HEAD or no git at all leaves it empty and the panel shows the
+    version alone. A target rather than a property, because evaluation cannot run
+    git; it lands before GetAssemblyAttributes turns metadata into attributes.
+  -->
+  <Target Name="BedrockSentryStampBranch" BeforeTargets="GetAssemblyAttributes">
+    <PropertyGroup>
+      <_BedrockSentryBranch>$(BedrockSentryBranch)</_BedrockSentryBranch>
+      <_BedrockSentryBranch Condition="'$(_BedrockSentryBranch)' == ''">$(GITHUB_HEAD_REF)</_BedrockSentryBranch>
+      <_BedrockSentryBranch Condition="'$(_BedrockSentryBranch)' == '' and '$(GITHUB_REF_TYPE)' == 'branch'">$(GITHUB_REF_NAME)</_BedrockSentryBranch>
+    </PropertyGroup>
+
+    <Exec Condition="'$(_BedrockSentryBranch)' == ''"
+          Command="git rev-parse --abbrev-ref HEAD"
+          WorkingDirectory="$(MSBuildThisFileDirectory)"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" StandardErrorImportance="low"
+          EchoOff="true" IgnoreExitCode="true" ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_BedrockSentryGitBranch" />
+      <Output TaskParameter="ExitCode" PropertyName="_BedrockSentryGitExit" />
+    </Exec>
+
+    <PropertyGroup Condition="'$(_BedrockSentryBranch)' == '' and '$(_BedrockSentryGitExit)' == '0' and '$(_BedrockSentryGitBranch)' != 'HEAD'">
+      <_BedrockSentryBranch>$(_BedrockSentryGitBranch.Trim())</_BedrockSentryBranch>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <AssemblyMetadata Include="Branch" Value="$(_BedrockSentryBranch)" />
+    </ItemGroup>
+  </Target>
 
 </Project>

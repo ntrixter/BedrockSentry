@@ -2,6 +2,7 @@ using System.IO.Compression;
 using BedrockSentry.Core.Configuration;
 using BedrockSentry.Core.Packages;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace BedrockSentry.Services.Packages;
 
@@ -15,10 +16,15 @@ namespace BedrockSentry.Services.Packages;
 /// <c>permissions.json</c> and <c>server.properties</c> beside its executable,
 /// so a shared install directory would mean a shared world.
 /// </summary>
-public sealed class ServerPackageStore(ISentryPaths paths, ILogger<ServerPackageStore> logger)
+public sealed class ServerPackageStore(
+    ISentryPaths paths, ILogger<ServerPackageStore> logger, ServerPackageLog? log = null)
 {
     /// <summary>Where packages live.</summary>
     public string Directory => paths.ServerPackages;
+
+    /// <summary>Each zip's channel and the EULA acceptance (<c>T333</c>, <c>D102</c>).</summary>
+    public ServerPackageLog Log { get; } =
+        log ?? new ServerPackageLog(paths, NullLogger<ServerPackageLog>.Instance);
 
     /// <summary>
     /// Everything in the store, newest version first. Packages whose names do
@@ -32,6 +38,7 @@ public sealed class ServerPackageStore(ISentryPaths paths, ILogger<ServerPackage
         }
 
         var packages = new List<ServerPackage>();
+        var channels = Log.Entries();
 
         foreach (var path in System.IO.Directory.EnumerateFiles(Directory))
         {
@@ -45,7 +52,8 @@ public sealed class ServerPackageStore(ISentryPaths paths, ILogger<ServerPackage
             var (version, text) = ServerPackageName.Parse(name);
 
             packages.Add(new ServerPackage(
-                name, path, version, text, info.Length, info.LastWriteTimeUtc));
+                name, path, version, text, info.Length, info.LastWriteTimeUtc,
+                PackageChannels.For(name, channels)));
         }
 
         return packages
@@ -73,7 +81,7 @@ public sealed class ServerPackageStore(ISentryPaths paths, ILogger<ServerPackage
     ///
     /// Matched by name against the store's own listing rather than taking a path,
     /// for the reason the restore picker does: a listing is not an authorisation,
-    /// and this deletes files as LocalSystem.
+    /// and this deletes files with the service's rights.
     /// </remarks>
     public bool Delete(string fileName)
     {
@@ -178,7 +186,7 @@ public sealed class ServerPackageStore(ISentryPaths paths, ILogger<ServerPackage
             var destination = Path.GetFullPath(Path.Combine(root, relative));
 
             // Zip slip. An entry named "..\..\Windows\System32\evil.dll" would
-            // otherwise be written wherever it asked, as LocalSystem. The check
+            // otherwise be written wherever it asked, with the service's rights. The check
             // is on the *resolved* path, because the entry name alone can hide
             // the traversal behind separators and encodings.
             if (!destination.StartsWith(rootWithSeparator, StringComparison.Ordinal))

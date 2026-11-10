@@ -15,16 +15,24 @@ namespace BedrockSentry.Core.Packages;
 /// version. Refusing to show a file because its name is unfamiliar would be a
 /// worse outcome than showing it without a version.
 /// </param>
+/// <param name="Channel">
+/// The channel the package log records for this file, or null when nothing has
+/// (<see cref="PackageChannels"/>).
+/// </param>
 public sealed record ServerPackage(
     string FileName,
     string FullPath,
     Version? Version,
     string? VersionText,
     long SizeBytes,
-    DateTimeOffset ModifiedUtc)
+    DateTimeOffset ModifiedUtc,
+    BdsChannel? Channel = null)
 {
     /// <summary>What to show in a list: the version if known, otherwise the file name.</summary>
     public string Display => VersionText ?? FileName;
+
+    /// <summary>What a picker shows: <see cref="Display"/>, marked when it is a Preview build.</summary>
+    public string Label => Channel == BdsChannel.Preview ? $"{Display} — Preview" : Display;
 }
 
 /// <summary>

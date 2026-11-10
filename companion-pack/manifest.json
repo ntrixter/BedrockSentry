@@ -1,0 +1,31 @@
+{
+  "format_version": 3,
+  "header": {
+    "name": "BedrockSentry companion",
+    "description": "Reports deaths and where players are to BedrockSentry, through the server console, and lets operators outline Sync Areas and ticking areas and edit Sync Areas.",
+    "uuid": "d1054931-8a2d-4ca8-b90f-4c736d640de6",
+    "version": "1.7.1",
+    "min_engine_version": "1.26.40"
+  },
+  "metadata": { "product_type": "addon" },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "d197bdf6-09d0-459a-ace2-134fa7021661",
+      "version": "1.7.1",
+      "entry": "scripts/main.js"
+    }
+  ],
+  "dependencies": [
+    { "module_name": "@minecraft/server", "version": "2.8.0" }
+  ],
+  "settings": [
+    {
+      "type": "toggle",
+      "name": "bedrocksentry:tell_death_location",
+      "text": "Tell a player where they died",
+      "default": true
+    }
+  ]
+}

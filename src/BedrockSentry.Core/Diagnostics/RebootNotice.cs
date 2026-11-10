@@ -1,104 +1,86 @@
 namespace BedrockSentry.Core.Diagnostics;
 
-/// <summary>What Windows having work queued actually means for the servers.</summary>
-public enum RebootUrgency
-{
-    /// <summary>Nothing is pending.</summary>
-    None,
-
-    /// <summary>
-    /// Windows has work it will do <em>if</em> the machine restarts, and nothing
-    /// that will cause one.
-    /// </summary>
-    Queued,
-
-    /// <summary>Something pending can restart the machine without being asked.</summary>
-    Restarting,
-}
-
 /// <summary>
-/// One thing Windows has pending, and whether it can cause a restart by itself.
-/// </summary>
-/// <param name="CanCauseARestart">
-/// True only for the signals that actually lead to an unattended restart. A queue
-/// Windows drains <em>if</em> a restart happens is not one of them.
-/// </param>
-public sealed record RebootSignal(string Reason, bool CanCauseARestart);
-
-/// <summary>
-/// How the Status page's reboot warning reads (<c>T188</c>).
+/// What the Status page reads to warn of a restart, and how the warning reads
+/// (<c>T188</c>, <c>D64</c>).
 /// </summary>
 /// <remarks>
-/// <para><strong>The defect this exists for.</strong> Three independent registry
-/// signals were ORed into one <c>bool</c> and given one headline — <em>"Windows is
-/// waiting to restart. It will take every server down at a moment of its
-/// choosing."</em> Two of them can do that. The third,
-/// <c>PendingFileRenameOperations</c>, is a <strong>passive queue</strong> Windows
-/// drains if and when a restart happens; it cannot cause one. So the mildest and by
-/// far the commonest signal inherited the consequence of the most severe, and
-/// inherited a claim that is, for it, untrue.</para>
+/// <para>Each signal is something Windows has pending that can restart the machine by
+/// itself: a component install, or Windows Update, waiting on a restart. The page warns
+/// when at least one is set.</para>
 ///
-/// <para><strong>The cost is the usual one for a warning that is usually wrong.</strong>
-/// The banner stood continuously for at least two days on a machine with
-/// nothing whatever pending — fired by OneDrive queuing its own previous version for
-/// deletion at the next restart. That queue is non-empty on a large share of
-/// perfectly healthy Windows installs, because anything that updates itself while
-/// its files are in use leaves entries there. A machine about to be taken down
-/// therefore rendered identically to a machine that is completely fine.</para>
-///
-/// <para><strong>It is the T177 shape, and that is why it is worth a type rather
-/// than an <c>if</c>.</strong> The method's own doc comment stated the
-/// justification — "Windows will eventually take every server down without asking,
-/// and the administrator would rather choose the moment" — which is true of two
-/// signals and false of the third, and the third was added under it. The code was
-/// written from the justification rather than from the branch, exactly as
-/// <c>T177</c>'s false security reasoning and <c>T175</c>'s inverted comment were.
-/// A <c>bool</c> could not have said the difference, so the fix is the
-/// <c>T176</c> one: count the states the world can be in before choosing the
-/// type.</para>
+/// <para><strong>The file-rename queue is not read</strong> (<c>D64</c>, answered by the
+/// operator 2026-09-25). <c>PendingFileRenameOperations</c> is work Windows does if a
+/// restart happens; it cannot cause one, and anything that updates itself while its files
+/// are in use leaves entries there. Read as a third signal it kept a notice on the page
+/// from 2026-09-14 to 2026-09-25 on a machine with nothing pending, holding 12 entries at
+/// the first reading and 60 at the last, while the two signals here read false every
+/// time.</para>
 /// </remarks>
 public static class RebootNotice
 {
-    /// <summary>The strongest thing any of these signals means.</summary>
-    public static RebootUrgency UrgencyOf(IReadOnlyList<RebootSignal> signals)
-    {
-        if (signals is null || signals.Count == 0)
-        {
-            return RebootUrgency.None;
-        }
+    /// <summary>
+    /// The registry keys under <c>HKEY_LOCAL_MACHINE</c> whose presence means Windows is
+    /// waiting to restart, each with the reason the page gives for it.
+    /// </summary>
+    /// <remarks>
+    /// The second is the flag Windows Update sets when an installed update needs a
+    /// restart. Windows Update can also be asked directly, from PowerShell with
+    /// <c>(New-Object -ComObject Microsoft.Update.SystemInfo).RebootRequired</c>;
+    /// <c>T188</c> clause 2 compares the two.
+    /// </remarks>
+    public static readonly IReadOnlyList<(string Key, string Reason)> Signals =
+    [
+        (@"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+            "a component install is waiting on a restart"),
+        (@"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+            "Windows Update is waiting on a restart"),
+    ];
 
-        foreach (var signal in signals)
+    /// <summary>The reasons that apply, in the order <see cref="Signals"/> lists them.</summary>
+    /// <param name="keyExists">Whether a key under <c>HKEY_LOCAL_MACHINE</c> exists.</param>
+    public static IReadOnlyList<string> Reasons(Func<string, bool> keyExists) => Read(keyExists).Reasons;
+
+    /// <summary>
+    /// The reasons that apply, and the first signal that could not be read, said as a
+    /// sentence, or null when every one was.
+    /// </summary>
+    /// <remarks>
+    /// Three answers, not two: a key this account may not open is neither pending nor
+    /// clear, and reading it as "not pending" would say nothing is waiting on a machine
+    /// that may restart tonight (<c>T176</c>).
+    /// </remarks>
+    /// <param name="keyExists">Whether a key under <c>HKEY_LOCAL_MACHINE</c> exists.</param>
+    public static (IReadOnlyList<string> Reasons, string? Unreadable) Read(Func<string, bool> keyExists)
+    {
+        ArgumentNullException.ThrowIfNull(keyExists);
+
+        List<string> reasons = [];
+        string? unreadable = null;
+
+        foreach (var (key, reason) in Signals)
         {
-            if (signal.CanCauseARestart)
+            try
             {
-                return RebootUrgency.Restarting;
+                if (keyExists(key))
+                {
+                    reasons.Add(reason);
+                }
+            }
+            catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+            {
+                unreadable ??= $"Could not tell whether {reason}: {ex.Message}";
             }
         }
 
-        return RebootUrgency.Queued;
+        return (reasons, unreadable);
     }
 
-    /// <summary>The headline, or null when there is nothing to say.</summary>
-    public static string? Headline(RebootUrgency urgency) => urgency switch
-    {
-        RebootUrgency.Restarting => "Windows is waiting to restart.",
-        RebootUrgency.Queued => "Windows has files queued for the next restart.",
-        _ => null,
-    };
+    /// <summary>The headline, or null when nothing is pending.</summary>
+    public static string? Headline(IReadOnlyList<string> reasons) =>
+        reasons is { Count: > 0 } ? "Windows is waiting to restart." : null;
 
-    /// <summary>
-    /// The sentence after the headline, or null. Only the restarting case makes a
-    /// claim about the servers.
-    /// </summary>
-    public static string? Consequence(RebootUrgency urgency) => urgency switch
-    {
-        RebootUrgency.Restarting =>
-            "It will take every server down at a moment of its choosing —",
-
-        // Deliberately no claim at all. This state is honest information and not a
-        // warning, and saying anything about servers here is what T188 was.
-        RebootUrgency.Queued => "Nothing here will restart the machine on its own —",
-
-        _ => null,
-    };
+    /// <summary>The sentence between the headline and the reasons, or null.</summary>
+    public static string? Consequence(IReadOnlyList<string> reasons) =>
+        reasons is { Count: > 0 } ? "It will take every server down at a moment of its choosing —" : null;
 }

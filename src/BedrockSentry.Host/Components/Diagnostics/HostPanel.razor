@@ -83,7 +83,7 @@
         <h2>Clock</h2>
         <dl>
             <dt>Local time</dt>
-            <dd>@(system?.LocalTime.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</dd>
+            <dd>@(system is { } host ? ClockText.DateAndTimeWithSeconds(host.LocalTime) : "—")</dd>
 
             <dt>Time zone</dt>
             <dd>@(system?.TimeZone ?? "—")</dd>
@@ -92,17 +92,21 @@
     </div>
 </div>
 
-@* T188: the headline follows the strongest signal. Three registry signals used to
-   be ORed into one bool and given the severe headline, so a OneDrive update queuing
-   its own leftovers for deletion read as "Windows is about to take every server
-   down" — for two days on this box, with nothing actually pending. *@
-@if (system is not null && RebootNotice.Headline(system.RebootUrgency) is { } headline)
+@* T188, D64: only what can restart the machine by itself raises this. The
+   file-rename queue, which cannot, kept it on the page for days with nothing
+   pending, and is not read. *@
+@if (system is not null && RebootNotice.Headline(system.RebootReasons) is { } headline)
 {
     <p class="prop-stale">
         <strong>@headline</strong>
-        @RebootNotice.Consequence(system.RebootUrgency)
+        @RebootNotice.Consequence(system.RebootReasons)
         @string.Join("; ", system.RebootReasons).
     </p>
+}
+
+@if (system?.RebootUnreadable is { } unreadable)
+{
+    <p class="check-detail">@unreadable</p>
 }
 
 @if (domain is { } check)
@@ -137,10 +141,10 @@
 
 @if (volumes is { Count: > 0 })
 {
-    @* D55. The column appears only when some volume has something to say:
-       on a machine without the role every row would read "Not installed",
-       and one sentence under the table says that better. The rule for which
-       it is, and every word in the cell, is VolumeDeduplication in Core. *@
+    @* D55. The three dedup columns appear only when some volume has something
+       to say: on a machine without the role every row would read "Not installed",
+       and one sentence under the table says that better. The rule for which it
+       is, and every word in the cells, is VolumeDeduplication in Core (T429). *@
     var showDeduplication = VolumeDeduplication.ColumnWorthShowing(volumes.Select(v => v.Deduplication));
     var now = Time.GetUtcNow();
 
@@ -150,12 +154,15 @@
             <thead>
                 <tr>
                     <th>Volume</th>
+                    <th>Drive</th>
                     <th>Free</th>
                     <th>Total</th>
                     <th>Used</th>
                     @if (showDeduplication)
                     {
-                        <th>Deduplication</th>
+                        <th>Dedup. Rate</th>
+                        <th>Dedup. Savings</th>
+                        <th>Last Optimization</th>
                     }
                 </tr>
             </thead>
@@ -164,15 +171,16 @@
                 {
                     <tr>
                         <td><code>@volume.RootPath</code></td>
-                        <td class="num">@ByteSize.Format(volume.FreeBytes)</td>
+                        <td>@DriveMediaRules.Text(volume.Media)</td>
+                        <td class="num @FreeClass(volume.FreeLevel)">@volume.FreeText</td>
                         <td class="num">@ByteSize.Format(volume.TotalBytes)</td>
-                        <td class="num @(volume.UsedFraction > 0.9 ? "check-bad" : null)">
-                            @($"{volume.UsedFraction:P0}")
-                        </td>
+                        <td class="num">@volume.UsedText</td>
                         @if (showDeduplication)
                         {
+                            <td>@volume.Deduplication.RateText(volume.UsedBytes)</td>
+                            <td class="num">@volume.Deduplication.SavingsText</td>
                             <td class="@(volume.Deduplication.NeedsAttention ? "check-bad" : null)">
-                                @volume.Deduplication.Describe(now)
+                                @volume.Deduplication.LastOptimizationText(now)
                             </td>
                         }
                     </tr>
@@ -180,6 +188,10 @@
             </tbody>
         </table>
     </div>
+    @foreach (var warning in volumes.Select(v => (v.FreeLevel, Text: v.FreeWarning)).Where(w => w.Text is not null))
+    {
+        <p class="@FreeClass(warning.FreeLevel)">@warning.Text</p>
+    }
     <p class="check-detail">
         A backup schedule quietly filling a disk is the most common way an
         installation like this dies.
@@ -188,7 +200,7 @@
     {
         <p class="check-detail">
             Deduplication runs as a scheduled job, not as files are written, so
-            free space on an optimised volume rises on its own hours after a
+            free space on an optimized volume rises on its own hours after a
             backup — and a folder's size on disk can be far less than the size
             of the files in it.
         </p>
@@ -200,6 +212,14 @@
 }
 
 @code {
+    // Low is amber, critical red (VolumeUsage.LowFreeFraction, CriticalFreeFraction).
+    private static string? FreeClass(FreeSpaceLevel level) => level switch
+    {
+        FreeSpaceLevel.Critical => "check-bad",
+        FreeSpaceLevel.Low => "check-warn",
+        _ => null,
+    };
+
     private HostAddresses? addresses;
     private HostSystem? system;
     private DomainCheck? domain;
@@ -216,7 +236,7 @@
     protected override void OnInitialized()
     {
         system = Host.System();
-        volumes = Host.Volumes(Registry.All.Select(s => s.WorkingDirectory));
+        volumes = Host.Volumes(Registry.All.Select(s => s.WorkingDirectory), Registry.Root);
         addresses = HostInspector.Local();
     }
 

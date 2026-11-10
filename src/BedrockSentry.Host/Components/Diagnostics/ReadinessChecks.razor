@@ -7,12 +7,19 @@
 
 @using BedrockSentry.Core.Backups
 @using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Core.Broker
+@using BedrockSentry.Services.Broker
 @using BedrockSentry.Services.Diagnostics
 @using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Updates
 
 @inject InstanceRegistry Registry
 @inject PortInspector Ports
-@inject ReadinessInspector Readiness
+@inject IVssServiceControl Readiness
+@inject UpdateService Updates
+@inject PrivilegedWork Work
+@inject AdminPipeStatus AdminPipe
+@inject InstalledService Installed
 
 <h2>Readiness</h2>
 
@@ -93,16 +100,20 @@
         {
             var built = new List<Item>
             {
-                // Answered synchronously — it is a managed identity read, not a
-                // process launch — but listed first because it explains the
-                // others. A wrapper running without administrator rights makes
-                // every fix on this page fail, each with its own
-                // unrelated-looking error.
+                // Listed first because it explains the others: without the broker,
+                // or with one that does not answer, every fix on this page fails,
+                // each with its own unrelated-looking error. Answered below, since
+                // with the broker it asks the broker.
                 new()
                 {
                     Key = "privileges",
                     Title = ReadinessInspector.PrivilegeTitle,
-                    Check = ReadinessInspector.CheckPrivileges(),
+                },
+                new()
+                {
+                    Key = "self-update",
+                    Title = ReadinessInspector.SelfUpdateTitle,
+                    Check = ReadinessInspector.CheckSelfUpdate(Updates.InactiveReason),
                 },
                 new()
                 {
@@ -111,6 +122,17 @@
                     Fix = () => Readiness.EnableVssAsync(),
                 },
             };
+
+            // Only where the pipe is served at all: nothing else runs an installer.
+            if (OperatingSystem.IsWindows())
+            {
+                built.Add(new Item
+                {
+                    Key = "admin-pipe",
+                    Title = AdminPipeStatus.Title,
+                    Check = AdminPipe.Check(BrokerNames.AdminPipe(Installed.Name)),
+                });
+            }
 
             // Ports come from the registry and the instance's own file, so they
             // are known without asking the machine anything slow.
@@ -125,17 +147,25 @@
                 // sentences, different question.
                 var conflicts = Ports.ConflictsToShow(supervisor.InstanceId, supervisor.WorkingDirectory);
 
+                // A file that could not be read produces the same empty conflict
+                // list as a clean one, so the row has to be told which it was
+                // (`T210`).
+                var model = PortInspector.ModelOf(supervisor.WorkingDirectory);
+
                 built.Add(new Item
                 {
                     Key = $"ports:{supervisor.InstanceId}",
                     Title = ReadinessInspector.PortTitle(name),
-                    Check = ReadinessInspector.CheckPorts(name, conflicts),
+                    Check = ReadinessInspector.CheckPorts(name, conflicts, model.Unreadable),
                 });
             }
 
             // Named before the slow one is answered, so the panel has its shape
             // from the first paint and the VSS row resolves in place.
             checks = built;
+            StateHasChanged();
+
+            built.Single(i => i.Key == "privileges").Check = await Work.CheckAsync(cts?.Token ?? CancellationToken.None);
             StateHasChanged();
 
             var vss = await Readiness.ReadVssAsync(cts?.Token ?? CancellationToken.None);
@@ -158,19 +188,28 @@
     }
 
     /// <summary>
-    /// Whether anything here would actually use a shadow copy.
+    /// Whether any instance would actually use a shadow copy.
     /// </summary>
     /// <remarks>
-    /// Changes only the wording, never the state: a disabled VSS is worth
-    /// reporting either way, but "those backups will fail" and "nothing needs
-    /// this yet" are different sentences and only one of them is true.
+    /// <para>Changes only the wording, never the state: a disabled VSS is worth
+    /// reporting either way, but "those backups will fail" and "nothing needs this
+    /// yet" are different sentences and only one of them is true.</para>
     ///
-    /// False until milestone 9 gives <c>BackupSettings</c> a VSS strategy to
-    /// enable. Checking availability before the feature exists is the whole
-    /// point of a readiness panel — finding out the machine cannot do it at all
-    /// is cheaper now than on the night the first snapshot is due.
+    /// <para><strong>This returned a hardcoded <c>false</c>, under a comment saying
+    /// it would do so until the strategy existed.</strong> The strategy shipped;
+    /// the comment stayed; and the panel went on telling every install that nothing
+    /// needed VSS, including the ones that did. A comment stating a condition is
+    /// load-bearing code, and this is the second half of that lesson — the first
+    /// half is that whatever is written next from the comment inherits the error,
+    /// and the second is that nothing re-reads a comment once it is true no
+    /// longer.</para>
+    ///
+    /// <para>It asks the acquisition toggle rather than either strategy
+    /// (<c>D66</c>), which is the question now: a shadow copy is how the world is
+    /// acquired for both formats, so neither format's own switch answers it.</para>
     /// </remarks>
-    private static bool AnyVssBackupsConfigured() => false;
+    private bool AnyVssBackupsConfigured() =>
+        Registry.All.Any(s => s.Definition.Backup.Acquisition.UseShadowCopy);
 
     private async Task FixAsync(Item item)
     {

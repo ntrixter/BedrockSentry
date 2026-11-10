@@ -8,16 +8,19 @@ namespace BedrockSentry.Core.Instances;
 /// </summary>
 /// <remarks>
 /// <para><strong>The defect this exists for.</strong>
-/// <c>WindowsServiceLifetime.OnStop</c> waits the host's shutdown timeout — 65
-/// seconds, derived in <c>Program.cs</c> — and then reports <c>SERVICE_STOPPED</c>
-/// whether the host has finished or not. So the host outlives the SCM's belief
-/// that it stopped, measured on a real box at between 0.03 and 8.8 seconds. A
-/// back-to-back restart then starts a new service while the old one's
-/// <c>bedrock_server.exe</c> children are still saving, every auto-start is
-/// correctly refused because something is already on the world, and the box comes
+/// The framework's <c>WindowsServiceLifetime.OnStop</c> waits the host's shutdown
+/// timeout — 65 seconds, derived in <c>Program.cs</c> — and then reports
+/// <c>SERVICE_STOPPED</c> whether the host has finished or not. So the host outlived
+/// the SCM's belief that it stopped, measured on a real box at between 0.03 and 8.8
+/// seconds. A back-to-back restart then started a new service while the old one's
+/// <c>bedrock_server.exe</c> children were still saving, every auto-start was
+/// correctly refused because something was already on the world, and the box came
 /// back with **nothing running**. Before this, nothing re-checked: the auto-start
 /// loop in <c>InstanceHostedService</c> is a single pass, so a refusal there was
-/// permanent for the lifetime of the process.</para>
+/// permanent for the lifetime of the process. <c>DrainingServiceLifetime</c> now
+/// holds the report until the host has stopped (<c>D32</c>); the re-check stays for
+/// a start that still finds a server on its world, such as one a killed host left
+/// running.</para>
 ///
 /// <para><strong>Why re-checking is safe, which is the whole argument.</strong>
 /// The refusal is produced by a guard that runs <em>before</em> anything is
@@ -99,13 +102,15 @@ public static class RefusedStartRetry
     /// <item>it crashed its way to a give-up in the meantime, so the fault kind
     /// has changed and a relaunch is exactly what must not happen;</item>
     /// <item>it was retired (<c>D14</c>) or had auto-start turned off while the
-    /// schedule was running.</item>
+    /// schedule was running;</item>
+    /// <item>a job claims it (<see cref="InstanceStatus.ClaimedFor"/>), such as a
+    /// sync, which starts it when its own steps say to.</item>
     /// </list>
     /// </remarks>
     public static bool StillWorthRetrying(InstanceStatus status, bool autoStart, bool retired) =>
         autoStart
         && !retired
-        && status is { State: InstanceState.Faulted, FaultKind: InstanceFault.RefusedToStart };
+        && status is { State: InstanceState.Faulted, FaultKind: InstanceFault.RefusedToStart, ClaimedFor: null };
 
     /// <summary>
     /// What to say when the schedule runs out and the instance is still refused.

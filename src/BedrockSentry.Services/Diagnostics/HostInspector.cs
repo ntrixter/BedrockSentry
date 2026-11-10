@@ -24,19 +24,22 @@ public sealed class HostInspector
     private readonly ISentryPaths _paths;
     private readonly TimeProvider _time;
     private readonly IVolumeDeduplicationInspector _deduplication;
+    private readonly IVolumeMediaInspector _media;
 
     public HostInspector(
         PublicAddressService publicAddress,
         IOptionsMonitor<HostDetailsOptions> options,
         ISentryPaths paths,
         TimeProvider time,
-        IVolumeDeduplicationInspector deduplication)
+        IVolumeDeduplicationInspector deduplication,
+        IVolumeMediaInspector media)
     {
         _publicAddress = publicAddress;
         _options = options;
         _paths = paths;
         _time = time;
         _deduplication = deduplication;
+        _media = media;
     }
 
     /// <summary>
@@ -168,7 +171,7 @@ public sealed class HostInspector
     public HostSystem System()
     {
         var memory = GC.GetGCMemoryInfo();
-        var reasons = RebootReasons();
+        var (reasons, unreadable) = RebootReasons();
 
         return new HostSystem(
             Environment.OSVersion.VersionString,
@@ -178,42 +181,101 @@ public sealed class HostInspector
             TimeSpan.FromMilliseconds(Environment.TickCount64),
             _time.GetLocalNow(),
             TimeZoneInfo.Local.DisplayName,
-            reasons);
+            reasons,
+            unreadable);
     }
 
     /// <summary>
-    /// Space on each volume the wrapper keeps something on, one entry per volume
-    /// even when several of its folders share one.
+    /// The folders whose volumes the Storage table lists, in the order it lists them.
     /// </summary>
-    public IReadOnlyList<VolumeUsage> Volumes(IEnumerable<string> instanceDirectories)
+    /// <remarks>
+    /// The system volume first, because Windows, its updates and its page file live
+    /// there and fill it whatever the wrapper does. Then every folder the wrapper
+    /// writes to: the data root, the backups folder, the server packages folder,
+    /// the new servers folder and each server's own folder. The backups folder is
+    /// the one most often moved to a drive of its own (T430 clause 4).
+    /// </remarks>
+    public static IReadOnlyList<(string Name, string Path)> VolumeFolders(
+        ISentryPaths paths,
+        string? newServersRoot,
+        IEnumerable<string> instanceDirectories,
+        string? windowsDirectory)
     {
-        var interesting = new List<(string Name, string Path)>
+        var folders = new List<(string Name, string Path)>
         {
-            ("BedrockSentry data", _paths.DataRoot),
-            ("Server packages", _paths.ServerPackages),
-            ("Instances", _paths.Instances),
+            ("Windows", windowsDirectory ?? ""),
+            ("BedrockSentry data", paths.DataRoot),
+            ("Backups", paths.Backups),
+            ("Server packages", paths.ServerPackages),
+            ("New servers", newServersRoot ?? ""),
+            ("Instances", paths.Instances),
         };
 
-        interesting.AddRange(instanceDirectories.Select(d => ("Instance", d)));
+        folders.AddRange(instanceDirectories.Select(d => ("Instance", d)));
 
-        var byRoot = new Dictionary<string, (string Name, DriveInfo Drive)>(StringComparer.OrdinalIgnoreCase);
+        return folders;
+    }
 
-        foreach (var (name, path) in interesting)
+    /// <summary>
+    /// The folders grouped by the volume each is on, first name per volume, in the
+    /// order given. A volume mounted in a folder is its own volume, not the drive
+    /// letter the folder sits under (T430 clause 5).
+    /// </summary>
+    /// <param name="rootOf">The volume root of a path, or null when it cannot be read.</param>
+    public static IReadOnlyList<(string Root, string Name)> ByVolume(
+        IEnumerable<(string Name, string Path)> folders, Func<string, string?> rootOf)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<(string Root, string Name)>();
+
+        foreach (var (name, path) in folders)
         {
             if (string.IsNullOrWhiteSpace(path))
             {
                 continue;
             }
 
+            string? root;
+
             try
             {
-                var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!);
-                if (!drive.IsReady || byRoot.ContainsKey(drive.Name))
-                {
-                    continue;
-                }
+                root = rootOf(path);
+            }
+            catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+            {
+                continue;
+            }
 
-                byRoot[drive.Name] = (name, drive);
+            if (!string.IsNullOrEmpty(root) && seen.Add(root))
+            {
+                result.Add((root, name));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Space on the system volume and on each volume the wrapper keeps something
+    /// on, one entry per volume even when several of its folders share one.
+    /// </summary>
+    /// <param name="instanceDirectories">Each registered server's folder.</param>
+    /// <param name="newServersRoot">Where new servers are created (Settings → Storage).</param>
+    public IReadOnlyList<VolumeUsage> Volumes(IEnumerable<string> instanceDirectories, string? newServersRoot = null)
+    {
+        var interesting = VolumeFolders(
+            _paths, newServersRoot, instanceDirectories, Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+
+        var byRoot = new Dictionary<string, (string Name, long Total, long Free)>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (root, name) in ByVolume(interesting, VolumeSpace.RootOf))
+        {
+            try
+            {
+                if (VolumeSpace.Read(root) is { } space)
+                {
+                    byRoot[root] = (name, space.Total, space.Free);
+                }
             }
             catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
             {
@@ -225,82 +287,32 @@ public sealed class HostInspector
         // rather than one per row: it is a CIM query, and the answer for a
         // machine without the role is the same for all of them (`D55`).
         var deduplication = _deduplication.Inspect([.. byRoot.Keys]);
+        var media = _media.Inspect([.. byRoot.Keys]);
 
         return byRoot
             .Select(entry => new VolumeUsage(
                 entry.Value.Name,
                 entry.Key,
-                entry.Value.Drive.TotalSize,
-                entry.Value.Drive.AvailableFreeSpace,
+                entry.Value.Total,
+                entry.Value.Free,
                 deduplication.TryGetValue(entry.Key, out var state)
                     ? state
-                    : VolumeDeduplication.Unknown("The deduplication service did not answer for this volume.")))
+                    : VolumeDeduplication.Unknown("The deduplication service did not answer for this volume."),
+                media.TryGetValue(entry.Key, out var kind) ? kind : DriveMedia.Unknown))
             .ToList();
     }
 
     /// <summary>
-    /// What Windows has pending, and which of it can restart the machine.
+    /// What Windows has pending that can restart the machine by itself
+    /// (<see cref="RebootNotice.Signals"/>).
     /// </summary>
     /// <remarks>
-    /// <para>Worth surfacing because the first two signals mean Windows will
-    /// eventually take every server down without asking, and the administrator would
-    /// rather choose the moment.</para>
-    ///
-    /// <para><strong>That justification does not cover the third, and this method
-    /// used to be named and written as though it did</strong> (<c>T188</c>).
-    /// <c>PendingFileRenameOperations</c> is a passive queue Windows drains if and
-    /// when a restart happens — it cannot cause one. It was called "why Windows
-    /// thinks it needs restarting", which is not what a pending file rename is: it
-    /// is Windows noting work to do <em>if</em> restarted. Each signal now carries
-    /// whether it can restart the machine, and the headline follows the strongest
-    /// one rather than giving all three the most severe.</para>
+    /// Worth surfacing because Windows will take every server down without asking, and
+    /// the administrator would rather choose the moment. The file-rename queue is not
+    /// read: it cannot cause a restart (<c>T188</c>, <c>D64</c>).
     /// </remarks>
-    private static IReadOnlyList<RebootSignal> RebootReasons()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return [];
-        }
-
-        var reasons = new List<RebootSignal>();
-
-        try
-        {
-            if (KeyExists(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"))
-            {
-                reasons.Add(new RebootSignal(
-                    "a component install is waiting on a restart", CanCauseARestart: true));
-            }
-
-            if (KeyExists(@"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"))
-            {
-                reasons.Add(new RebootSignal(
-                    "Windows Update is waiting on a restart", CanCauseARestart: true));
-            }
-
-            using var sessionManager = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Session Manager");
-
-            if (sessionManager?.GetValue("PendingFileRenameOperations") is string[] { Length: > 0 })
-            {
-                // "queued to be replaced" overstated it: on a healthy Windows install
-                // every observed entry had an empty destination, which is
-                // delete-on-boot. The distinction
-                // matters — a queued replacement suggests a half-finished install, a
-                // queued deletion suggests something that finished and is tidying up.
-                reasons.Add(new RebootSignal(
-                    "files are queued to be removed or replaced on the next restart",
-                    CanCauseARestart: false));
-            }
-        }
-        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException)
-        {
-            // Reported as "not pending" rather than as an error: this is a hint,
-            // not something to break a page over.
-        }
-
-        return reasons;
-    }
+    private static (IReadOnlyList<string> Reasons, string? Unreadable) RebootReasons() =>
+        OperatingSystem.IsWindows() ? RebootNotice.Read(KeyExists) : ([], null);
 
     private static bool KeyExists(string path)
     {

@@ -1,0 +1,1374 @@
+@* Add-ons on one server (milestone 15, D77-D85), as four views of one tab: what
+   it has and uses, each pack's settings, the order that decides which wins, and
+   why any of them is doing nothing. *@
+
+@using BedrockSentry.Core.Addons
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Services.Addons
+@using BedrockSentry.Services.Instances
+@using Microsoft.AspNetCore.Components.Rendering
+
+@inject AddonLibrary Library
+@inject InstanceAddons Addons
+@inject CompanionPackSeeder Seeder
+@inject ServerVersionLog Versions
+@inject InstanceRegistry Registry
+@inject AddonIcons Icons
+@inject AddonChanges Changes
+@inject AddonQueueStore Queue
+@inject TimeProvider Time
+@implements IDisposable
+
+<div class="addons-head">
+    <h3>Add-ons</h3>
+    <span class="addons-info" tabindex="0" role="note" aria-label="@AddonsTabText.HeadingNote"
+          title="@AddonsTabText.HeadingNote">i</span>
+    <span class="addons-head-spacer"></span>
+    @if (ScriptOutput.HeaderLabel(scriptOutput) is { } scriptLabel)
+    {
+        <span class="@ScriptOutput.HeaderBadgeClass(scriptOutput)">@scriptLabel</span>
+    }
+    <a class="btn btn-sm btn-secondary" href="addons">Add-on library</a>
+</div>
+
+@if (state is null)
+{
+    <p class="empty-state">Reading this server's add-ons…</p>
+}
+else if (!state.CanAct)
+{
+    @* Never an empty list in place of an unreadable one: a page that shows no
+       add-ons for a world it could not open invites somebody to add them again. *@
+    <p class="console-fault">
+        @(state.Reason ?? "This server's add-ons could not be read.")
+    </p>
+}
+else
+{
+    @if (waits && AddonsTabText.Waiting(view, Supervisor.Definition.Name) is { } locked)
+    {
+        @* D85: Bedrock rewrites a world's files when it stops, so a change written
+           now would be discarded by the server's own exit. A change made now is
+           queued and written once the process has exited. The reason is behind
+           the banner. *@
+        <div class="addons-locked" role="status" title="@AddonsTabText.WaitReason">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="5" y="11" width="14" height="10" rx="2"></rect>
+                <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+            </svg>
+            <span><strong>@locked.Headline</strong> @locked.Detail</span>
+        </div>
+    }
+
+    @if (queueUnreadable is { } unreadableQueue)
+    {
+        <p class="console-fault">@AddonsTabText.QueueUnreadable(unreadableQueue)</p>
+    }
+    else if (queued.Count > 0)
+    {
+        @* D85. What will be written, one line per pack, list or settings, each with a
+           Discard; one that could not be applied says why and is tried again. *@
+        <section class="addons-queue" aria-label="Changes waiting">
+            <div class="addons-queue-head">
+                <strong>@AddonsTabText.QueueHeading(queued.Count)</strong>
+                <span class="check-detail">@AddonsTabText.QueueDetail(Supervisor.Definition.Name, waits)</span>
+            </div>
+            <ul>
+                @foreach (var change in queued)
+                {
+                    <li @key="change.Id">
+                        <span>
+                            <span>@change.Describe()</span>
+                            @if (change.Failure is { } failure)
+                            {
+                                <span class="check-detail addons-fault">@AddonsTabText.Failed(failure)</span>
+                            }
+                        </span>
+                        <button type="button" class="btn btn-sm btn-secondary" disabled="@busy"
+                                aria-label="@($"Discard {change.Describe()}")" @onclick="() => DiscardAsync(change.Id)">
+                            Discard
+                        </button>
+                    </li>
+                }
+            </ul>
+        </section>
+    }
+
+    @* Four views of one tab rather than four tabs, so it is the segmented control
+       the Backups tab uses and not a third strip. *@
+    <div class="view-bar">
+        <nav class="view-switch addons-views" aria-label="Add-ons views">
+            <button type="button" class="@(view == AddonsView.List ? "active" : null)"
+                    aria-current="@(view == AddonsView.List ? "page" : null)"
+                    @onclick="() => view = AddonsView.List">
+                On this server
+                <span class="view-count">@listing.SwitchedOn.Count</span>
+            </button>
+            <button type="button" class="@(view == AddonsView.Settings ? "active" : null)"
+                    aria-current="@(view == AddonsView.Settings ? "page" : null)"
+                    @onclick="() => view = AddonsView.Settings">
+                Settings
+                <span class="view-count">@settings.Count</span>
+                @if (dirty.Count > 0)
+                {
+                    <span class="view-dot" aria-label="unsaved changes"></span>
+                }
+            </button>
+            <button type="button" class="@(view == AddonsView.Order ? "active" : null)"
+                    aria-current="@(view == AddonsView.Order ? "page" : null)"
+                    @onclick="() => view = AddonsView.Order">
+                Load order
+            </button>
+            <button type="button" class="@(view == AddonsView.Issues ? "active" : null)"
+                    aria-current="@(view == AddonsView.Issues ? "page" : null)"
+                    @onclick="() => view = AddonsView.Issues">
+                Issues
+                @if (issues.Open.Count > 0)
+                {
+                    <span class="view-count view-count-warn">@issues.Open.Count</span>
+                }
+            </button>
+        </nav>
+    </div>
+
+    @if ((view is AddonsView.List or AddonsView.Order) && error is { Length: > 0 })
+    {
+        <p class="console-fault">@error</p>
+    }
+    else if (view is AddonsView.List && removed is { Length: > 0 })
+    {
+        <p class="check-detail">@removed</p>
+    }
+    else if (view is AddonsView.List && copied is { } copy)
+    {
+        <p class="@(copy.Failed ? "console-fault" : "check-detail")">@copy.Text</p>
+    }
+
+    @switch (view)
+    {
+        case AddonsView.List:
+            RenderList(__builder);
+            break;
+
+        case AddonsView.Settings:
+            RenderSettings(__builder);
+            break;
+
+        case AddonsView.Order:
+            RenderOrder(__builder);
+            break;
+
+        default:
+            RenderIssues(__builder);
+            break;
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    private InstanceAddonState? state;
+    private LibraryListing shelf = new([], null);
+    private IReadOnlyList<AddonFinding> findings = [];
+    private AddonsListing listing = AddonsListing.Empty;
+    private AddonIssueList issues = AddonIssueList.Empty;
+    private IReadOnlyDictionary<string, string> icons = new Dictionary<string, string>();
+    private IReadOnlyList<SettingsEntry> settings = [];
+    private ScriptOutputState scriptOutput = ScriptOutputState.NotApplicable;
+
+    private AddonsView view = AddonsView.List;
+    private string? expanded;
+
+    // T363. The row whose Remove is waiting on a confirmation, and what the last one did.
+    private AddonRow? removing;
+    private string? removed;
+
+    // D78 (a). What the last Copy to library said, and whether it went wrong.
+    private (string Text, bool Failed)? copied;
+    private bool showHidden;
+    private bool showHiddenIssues;
+
+    // D112. The version each row's picker shows, when somebody changed it, and whether
+    // the auto-update switch's last save failed.
+    private readonly Dictionary<string, PackVersion> picked = new(StringComparer.OrdinalIgnoreCase);
+    private string? autoUpdateError;
+    private string selectedSettings = CompanionPack.Uuid;
+    private readonly HashSet<string> dirty = new(StringComparer.OrdinalIgnoreCase);
+
+    private string? error;
+    private string? scriptOutputError;
+    private string? issuesError;
+    private bool busy;
+    private bool companionSaved;
+    private string? companionError;
+
+    private bool running => Supervisor.Status.State == Core.Instances.InstanceState.Running;
+
+    // D85. Whether a change made now waits for the process to exit, and what is waiting.
+    private bool waits => AddonQueue.MustWait(Supervisor.Status.State);
+    private IReadOnlyList<QueuedAddonChange> queued = [];
+    private string? queueUnreadable;
+
+    /// <summary>One add-on on the Settings view's list.</summary>
+    private sealed record SettingsEntry(
+        string Uuid, string Name, string Version, bool IsCompanion, PackSettingsSchema? Schema, AddonRow? Row)
+    {
+        /// <summary>The companion's three recording options count as settings too.</summary>
+        public int Count => (IsCompanion ? 3 : 0) + (Schema?.ControlCount ?? 0);
+    }
+
+    private static bool Ticked(ChangeEventArgs e) => e.Value is bool value && value;
+
+    protected override void OnInitialized()
+    {
+        Queue.Changed += OnQueueChanged;
+        Supervisor.StatusChanged += OnStatusChanged;
+        Reload();
+    }
+
+    public void Dispose()
+    {
+        Queue.Changed -= OnQueueChanged;
+        Supervisor.StatusChanged -= OnStatusChanged;
+    }
+
+    // The queue is written from the background when the server stops, and the world with it.
+    private void OnQueueChanged(string instanceId)
+    {
+        if (instanceId == Supervisor.InstanceId)
+        {
+            _ = InvokeAsync(() =>
+            {
+                Reload();
+                StateHasChanged();
+            });
+        }
+    }
+
+    private void OnStatusChanged(Core.Instances.InstanceStatus status) => _ = InvokeAsync(StateHasChanged);
+
+    private void Reload()
+    {
+        var read = Queue.Read(Supervisor.InstanceId);
+        queued = read.Changes;
+        queueUnreadable = read.Unreadable;
+
+        state = Addons.Read(Supervisor);
+        shelf = Library.Read();
+
+        // The server's own reported build, so an engine floor is a check rather
+        // than a caption. Absent is carried as absent: the diagnosis has an arm
+        // for a build it does not know and says so rather than clearing.
+        var build = PackVersion.Parse(Versions.Read(Supervisor.InstanceId)?.Version).Version;
+
+        findings = Addons.Diagnose(state, build);
+        scriptOutput = ScriptOutput.Read(state, Supervisor.WorkingDirectory);
+
+        // One walk: the rows, the hidden count and every name a finding, the
+        // order list or a Needs field uses (T299, D90).
+        listing = AddonsListing.Build(state, shelf.Packs);
+        issues = AddonIssueList.Build(findings, listing, scriptOutput, Supervisor.Definition.Addons.HiddenIssues);
+        icons = Icons.Remember(Supervisor.InstanceId, listing);
+        settings = SettingsEntries();
+    }
+
+    /// <summary>
+    /// The companion first, always: its recording options belong to this server
+    /// whether or not the pack is here. Then every listed pack that declares
+    /// settings, in the list's order. Only packs the list shows: a control for a
+    /// pack with no row is a control for something the page says is not there.
+    /// </summary>
+    private IReadOnlyList<SettingsEntry> SettingsEntries()
+    {
+        var companion = listing.Find(CompanionPack.Uuid);
+        var entries = new List<SettingsEntry>
+        {
+            new(CompanionPack.Uuid, companion?.Name ?? "BedrockSentry companion", companion?.Version ?? "",
+                true, Gear(CompanionPack.Uuid), companion),
+        };
+
+        foreach (var row in listing.SwitchedOn.Concat(listing.NotSwitchedOn))
+        {
+            if (!row.IsCompanion && row.State != AddonRowState.InLibrary && Gear(row.Uuid) is { } schema)
+            {
+                entries.Add(new(row.Uuid, row.Name, row.Version, false, schema, row));
+            }
+        }
+
+        return entries;
+    }
+
+    /// <summary>A pack's controls on this server, or null when it has none here.</summary>
+    private PackSettingsSchema? Gear(string uuid) =>
+        state is not null
+        && state.Installed.Any(p => string.Equals(p.Manifest.Uuid, uuid, StringComparison.OrdinalIgnoreCase))
+        && state.SchemaFor(uuid) is { HasGear: true } schema
+            ? schema
+            : null;
+
+    private void OpenSettings(string uuid)
+    {
+        selectedSettings = uuid;
+        view = AddonsView.Settings;
+    }
+
+    private void ShowRow(string uuid)
+    {
+        expanded = uuid;
+        showHidden = showHidden || listing.Find(uuid) is { Hidden: true };
+        view = AddonsView.List;
+    }
+
+    private void ToggleDetails(string uuid) => expanded = expanded == uuid ? null : uuid;
+
+    // ---- On this server -------------------------------------------------
+
+    private void RenderList(RenderTreeBuilder __builder)
+    {
+        @* D93. Said here, because this is where the companion pack would be
+           switched on, and its absence from the list is otherwise unexplained. *@
+        @if (CompanionPackSeeder.Describe(Seeder.Last) is { } seeding)
+        {
+            <p class="console-fault">@seeding</p>
+        }
+        @if (CompanionPackSeeder.DescribeResources(Seeder.LastResources) is { } seedingResources)
+        {
+            <p class="console-fault">@seedingResources</p>
+        }
+
+        @* D112. Saved the moment it changes, and applied at each start, so it is not
+           locked while the server runs. *@
+        <label class="addons-check addons-auto-update">
+            <input type="checkbox" class="form-check-input" checked="@Supervisor.Definition.Addons.AutoUpdate"
+                   disabled="@busy" @onchange="e => SetAutoUpdateAsync(Ticked(e))" />
+            <span>
+                <span>@AddonsTabText.AutoUpdateLabel</span>
+                <span class="check-detail">@AddonsTabText.AutoUpdateDetail</span>
+                @if (autoUpdateError is not null)
+                {
+                    <span class="check-detail addons-fault">@autoUpdateError</span>
+                }
+            </span>
+        </label>
+
+        @* T298: an unreadable library is said, and this server's own packs still list. *@
+        @if (shelf.Sentence is { } unreadable)
+        {
+            <p class="console-fault">@unreadable</p>
+        }
+
+        @if (listing.Text.EmptyState is { } emptyState)
+        {
+            <p class="empty-state">
+                @emptyState Add one to the library first, on the
+                <a href="addons">Add-ons</a> page.
+            </p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="addons-table">
+                    <thead>
+                        <tr>
+                            <th class="addons-col-icon"><span class="visually-hidden">Icon</span></th>
+                            <th>Add-on</th>
+                            <th class="addons-col-type">Type</th>
+                            <th class="addons-col-version">Version</th>
+                            <th class="addons-col-status">Status</th>
+                            <th class="addons-col-issues">Issues</th>
+                            <th class="actions">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (listing.SwitchedOn.Count > 0)
+                        {
+                            <tr class="addons-group"><td colspan="7">Switched on · @listing.SwitchedOn.Count</td></tr>
+                            @foreach (var row in listing.SwitchedOn)
+                            {
+                                RenderRow(__builder, row);
+                            }
+                        }
+                        @if (listing.NotSwitchedOn.Count > 0)
+                        {
+                            <tr class="addons-group">
+                                <td colspan="7">@listing.NotSwitchedOnHeading · @listing.NotSwitchedOn.Count</td>
+                            </tr>
+                            @foreach (var row in listing.NotSwitchedOn)
+                            {
+                                RenderRow(__builder, row);
+                            }
+                        }
+                    </tbody>
+                </table>
+
+                @* Said rather than left as an absence, and shown on request: an
+                   administrator who put a pack in the server root by hand is told the
+                   rule, and can look (D90). *@
+                @if (listing.Text.HiddenNote is { } hiddenNote)
+                {
+                    <div class="addons-hidden-note">
+                        <span>@(showHidden ? UntouchedServerPacks.ShownSentence(listing.Hidden.Count) : hiddenNote)</span>
+                        <button type="button" class="btn btn-sm btn-secondary" @onclick="() => showHidden = !showHidden">
+                            @(showHidden ? "Hide them" : "Show them")
+                        </button>
+                    </div>
+
+                    @if (showHidden)
+                    {
+                        <table class="addons-table addons-table-hidden">
+                            <tbody>
+                                @foreach (var row in listing.Hidden)
+                                {
+                                    RenderRow(__builder, row);
+                                }
+                            </tbody>
+                        </table>
+                    }
+                }
+            </div>
+        }
+    }
+
+    private void RenderRow(RenderTreeBuilder __builder, AddonRow row)
+    {
+        var open = expanded == row.Uuid;
+        var rowIssues = issues.OpenFor(row.Uuid);
+
+        <tr class="@(open ? "addons-row is-open" : "addons-row")" @key="row.Uuid">
+            <td class="addons-col-icon">@{ RenderIcon(__builder, row.Uuid, row.Name); }</td>
+            <td>
+                <div class="addons-name">
+                    <strong>@row.Name</strong>
+                    @if (row.IsCompanion)
+                    {
+                        <span class="state-badge state-info">Built in</span>
+                    }
+                </div>
+                @if (row.IsCompanion
+                     && CompanionRun.StateOf(Supervisor.Companion, running, row.IsSwitchedOn) is { } companionState)
+                {
+                    <div class="addons-companion">
+                        <span class="@CompanionRun.BadgeClass(companionState)"
+                              title="@CompanionRun.Describe(Supervisor.Companion, running, row.IsSwitchedOn)">
+                            @CompanionRun.Label(companionState)
+                        </span>
+                    </div>
+                }
+                @if (row.Note is { } note)
+                {
+                    <div class="check-detail">@note</div>
+                }
+                @if (HeldNote(row) is { } held)
+                {
+                    <div class="check-detail">@held</div>
+                }
+                @if (AddonQueue.ForPack(queued, row.Uuid) is { } waiting)
+                {
+                    <div><span class="state-badge state-info" title="@waiting.Describe()">@AddonsTabText.RowQueued</span></div>
+                }
+            </td>
+            <td class="addons-col-type">@row.TypeLabel</td>
+            <td class="num addons-col-version">
+                @if (row.CanChooseVersion)
+                {
+                    <select class="form-select form-select-sm addons-version-pick" disabled="@busy"
+                            aria-label="@($"Version of {row.SpokenName}")"
+                            value="@Chosen(row)?.ToString()" @onchange="e => Pick(row.Uuid, e)">
+                        @foreach (var choice in row.Choices!)
+                        {
+                            <option value="@choice.ToString()">@choice</option>
+                        }
+                    </select>
+                }
+                else
+                {
+                    @row.Version
+                }
+            </td>
+            <td><span class="@row.BadgeClass">@row.StateLabel</span></td>
+            <td class="addons-col-issues">
+                @if (rowIssues > 0)
+                {
+                    <button type="button" class="addons-issue-link" @onclick="() => view = AddonsView.Issues">
+                        @(rowIssues == 1 ? "1 issue" : $"{rowIssues} issues")
+                    </button>
+                }
+            </td>
+            <td class="actions">
+                <div class="addons-actions">
+                    @if (row.IsCompanion
+                         || settings.Any(s => string.Equals(s.Uuid, row.Uuid, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        <button type="button" class="btn btn-sm btn-secondary addons-gear" title="Settings"
+                                aria-label="@($"Settings for {row.SpokenName}")" @onclick="() => OpenSettings(row.Uuid)">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>
+                            </svg>
+                        </button>
+                    }
+                    @if (AddonQueue.ForPack(queued, row.Uuid) is { } pending)
+                    {
+                        @* D85. The pack's one waiting change is taken back here, rather
+                           than offered the switch it is already waiting to flip. *@
+                        <button type="button" class="btn btn-sm btn-secondary addons-switch text-nowrap" disabled="@busy"
+                                aria-label="@($"Discard {pending.Describe()}")" @onclick="() => DiscardAsync(pending.Id)">
+                            Discard change
+                        </button>
+                    }
+                    else if (row.CanEnable)
+                    {
+                        <button type="button" class="btn btn-sm btn-primary addons-switch" disabled="@busy"
+                                @onclick="() => EnableAsync(row, Chosen(row)!.Value)">
+                            Switch on
+                        </button>
+                    }
+                    else if (row.CanDisable)
+                    {
+                        @if (row.State == AddonRowState.On && row.CanChooseVersion && Chosen(row) is { } to && to != row.Parsed)
+                        {
+                            <button type="button" class="btn btn-sm btn-primary text-nowrap" disabled="@busy"
+                                    @onclick="() => ChangeVersionAsync(row, to)">
+                                Change version
+                            </button>
+                        }
+                        <button type="button" class="btn btn-sm btn-secondary addons-switch" disabled="@busy"
+                                @onclick="() => DisableAsync(row)">
+                            Switch off
+                        </button>
+                    }
+                    @if (row.CanCopyToLibrary)
+                    {
+                        @* D78 (a). Reads this server and writes only the library, so a
+                           running server does not disable it. *@
+                        <button type="button" class="btn btn-sm btn-secondary text-nowrap" disabled="@busy"
+                                aria-label="@($"Copy {row.SpokenName} to the library")"
+                                @onclick="() => CopyToLibraryAsync(row)">
+                            Copy to library
+                        </button>
+                    }
+                    @if (row.CanRemove)
+                    {
+                        @* T363. Switch off keeps a folder the library cannot put back (T277),
+                           so deleting one is asked for here, and confirmed below the row. *@
+                        <button type="button" class="btn btn-sm btn-secondary" disabled="@(waits || busy)"
+                                title="@(waits ? AddonsTabText.RemoveWaits : null)"
+                                aria-label="@($"Remove {row.SpokenName}")" @onclick="() => BeginRemove(row)">
+                            Remove
+                        </button>
+                    }
+                    <button type="button" class="addons-chevron" aria-expanded="@(open ? "true" : "false")"
+                            aria-label="@($"Details for {row.SpokenName}")" @onclick="() => ToggleDetails(row.Uuid)">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M6 9l6 6 6-6"></path>
+                        </svg>
+                    </button>
+                </div>
+            </td>
+        </tr>
+
+        @if (removing is { } asking && string.Equals(asking.Uuid, row.Uuid, StringComparison.OrdinalIgnoreCase))
+        {
+            <tr class="addons-details-row" @key="@($"{row.Uuid}:remove")">
+                <td></td>
+                <td colspan="6">
+                    <div class="danger-panel">
+                        <h3>@ServerPackRemovalText.Heading(asking)</h3>
+                        <p>@ServerPackRemovalText.Confirm(asking, Supervisor.Definition.Name, Shelved(asking.Uuid))</p>
+                        <div class="provision-controls">
+                            <button type="button" class="btn btn-danger" disabled="@(waits || busy)"
+                                    @onclick="ConfirmRemoveAsync">
+                                @(busy ? "Removing…" : "Remove")
+                            </button>
+                            <button type="button" class="btn btn-secondary" disabled="@busy"
+                                    @onclick="() => removing = null">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </td>
+            </tr>
+        }
+
+        @if (open)
+        {
+            <tr class="addons-details-row" @key="@($"{row.Uuid}:details")">
+                <td></td>
+                <td colspan="6">
+                    <dl class="addons-details">
+                        <div><dt>Where</dt><dd>@row.Details.Where</dd></div>
+                        <div><dt>UUID</dt><dd class="addons-mono">@row.Details.Uuid</dd></div>
+                        <div><dt>Scripts</dt><dd>@row.Details.Scripts</dd></div>
+                        <div>
+                            <dt>
+                                Experimental
+                                <span class="addons-info" tabindex="0" role="note"
+                                      aria-label="@AddonDetailText.ExperimentalNote"
+                                      title="@AddonDetailText.ExperimentalNote">i</span>
+                            </dt>
+                            <dd>
+                                @if (row.Details.Experimental == ExperimentalNeed.BetaApis)
+                                {
+                                    <span class="state-badge state-warning">@AddonDetailText.Describe(row.Details.Experimental)</span>
+                                }
+                                else
+                                {
+                                    <span class="@(row.Details.Experimental == ExperimentalNeed.None ? null : "addons-muted")">
+                                        @AddonDetailText.Describe(row.Details.Experimental)
+                                    </span>
+                                }
+                            </dd>
+                        </div>
+                        <div><dt>Needs</dt><dd>@row.Details.Needs</dd></div>
+                        <div class="addons-details-rule"></div>
+                        <div>
+                            <dt>Author</dt>
+                            <dd class="@(row.Details.Authors is null ? "addons-muted" : null)">
+                                @(row.Details.Authors ?? AddonDetailText.NotGiven)
+                            </dd>
+                        </div>
+                        <div class="addons-details-wide">
+                            <dt>Description</dt>
+                            <dd class="@(row.Details.Description is null ? "addons-muted" : null)">
+                                @(row.Details.Description ?? AddonDetailText.NotGiven)
+                            </dd>
+                        </div>
+                    </dl>
+                </td>
+            </tr>
+        }
+    }
+
+    /// <summary>A pack's icon, drawn by <see cref="AddonIcon"/>.</summary>
+    private void RenderIcon(RenderTreeBuilder __builder, string? uuid, string name)
+    {
+        <AddonIcon Uuid="@uuid" Name="@name" Url="@(uuid is not null && icons.TryGetValue(uuid, out var url) ? url : null)" />
+    }
+
+    // ---- Settings -------------------------------------------------------
+
+    private void RenderSettings(RenderTreeBuilder __builder)
+    {
+        <div class="addons-settings">
+            <nav class="addons-settings-list" aria-label="Add-ons with settings">
+                @foreach (var entry in settings)
+                {
+                    var picked = string.Equals(entry.Uuid, selectedSettings, StringComparison.OrdinalIgnoreCase);
+
+                    <button type="button" class="@(picked ? "addons-settings-pick active" : "addons-settings-pick")"
+                            aria-pressed="@(picked ? "true" : "false")" @onclick="() => selectedSettings = entry.Uuid">
+                        @{ RenderIcon(__builder, entry.Uuid, entry.Name); }
+                        <span class="addons-settings-pick-text">
+                            <span class="addons-settings-pick-name">@entry.Name</span>
+                            <span class="check-detail">
+                                @(entry.IsCompanion ? "Built in · " : "")@(entry.Count == 1 ? "1 setting" : $"{entry.Count} settings")
+                            </span>
+                        </span>
+                        @if (dirty.Contains(entry.Uuid))
+                        {
+                            <span class="view-dot" aria-label="unsaved changes"></span>
+                        }
+                    </button>
+                }
+                <p class="check-detail">@AddonsTabText.SettingsNote</p>
+            </nav>
+
+            <div class="addons-settings-panel">
+                @if (!state!.SettingsAreWritable)
+                {
+                    @* Never offered over a file nobody could read: a save replaces the
+                       whole file, so it would discard overrides nothing here has seen. *@
+                    <p class="console-fault">
+                        This world's add-on settings file could not be read, so these are shown
+                        as each add-on ships them and cannot be changed.
+                    </p>
+                }
+
+                @foreach (var entry in settings)
+                {
+                    @* Every pack's panel stays rendered and only the chosen one shows,
+                       so switching packs keeps whatever is half typed in another. *@
+                    <section class="addons-settings-pack" @key="entry.Uuid"
+                             hidden="@(!string.Equals(entry.Uuid, selectedSettings, StringComparison.OrdinalIgnoreCase))">
+                        <div class="addons-settings-pack-head">
+                            @{ RenderIcon(__builder, entry.Uuid, entry.Name); }
+                            <div>
+                                <h4>@entry.Name</h4>
+                                @if (entry.Version.Length > 0)
+                                {
+                                    <span class="check-detail addons-mono">@entry.Version</span>
+                                }
+                            </div>
+                            <span class="addons-head-spacer"></span>
+                            @if (entry.IsCompanion
+                                 && CompanionRun.StateOf(Supervisor.Companion, running, entry.Row?.IsSwitchedOn == true) is { } companionState)
+                            {
+                                <span class="@CompanionRun.BadgeClass(companionState)"
+                                      title="@CompanionRun.Describe(Supervisor.Companion, running, entry.Row?.IsSwitchedOn == true)">
+                                    @CompanionRun.Label(companionState)
+                                </span>
+                            }
+                        </div>
+
+                        @if (entry.IsCompanion)
+                        {
+                            RenderCompanionOptions(__builder);
+                        }
+                        else if (entry.Row?.Details.Description is { } description)
+                        {
+                            <p class="check-detail">@description @AddonsTabText.SettingsApply</p>
+                        }
+                        else
+                        {
+                            <p class="check-detail">@AddonsTabText.SettingsApply</p>
+                        }
+
+                        @if (entry.Schema is { } schema)
+                        {
+                            @if (entry.IsCompanion)
+                            {
+                                <div class="addons-settings-group-head">
+                                    <h5>In game</h5>
+                                    <span class="check-detail">The pack's own option. Applies when the server next starts.</span>
+                                </div>
+                            }
+
+                            @* Keyed by uuid: without it Blazor reuses a component across
+                               packs, and one add-on's half-typed values would appear
+                               under another's name. *@
+                            <AddonSettings @key="entry.Uuid"
+                                           PackId="@entry.Uuid"
+                                           Schema="schema"
+                                           Current="state.Settings.For(entry.Uuid)"
+                                           Pending="@AddonQueue.SettingsFor(queued, entry.Uuid)?.SettingValues()"
+                                           Waits="waits"
+                                           ReadOnly="@(busy || !state.SettingsAreWritable)"
+                                           DirtyChanged="d => SetDirty(entry.Uuid, d)"
+                                           Save="SaveSettingsAsync" />
+                        }
+                        else if (entry.IsCompanion)
+                        {
+                            <p class="check-detail">
+                                The pack's own option, telling a player where they died, can be set once it is on this server.
+                            </p>
+                        }
+                    </section>
+                }
+            </div>
+        </div>
+    }
+
+    /// <summary>
+    /// What BedrockSentry does with what the companion pack reports on this
+    /// server (milestone 12). Each applies from the next line the pack prints,
+    /// without a restart, so it is saved as it changes and is never locked.
+    /// </summary>
+    private void RenderCompanionOptions(RenderTreeBuilder __builder)
+    {
+        var companion = Supervisor.Definition.Companion;
+
+        <div class="addons-settings-group">
+            <div class="addons-settings-group-head">
+                <h5>Recorded by BedrockSentry</h5>
+                <span class="check-detail">Saved as you change them; apply straight away.</span>
+                @if (companionError is not null)
+                {
+                    <span class="addon-gear-note addons-fault">@companionError</span>
+                }
+                else if (companionSaved)
+                {
+                    <span class="addon-gear-note addon-gear-saved">Saved.</span>
+                }
+            </div>
+
+            <label class="addons-check">
+                <input type="checkbox" class="form-check-input" checked="@companion.RecordDeaths" disabled="@busy"
+                       @onchange="e => SetCompanionAsync(companion.With(recordDeaths: Ticked(e)))" />
+                <span>
+                    <span>Count deaths</span>
+                    <span class="check-detail">Adds each death to that player's tally on the Players tab.</span>
+                </span>
+            </label>
+            <label class="addons-check">
+                <input type="checkbox" class="form-check-input" checked="@companion.RecordLastLocation" disabled="@busy"
+                       @onchange="e => SetCompanionAsync(companion.With(recordLastLocation: Ticked(e)))" />
+                <span>
+                    <span>Keep each player's last position</span>
+                    <span class="check-detail">Also asks the pack where everyone is just before a planned stop.</span>
+                </span>
+            </label>
+            <label class="addons-check">
+                <input type="checkbox" class="form-check-input" checked="@companion.EchoPositions" disabled="@busy"
+                       @onchange="e => SetCompanionAsync(companion.With(echoPositions: Ticked(e)))" />
+                <span>
+                    <span>Show join and leave positions</span>
+                    <span class="check-detail">Off, the pack's join and leave lines are dimmed on the console.</span>
+                </span>
+            </label>
+        </div>
+    }
+
+    private void SetDirty(string uuid, bool isDirty)
+    {
+        if (isDirty)
+        {
+            dirty.Add(uuid);
+        }
+        else
+        {
+            dirty.Remove(uuid);
+        }
+    }
+
+    // ---- Load order -----------------------------------------------------
+
+    /// <summary>
+    /// One list as it will be: the world's, put in the order queued for it while the server
+    /// runs (D85), so a second move starts from the first.
+    /// </summary>
+    private WorldPackList Shown(PackPlacement placement)
+    {
+        var list = state!.Registrations.For(placement);
+
+        return AddonQueue.OrderFor(queued, placement) is { Order: { } order } ? list.Arrange(order).List : list;
+    }
+
+    /// <summary>One list's registrations, in the order that decides which wins.</summary>
+    private IReadOnlyList<WorldPackEntry> Ordered(PackPlacement placement) =>
+        state is null
+            ? []
+            : [.. Shown(placement).Entries.Where(e => e.IsUnderstood)];
+
+    private void RenderOrder(RenderTreeBuilder __builder)
+    {
+        <p class="check-detail">@AddonsTabText.OrderNote</p>
+
+        @* ONE ORDER PER LIST, not one order. A world keeps behaviour and resource
+           registrations in separate files and each is its own stack, so a single
+           list here would offer to move a pack past one it cannot affect. *@
+        <div class="addons-order">
+            @foreach (var placement in PackPlacementLayout.Placed)
+            {
+                var list = Shown(placement);
+                var ordered = Ordered(placement);
+                var orderQueued = AddonQueue.OrderFor(queued, placement) is not null;
+
+                <section class="addons-order-list">
+                    <div class="addons-order-head">
+                        <h4>@PackPlacementLayout.DescribeMany(placement)</h4>
+                        <span class="check-detail">@ordered.Count switched on</span>
+                        @if (orderQueued)
+                        {
+                            <span class="state-badge state-info">Waiting</span>
+                        }
+                    </div>
+
+                    @if (ordered.Count == 0)
+                    {
+                        <p class="check-detail addons-order-empty">None switched on.</p>
+                    }
+                    else
+                    {
+                        <ol>
+                            @for (var i = 0; i < ordered.Count; i++)
+                            {
+                                var uuid = ordered[i].PackId!;
+                                var name = listing.SubjectOf(uuid);
+                                var twice = WorldPackOrder.IsListedTwice(list, uuid);
+
+                                <li class="@(twice ? "addons-order-item is-twice" : "addons-order-item")">
+                                    <span class="addons-order-rank">@(i + 1)</span>
+                                    @{ RenderIcon(__builder, uuid, name); }
+                                    <span class="addons-order-name">@name</span>
+                                    <span class="addons-order-moves">
+                                    @if (twice)
+                                    {
+                                        <button type="button" class="addons-issue-link" @onclick="() => view = AddonsView.Issues">
+                                            Listed twice
+                                        </button>
+                                    }
+                                    <button type="button" class="btn btn-sm btn-secondary" aria-label="@($"Move {name} up")"
+                                            disabled="@(busy || WorldPackOrder.TargetOf(list, uuid, PackOrderMove.Up) is null)"
+                                            @onclick="() => MoveAsync(placement, uuid, PackOrderMove.Up)">
+                                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+                                             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M18 15l-6-6-6 6"></path>
+                                        </svg>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-secondary" aria-label="@($"Move {name} down")"
+                                            disabled="@(busy || WorldPackOrder.TargetOf(list, uuid, PackOrderMove.Down) is null)"
+                                            @onclick="() => MoveAsync(placement, uuid, PackOrderMove.Down)">
+                                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+                                             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M6 9l6 6 6-6"></path>
+                                        </svg>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-secondary"
+                                            disabled="@(busy || WorldPackOrder.TargetOf(list, uuid, PackOrderMove.Top) is null)"
+                                            @onclick="() => MoveAsync(placement, uuid, PackOrderMove.Top)">
+                                        To top
+                                    </button>
+                                    </span>
+                                </li>
+                            }
+                        </ol>
+                    }
+                </section>
+            }
+        </div>
+    }
+
+    // ---- Issues ---------------------------------------------------------
+
+    private void RenderIssues(RenderTreeBuilder __builder)
+    {
+        var shown = issues.All.Where(i => !i.Hidden || showHiddenIssues).ToList();
+
+        <div class="addons-issues-bar">
+            <span>@issues.Summary</span>
+            <span class="addons-head-spacer"></span>
+            @if (issues.HiddenCount > 0)
+            {
+                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => showHiddenIssues = !showHiddenIssues">
+                    @(showHiddenIssues ? "Collapse hidden" : $"Show hidden ({issues.HiddenCount})")
+                </button>
+            }
+        </div>
+
+        @if (issuesError is { Length: > 0 })
+        {
+            <p class="console-fault">@issuesError</p>
+        }
+
+        @foreach (var issue in shown)
+        {
+            @* Not keyed: two findings can say the same thing (one uuid missing from
+               both world lists), and a repeated key ends the circuit. *@
+            <article class="@($"addon-issue {issue.ToneClass}{(issue.Hidden ? " is-hidden" : "")}")">
+                @{ RenderIcon(__builder, issue.SubjectUuid, issue.Subject); }
+                <div class="addon-issue-body">
+                    <div class="addon-issue-head">
+                        @if (issue.Row is { } row)
+                        {
+                            @* T299: which add-on, as its row names it. *@
+                            <button type="button" class="addon-issue-subject" @onclick="() => ShowRow(row.Uuid)">
+                                @issue.Subject
+                            </button>
+                            <span class="check-detail">@row.TypeLabel</span>
+                        }
+                        else
+                        {
+                            <strong class="addon-issue-subject-plain">@issue.Subject</strong>
+                        }
+                        <span class="addon-issue-label">@issue.Label</span>
+                        @if (issue.Hidden)
+                        {
+                            <span class="state-badge">Hidden</span>
+                        }
+                    </div>
+                    <div class="addon-issue-headline">@issue.Headline</div>
+                    @if (issue.Detail is { Length: > 0 } detail)
+                    {
+                        <div class="check-detail">@detail</div>
+                    }
+                    @if (issue.OffersScriptOutput)
+                    {
+                        @* D91. Allowed while the server runs, as a save on the Server
+                           properties tab is: BDS reads the file when it starts. *@
+                        <div class="addon-issue-action">
+                            <button type="button" class="btn btn-sm btn-secondary" disabled="@busy"
+                                    @onclick="TurnOnScriptOutputAsync">
+                                Show script output in the console
+                            </button>
+                            <span class="check-detail">Applies at the next start.</span>
+                        </div>
+                        @if (scriptOutputError is { Length: > 0 })
+                        {
+                            <p class="console-fault">@scriptOutputError</p>
+                        }
+                    }
+                    @if (issue.OffersRemoveEntry && issue.SubjectUuid is { } missing)
+                    {
+                        @* T416. The same switch-off a row's toggle sends, so it waits for the
+                           stop while the server runs (D85); once queued the card says so. *@
+                        <div class="addon-issue-action">
+                            @if (AddonQueue.ForPack(queued, missing) is not null)
+                            {
+                                <span class="state-badge state-info">@AddonsTabText.RowQueued</span>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn btn-sm btn-secondary" disabled="@busy"
+                                        @onclick="() => RemoveEntryAsync(missing, issue.Subject)">
+                                    Remove from this world
+                                </button>
+                            }
+                        </div>
+                    }
+                    @if (issue.PointsToOrder)
+                    {
+                        <button type="button" class="addon-issue-link" @onclick="() => view = AddonsView.Order">
+                            See it in Load order
+                        </button>
+                    }
+                </div>
+                <button type="button" class="btn btn-sm btn-secondary addon-issue-hide" disabled="@busy"
+                        @onclick="() => ToggleHiddenAsync(issue)">
+                    @(issue.Hidden ? "Unhide" : "Hide")
+                </button>
+            </article>
+        }
+
+        @if (shown.Count == 0)
+        {
+            <p class="empty-state">@AddonIssues.NothingOpen</p>
+        }
+
+        <p class="check-detail">@AddonIssues.Source</p>
+    }
+
+    // ---- Actions --------------------------------------------------------
+
+    private async Task SetCompanionAsync(CompanionSettings wanted)
+    {
+        busy = true;
+        companionError = null;
+        companionSaved = false;
+
+        try
+        {
+            await Registry.SetCompanionAsync(Supervisor.InstanceId, wanted);
+            companionSaved = true;
+        }
+        catch (Exception ex)
+        {
+            // The boxes read the live definition, which only a written file
+            // changes, so they are left showing what is actually configured.
+            companionError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    /// <summary>Hide an issue or show it again, and write the trimmed set (D96).</summary>
+    private async Task ToggleHiddenAsync(AddonIssue issue)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        issuesError = null;
+
+        try
+        {
+            var hidden = Supervisor.Definition.Addons.HiddenIssues;
+            var next = issue.Hidden
+                ? AddonIssues.Unhide(hidden, issues.Keys, issue.Key)
+                : AddonIssues.Hide(hidden, issues.Keys, issue.Key);
+
+            await Registry.SetHiddenAddonIssuesAsync(Supervisor.InstanceId, next);
+        }
+        catch (Exception ex)
+        {
+            issuesError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+
+            // Nothing on disk moved but the hidden set, so the findings stand and
+            // only the list is rebuilt around it.
+            issues = AddonIssueList.Build(findings, listing, scriptOutput, Supervisor.Definition.Addons.HiddenIssues);
+        }
+    }
+
+    private async Task TurnOnScriptOutputAsync()
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        scriptOutputError = null;
+
+        try
+        {
+            scriptOutputError = await ScriptOutput.TurnOnAsync(Supervisor.WorkingDirectory);
+
+            if (scriptOutputError is null)
+            {
+                Supervisor.Console.Append(
+                    Core.Instances.ConsoleOrigin.Notice, ServerProperties.UpdatedNotice);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            scriptOutputError = $"{ServerProperties.FileName} could not be written: {ex.Message}";
+        }
+        finally
+        {
+            busy = false;
+            Reload();
+        }
+    }
+
+    private async Task<SettingsSaveResult> SaveSettingsAsync(
+        string packId, IReadOnlyDictionary<string, PackSettingValue> values)
+    {
+        if (state is null || busy)
+        {
+            return SettingsSaveResult.Refused("This server's add-ons cannot be changed right now.");
+        }
+
+        // Checked here first, so a value refused comes back against its own control,
+        // whether the save would be written now or queued.
+        var plan = PackSettingsSave.Plan(state.Settings, state.SettingsState, packId, values, state.SchemaFor);
+
+        if (plan.Refusal == SettingsSaveRefusal.ValuesRefused)
+        {
+            return new SettingsSaveResult(false, null, plan.Problems);
+        }
+
+        var kept = values
+            .Select(p => (p.Key, Value: QueuedSetting.From(p.Value)))
+            .Where(p => p.Value is not null)
+            .ToDictionary(p => p.Key, p => p.Value!, StringComparer.Ordinal);
+
+        var write = await SubmitAsync(Change(
+            QueuedAddonKind.Settings, listing.SubjectOf(packId), PlacementOf(packId), packId, settings: kept));
+
+        return write.Outcome switch
+        {
+            AddonWriteOutcome.Written => SettingsSaveResult.Ok,
+            AddonWriteOutcome.Queued => SettingsSaveResult.QueuedUntilStopped,
+            _ => SettingsSaveResult.Refused(write.Reason ?? "Nothing was saved."),
+        };
+    }
+
+    // SWITCHING ON asks the PACK which list it belongs in; switching off and
+    // reordering ask the WORLD which list it is in. They are different
+    // questions, and a world written by an older build has its resource packs
+    // in the behaviour file — where a switch-off that asked the manifest would
+    // refuse, leaving a registration the panel calls on and offers no way out of.
+    //
+    // D109. The companion's resources go with it, on and off; D112, the holds after a
+    // version is chosen or a pack switched off. Both are AddonChanges', so a change
+    // queued while the server runs (D85) gets them when it is written.
+    private Task EnableAsync(AddonRow row, PackVersion version) =>
+        SubmitAsync(Change(QueuedAddonKind.SwitchOn, row.Name, row.Placement, row.Uuid, version));
+
+    // D112. An enabled pack moved to the version its picker shows: the same update the
+    // auto-update takes, so its settings stay with the world (D81).
+    private Task ChangeVersionAsync(AddonRow row, PackVersion to) =>
+        SubmitAsync(Change(QueuedAddonKind.ChangeVersion, row.Name, PlacementOf(row.Uuid), row.Uuid, to));
+
+    private Task DisableAsync(AddonRow row) =>
+        SubmitAsync(Change(QueuedAddonKind.SwitchOff, row.Name, PlacementOf(row.Uuid), row.Uuid));
+
+    // T416. A pack the world lists and this server does not have has no row to switch
+    // off; the switch-off finds the entry by uuid in whichever list holds it.
+    private Task RemoveEntryAsync(string uuid, string name) =>
+        SubmitAsync(Change(QueuedAddonKind.SwitchOff, name, PlacementOf(uuid), uuid));
+
+    /// <summary>
+    /// A Load order move, within the list the view drew it in: the whole list's order as it
+    /// will be after the move, so a queued move and a second one made on top agree (D85).
+    /// </summary>
+    private Task MoveAsync(PackPlacement placement, string uuid, PackOrderMove move)
+    {
+        var list = Shown(placement);
+
+        if (WorldPackOrder.TargetOf(list, uuid, move) is not { } target)
+        {
+            error = AddonText.Refusal(AddonChangeRefusal.NotEnabled);
+            return Task.CompletedTask;
+        }
+
+        var order = list.MoveTo(uuid, target).List.Entries
+            .Where(e => e.IsUnderstood)
+            .Select(e => e.PackId!)
+            .ToList();
+
+        return SubmitAsync(Change(
+            QueuedAddonKind.Arrange, PackPlacementLayout.DescribeMany(placement).ToLowerInvariant(), placement, order: order));
+    }
+
+    /// <summary>The list a switched-on pack is in, which is the one a change to it rewrites.</summary>
+    private PackPlacement PlacementOf(string uuid) =>
+        state?.Registrations.Find(uuid)?.Placement ?? listing.Find(uuid)?.Placement ?? PackPlacement.Behavior;
+
+    private QueuedAddonChange Change(
+        QueuedAddonKind kind, string name, PackPlacement placement, string? uuid = null, PackVersion? version = null,
+        IReadOnlyList<string>? order = null, IReadOnlyDictionary<string, QueuedSetting>? settings = null) =>
+        new(Guid.NewGuid().ToString("N"), kind, name, Time.GetUtcNow(), placement, uuid, version?.ToString(), order, settings);
+
+    /// <summary>Writes a change now, or queues it while the server has a process (D85).</summary>
+    private async Task<AddonWrite> SubmitAsync(QueuedAddonChange change)
+    {
+        if (state is null || busy)
+        {
+            return AddonWrite.Refused("This server's add-ons cannot be changed right now.");
+        }
+
+        busy = true;
+        error = null;
+        removed = null;
+        removing = null;
+        copied = null;
+
+        try
+        {
+            var write = await Changes.SubmitAsync(Supervisor, change);
+
+            if (write.Outcome == AddonWriteOutcome.Refused)
+            {
+                error = write.Reason;
+            }
+            else if (change.Uuid is { } uuid)
+            {
+                picked.Remove(uuid);
+            }
+
+            return write;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            error = ex.Message;
+            return AddonWrite.Refused(ex.Message);
+        }
+        finally
+        {
+            busy = false;
+
+            // The file that was just written is this tab's own input, so the reload is
+            // what makes the next change start from what landed rather than what was sent.
+            Reload();
+        }
+    }
+
+    private async Task DiscardAsync(string id)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = await Changes.DiscardAsync(Supervisor, id);
+        busy = false;
+        Reload();
+    }
+
+    /// <summary>The version a row's buttons act on: the one picked, or the row's own.</summary>
+    private PackVersion? Chosen(AddonRow row) =>
+        picked.TryGetValue(row.Uuid, out var version) && row.Choices is { } choices && choices.Contains(version)
+            ? version
+            : row.Parsed;
+
+    private void Pick(string uuid, ChangeEventArgs e)
+    {
+        if (PackVersion.Parse(e.Value as string).Version is { } version)
+        {
+            picked[uuid] = version;
+        }
+    }
+
+    /// <summary>"Held at", under a held pack's version while auto-update is on (D112).</summary>
+    private string? HeldNote(AddonRow row) =>
+        Supervisor.Definition.Addons.AutoUpdate
+        && row.IsSwitchedOn
+        && AddonHolds.IsHeld(Supervisor.Definition.Addons.Holds, row.Uuid)
+            ? AddonsTabText.HeldNote
+            : null;
+
+    private async Task SetAutoUpdateAsync(bool on)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        autoUpdateError = null;
+
+        try
+        {
+            await Registry.SetAddonAutoUpdateAsync(Supervisor.InstanceId, on);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            autoUpdateError = $"Not saved: {ex.Message}";
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void BeginRemove(AddonRow row)
+    {
+        error = null;
+        removed = null;
+        copied = null;
+        removing = row;
+    }
+
+    private async Task CopyToLibraryAsync(AddonRow row)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+        removed = null;
+        removing = null;
+        copied = null;
+
+        try
+        {
+            var result = await Addons.CopyToLibraryAsync(Supervisor, row.Uuid);
+            copied = (LibraryCopyText.Done(result, row.Name, Supervisor.Definition.Name), result.Failed);
+        }
+        finally
+        {
+            busy = false;
+            Reload();
+        }
+    }
+
+    private LibraryPack? Shelved(string uuid) =>
+        shelf.Packs.FirstOrDefault(p => string.Equals(p.Uuid, uuid, StringComparison.OrdinalIgnoreCase));
+
+    private async Task ConfirmRemoveAsync()
+    {
+        if (removing is not { } row || waits || busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+
+        try
+        {
+            error = await Addons.RemovePackAsync(Supervisor, row.Uuid);
+            removed = error is null ? ServerPackRemovalText.Done(row, Supervisor.Definition.Name) : null;
+        }
+        finally
+        {
+            busy = false;
+            removing = null;
+            Reload();
+        }
+    }
+}

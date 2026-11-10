@@ -37,10 +37,13 @@ public sealed class OrphanCleanup
         _log = log;
     }
 
-    public IReadOnlyList<OrphanedServer> Find(InstanceSupervisor supervisor) =>
-        _inspector.Find(
+    public Task<IReadOnlyList<OrphanedServer>> FindAsync(
+        InstanceSupervisor supervisor, CancellationToken cancellationToken = default) =>
+        _inspector.FindAsync(
+            supervisor.InstanceId,
             supervisor.WorkingDirectory,
-            supervisor.Status.ProcessId is { } pid ? [pid] : []);
+            supervisor.Status.ProcessId is { } pid ? [pid] : [],
+            cancellationToken);
 
     /// <summary>
     /// Ends one orphan and records it. The record is written only when something
@@ -59,7 +62,9 @@ public sealed class OrphanCleanup
         OrphanedServer orphan,
         CancellationToken cancellationToken = default)
     {
-        var result = _inspector.Terminate(orphan.ProcessId, supervisor.WorkingDirectory);
+        var result = await _inspector.TerminateAsync(
+                supervisor.InstanceId, orphan.ProcessId, supervisor.WorkingDirectory, cancellationToken)
+            .ConfigureAwait(false);
 
         supervisor.Console.Append(
             ConsoleOrigin.Notice,

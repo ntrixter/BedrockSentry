@@ -1,3 +1,5 @@
+using BedrockSentry.Core.Updates;
+
 namespace BedrockSentry.Core.Configuration;
 
 /// <summary>Which release channel the wrapper tracks for its own updates.</summary>
@@ -137,13 +139,33 @@ public enum UpdateMode
 public static class UpdateModeText
 {
     /// <summary>What the wrapper will do with an update it finds.</summary>
-    public static string Applying(UpdateMode mode) => mode switch
+    /// <param name="mode">The configured mode.</param>
+    /// <param name="ledger">
+    /// The update ledger, so an Automatic mode that repeated failures have paused does not
+    /// read as applying (<c>D101</c>).
+    /// </param>
+    public static string Applying(UpdateMode mode, UpdateLedger? ledger) => mode switch
     {
-        UpdateMode.Automatic => "automatically",
+        UpdateMode.Automatic => Paused(mode, ledger) is null
+            ? "automatically"
+            : "automatically, but paused after repeated failed updates",
         UpdateMode.Notify => "when told",
         UpdateMode.Disabled => "never — not checking",
         _ => $"unrecognised setting ({(int)mode}) — check Sentry:Update:Mode",
     };
+
+    /// <summary>
+    /// Why automatic updates are held, or null when nothing holds them (<c>D101</c>).
+    /// </summary>
+    /// <remarks>
+    /// Only in <see cref="UpdateMode.Automatic"/>: <see cref="UpdateLedger.CanAttempt"/> is
+    /// asked on the automatic path alone, so in any other mode the pause holds nothing back.
+    /// </remarks>
+    public static string? Paused(UpdateMode mode, UpdateLedger? ledger) =>
+        mode is UpdateMode.Automatic && ledger is { AutoUpdateDisabled: true }
+            ? "Repeated updates failed and were rolled back, so none is applied automatically until "
+              + "automatic updates are resumed. A build that failed stays blocked."
+            : null;
 }
 
 /// <summary>
@@ -235,15 +257,15 @@ public sealed class UpdateOptions
     public const string HealthPath = "/healthz";
 
     /// <summary>
-    /// Path an installer posts to before stopping the service, to ask for a
-    /// graceful drain first (<c>docs/design.md</c> § 12.4).
+    /// Path an installer older than the admin pipe posts to before stopping the
+    /// service (<c>docs/design.md</c> § 12.4). This build serves nothing there.
     /// </summary>
     /// <remarks>
-    /// On the same loopback listener as <see cref="HealthPath"/>, and part of the
-    /// same frozen contract for the same reason: <c>install.ps1</c> from a newer
-    /// release talks to the wrapper from an older one. A build that does not know
-    /// this path answers 404, which the installer reads as "no drain available"
-    /// and carries on — so the contract degrades rather than breaking.
+    /// The drain moved to <see cref="Broker.BrokerNames.AdminPipe"/> (<c>D62</c>).
+    /// <c>install.ps1</c> still posts here to a wrapper with no pipe, and a wrapper
+    /// that does not serve the path redirects to its login page, which the installer
+    /// reads as "no drain available" and carries on (<c>T111</c>). Kept among the
+    /// loopback-only paths so nothing is ever served here off the machine.
     /// </remarks>
     public const string DrainPath = "/prepare-shutdown";
 

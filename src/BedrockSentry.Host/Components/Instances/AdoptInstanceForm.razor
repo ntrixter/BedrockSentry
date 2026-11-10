@@ -7,6 +7,7 @@
 @using BedrockSentry.Services.Instances
 
 @inject InstanceRegistry Registry
+@inject IJSRuntime JS
 
 <div class="provision-panel" style="max-width:36rem">
     <h3>Add an existing server</h3>
@@ -34,7 +35,7 @@
            not first be described as if it were a candidate. *@
         <p class="console-fault">@refused</p>
     }
-    else if (report is { Exists: true } seen)
+    else if (report is { State: FolderReadState.Read } seen)
     {
         @if (!seen.HasExecutable)
         {
@@ -55,6 +56,15 @@
                 <dd>@(seen.WorldName ?? "—")</dd>
             </dl>
 
+            @* `T238`. Below the list rather than above it, unlike folderRefusal: this
+               folder IS a candidate and the adoption still works, so the reason explains
+               the em-dashes above rather than replacing a description of the folder. The
+               sentence is on the report, where a test can read it. *@
+            @if (seen.PreflightRefusal() is { } unreadable)
+            {
+                <p class="console-fault">@unreadable</p>
+            }
+
             @if (portCollision is { } holder)
             {
                 <p class="check-detail">
@@ -64,14 +74,23 @@
             }
         }
     }
-    else if (report is { Exists: false })
+    else if (report is not null && Registry.AdoptionRefusalFor(report, folder, Executable) is { } why)
     {
-        <p class="console-fault">That folder does not exist, or the path is not a full path.</p>
+        @* `T253`. This used to be one sentence — "That folder does not exist, or the
+           path is not a full path" — for four states: a blank field, a path that is
+           not rooted, a folder that is not there, and a folder this service may not
+           see. It names none of them and is false of the last. The refusing states
+           now render the adoption rule's OWN sentence, so this form and AdoptAsync
+           cannot describe one folder two ways. *@
+        <p class="console-fault">@why</p>
     }
 
     <label class="field">
         <span>Name</span>
+        @* T424 clause 3. Selected on focus, so typing replaces the pre-filled name
+           rather than appending to it. *@
         <input class="form-control" @bind="name" @bind:event="oninput" disabled="@busy"
+               onfocus="this.select()" @ref="nameBox"
                placeholder="Pre-filled from the folder when it says" />
     </label>
 
@@ -112,12 +131,42 @@
 
     private string folder = string.Empty;
     private string name = string.Empty;
+
+    // T424 clause 3. Tab from the folder box reaches Name before the folder's change
+    // fills it, so the fill is selected once rendered if Name has the focus.
+    private ElementReference nameBox;
+    private bool selectName;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!selectName)
+        {
+            return;
+        }
+
+        selectName = false;
+
+        try
+        {
+            await JS.InvokeVoidAsync("bedrockSentrySelectIfFocused", nameBox);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+    }
     private bool autoStart;
     private bool busy;
     private string? error;
     private BdsFolderReport? report;
     private string? portCollision;
     private string? folderRefusal;
+
+    /// <summary>
+    /// The one file a folder has to hold, named the way every other reader names it
+    /// rather than spelled again here — three spellings is how the callers drift
+    /// (`T245`).
+    /// </summary>
+    private static string Executable => new InstanceDefinition().Executable;
 
     private void OnFolderChanged(ChangeEventArgs e)
     {
@@ -140,6 +189,7 @@
         if (string.IsNullOrWhiteSpace(name) && report?.ServerName is { } serverName)
         {
             name = serverName;
+            selectName = true;
         }
 
         portCollision = FindPortCollision();

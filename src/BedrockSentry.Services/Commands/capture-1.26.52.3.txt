@@ -1,0 +1,1996 @@
+>>> help 1
+[2026-10-07 22:51:32:552 INFO] §2--- Showing help page 1 of 44 (/help <page>) ---
+/? <page: int>
+/? [command: CommandName]
+/aimassist <players: target> clear
+/aimassist <players: target> set [x angle: float] [y angle: float] [max distance: float] [target mode: AimAssistTargetMode] [preset id: string]
+/allowlist <action: AllowListAction> [name: string]
+/alwaysday [lock: Boolean]
+/camera <players: target> attach_to_entity <entity: target>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 2
+[2026-10-07 22:51:32:583 INFO] §2--- Showing help page 2 of 44 (/help <page>) ---
+/camera <players: target> clear
+/camera <players: target> detach_from_entity
+/camera <players: target> fade
+/camera <players: target> fade color <red: int> <green: int> <blue: int>
+/camera <players: target> fade time <fadeInSeconds: float> <holdSeconds: float> <fadeOutSeconds: float>
+/camera <players: target> fade time <fadeInSeconds: float> <holdSeconds: float> <fadeOutSeconds: float> color <red: int> <green: int> <blue: int>
+/camera <players: target> fov_clear [fovEaseTime: float] [fovEaseType: Easing]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 3
+[2026-10-07 22:51:32:683 INFO] §2--- Showing help page 3 of 44 (/help <page>) ---
+/camera <players: target> fov_set <fov_value: float> [fovEaseTime: float] [fovEaseType: Easing]
+/camera <players: target> play_spline <name: string>
+/camera <players: target> remove_target
+/camera <players: target> set <preset: string> [default: default]
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> [default: default]
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> facing <lookAtEntity: target>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 4
+[2026-10-07 22:51:32:783 INFO] §2--- Showing help page 4 of 44 (/help <page>) ---
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> facing <lookAtPosition: x y z>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z> facing <lookAtEntity: target>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z> facing <lookAtPosition: x y z>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z> rot <xRot: value> <yRot: value>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 5
+[2026-10-07 22:51:32:883 INFO] §2--- Showing help page 5 of 44 (/help <page>) ---
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> view_offset <xViewOffset: float> <yViewOffset: float>
+/camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+/camera <players: target> set <preset: string> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+/camera <players: target> set <preset: string> facing <lookAtEntity: target>
+/camera <players: target> set <preset: string> facing <lookAtPosition: x y z>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 6
+[2026-10-07 22:51:32:983 INFO] §2--- Showing help page 6 of 44 (/help <page>) ---
+/camera <players: target> set <preset: string> pos <position: x y z>
+/camera <players: target> set <preset: string> pos <position: x y z> facing <lookAtEntity: target>
+/camera <players: target> set <preset: string> pos <position: x y z> facing <lookAtPosition: x y z>
+/camera <players: target> set <preset: string> pos <position: x y z> rot <xRot: value> <yRot: value>
+/camera <players: target> set <preset: string> rot <xRot: value> <yRot: value>
+/camera <players: target> set <preset: string> rot <xRot: value> <yRot: value> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+/camera <players: target> set <preset: string> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 7
+[2026-10-07 22:51:33:083 INFO] §2--- Showing help page 7 of 44 (/help <page>) ---
+/camera <players: target> set <preset: string> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+/camera <players: target> set <preset: string> view_offset <xViewOffset: float> <yViewOffset: float>
+/camera <players: target> set <preset: string> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+/camera <players: target> target_entity <entity: target>
+/camera <players: target> target_entity <entity: target> target_center_offset <xTargetCenterOffset: float> <yTargetCenterOffset: float> <zTargetCenterOffset: float>
+/camerashake add <player: target> [intensity: float] [seconds: float] [shakeType: CameraShakeType]
+/camerashake stop [player: target]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 8
+[2026-10-07 22:51:33:183 INFO] §2--- Showing help page 8 of 44 (/help <page>) ---
+/changesetting allow-cheats <value: Boolean>
+/changesetting difficulty <value: Difficulty>
+/changesetting difficulty <value: int>
+/clear [player: target] [itemName: Item] [data: int] [maxCount: int]
+/clearspawnpoint [player: target]
+/clone <begin: x y z> <end: x y z> <destination: x y z> [maskMode: MaskMode] [cloneMode: CloneMode]
+/clone <begin: x y z> <end: x y z> <destination: x y z> filtered <cloneMode: CloneMode> <tileName: Block> <tileData: int>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 9
+[2026-10-07 22:51:33:283 INFO] §2--- Showing help page 9 of 44 (/help <page>) ---
+/clone <begin: x y z> <end: x y z> <destination: x y z> filtered <cloneMode: CloneMode> <tileName: Block> [blockStates: block states]
+/connect <serverUri: text>
+/controlscheme <players: target> clear
+/controlscheme <players: target> set <control scheme: controlscheme>
+/damage <target: target> <amount: int> <cause: DamageCause> entity <damager: target>
+/damage <target: target> <amount: int> <cause: DamageCauseSuicide> entity <damager: target>
+/damage <target: target> <amount: int> [cause: DamageCauseSuicide]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 10
+[2026-10-07 22:51:33:383 INFO] §2--- Showing help page 10 of 44 (/help <page>) ---
+/damage <target: target> <amount: int> [cause: DamageCause]
+/daylock [lock: Boolean]
+/deop <player: target>
+/dialogue change <npc: target> <sceneName: string> [players: target]
+/dialogue open <npc: target> <player: target> [sceneName: string]
+/difficulty <difficulty: Difficulty>
+/difficulty <difficulty: int>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 11
+[2026-10-07 22:51:33:483 INFO] §2--- Showing help page 11 of 44 (/help <page>) ---
+/editor-allowlist reload
+/effect <player: target> <effect: Effect> [seconds: int] [amplifier: int] [hideParticles: Boolean]
+/effect <player: target> <effect: Effect> infinite [amplifier: int] [hideParticles: Boolean]
+/effect <player: target> clear [effect: Effect]
+/enchant <player: target> <enchantmentId: int> [level: int]
+/enchant <player: target> <enchantmentName: Enchant> [level: int]
+/event entity <target: target> <eventName: string>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 12
+[2026-10-07 22:51:33:583 INFO] §2--- Showing help page 12 of 44 (/help <page>) ---
+/execute <origin: target> <position: x y z> <command: command>
+/execute <origin: target> <position: x y z> detect <detectPos: x y z> <block: Block> <data: int> <command: command>
+/execute <subcommand: Option_If_Unless> block <position: x y z> <block: Block> <blockStates: block states> [chainedCommand: ExecuteChainedOption_0]
+/execute <subcommand: Option_If_Unless> block <position: x y z> <block: Block> <data: int> [chainedCommand: ExecuteChainedOption_0]
+/execute <subcommand: Option_If_Unless> block <position: x y z> <block: Block> [chainedCommand: ExecuteChainedOption_0]
+/execute <subcommand: Option_If_Unless> blocks <begin: x y z> <end: x y z> <destination: x y z> <scan mode: BlocksScanMode> [chainedCommand: ExecuteChainedOption_0]
+/execute <subcommand: Option_If_Unless> entity <target: target> [chainedCommand: ExecuteChainedOption_0]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 13
+[2026-10-07 22:51:33:683 INFO] §2--- Showing help page 13 of 44 (/help <page>) ---
+/execute <subcommand: Option_If_Unless> score <target: target> <objective: string> <operation: compare operator> <source: target> <objective: string> [chainedCommand: ExecuteChainedOption_0]
+/execute <subcommand: Option_If_Unless> score <target: target> <objective: string> matches <range: integer range> [chainedCommand: ExecuteChainedOption_0]
+/execute align <axes: string> <chainedCommand: ExecuteChainedOption_0>
+/execute anchored <eyes|feet> <chainedCommand: ExecuteChainedOption_0>
+/execute as <origin: target> <chainedCommand: ExecuteChainedOption_0>
+/execute at <origin: target> <chainedCommand: ExecuteChainedOption_0>
+/execute facing <position: x y z> <chainedCommand: ExecuteChainedOption_0>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 14
+[2026-10-07 22:51:33:783 INFO] §2--- Showing help page 14 of 44 (/help <page>) ---
+/execute facing entity <origin: target> <eyes|feet> <chainedCommand: ExecuteChainedOption_0>
+/execute in <dimension: Dimension> <chainedCommand: ExecuteChainedOption_0>
+/execute positioned <position: x y z> <chainedCommand: ExecuteChainedOption_0>
+/execute positioned as <origin: target> <chainedCommand: ExecuteChainedOption_0>
+/execute rotated <yaw: value> <pitch: value> <chainedCommand: ExecuteChainedOption_0>
+/execute rotated as <origin: target> <chainedCommand: ExecuteChainedOption_0>
+/execute run <command: command>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 15
+[2026-10-07 22:51:33:883 INFO] §2--- Showing help page 15 of 44 (/help <page>) ---
+/fill <from: x y z> <to: x y z> <tileName: Block> <blockStates: block states> [oldBlockHandling: FillMode]
+/fill <from: x y z> <to: x y z> <tileName: Block> <blockStates: block states> replace [replaceTileName: Block] [replaceBlockStates: block states]
+/fill <from: x y z> <to: x y z> <tileName: Block> <tileData: int> replace [replaceTileName: Block] [replaceDataValue: int]
+/fill <from: x y z> <to: x y z> <tileName: Block> [oldBlockHandling: FillMode]
+/fill <from: x y z> <to: x y z> <tileName: Block> [tileData: int] [oldBlockHandling: FillMode]
+/fill <from: x y z> <to: x y z> <tileName: Block> replace [replaceTileName: Block] [replaceBlockStates: block states]
+/fog <victim: target> <mode: delete> <userProvidedId: string>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 16
+[2026-10-07 22:51:33:983 INFO] §2--- Showing help page 16 of 44 (/help <page>) ---
+/fog <victim: target> push <fogId: string> <userProvidedId: string>
+/function <name: filepath>
+/gamemode <gameMode: GameMode> [player: target]
+/gamemode <gameMode: int> [player: target]
+/gamerule
+/gamerule <rule: BoolGameRule> [value: Boolean]
+/gamerule <rule: IntGameRule> [value: int]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 17
+[2026-10-07 22:51:34:088 INFO] §2--- Showing help page 17 of 44 (/help <page>) ---
+/gamerule locatorbar [value: Boolean]
+/gamerule playerwaypoints <value: playerwaypointsValues>
+/gametest clearall
+/gametest create <testName: string> [width: int] [height: int] [depth: int]
+/gametest pos
+/gametest run <testName: string> <stopOnFailure: Boolean> <repeatCount: int> [rotationSteps: int]
+/gametest run <testName: string> [rotationSteps: int]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 18
+[2026-10-07 22:51:34:188 INFO] §2--- Showing help page 18 of 44 (/help <page>) ---
+/gametest runset [tag: string] [rotationSteps: int]
+/gametest runsetuntilfail [tag: string] [rotationSteps: int]
+/gametest runthese
+/gametest runthis
+/gametest stopall
+/give <player: target> <itemName: Item> [amount: int] [data: int] [components: json]
+/help <page: int>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 19
+[2026-10-07 22:51:34:289 INFO] §2--- Showing help page 19 of 44 (/help <page>) ---
+/help [command: CommandName]
+/hud <target: target> <visible: HudVisibility> [hud_element: HudElement]
+/inputpermission query <targets: target> <permission: permission> [state: state]
+/inputpermission set <targets: target> <permission: permission> <state: state>
+/kick <name: target> <reason: message>
+/kill [target: target]
+/list
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 20
+[2026-10-07 22:51:34:390 INFO] §2--- Showing help page 20 of 44 (/help <page>) ---
+/locate <feature: string> [useNewChunksOnly: Boolean]
+/locate biome <biome: Biome>
+/locate structure <structure: string> [useNewChunksOnly: Boolean]
+/loot give <players: target> kill <entity: target> [<tool>|mainhand|offhand: string]
+/loot give <players: target> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+/loot give <players: target> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+/loot insert <position: x y z> kill <entity: target> [<tool>|mainhand|offhand: string]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 21
+[2026-10-07 22:51:34:488 INFO] §2--- Showing help page 21 of 44 (/help <page>) ---
+/loot insert <position: x y z> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+/loot insert <position: x y z> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+/loot replace block <position: x y z> slot.container <slotId: int> <count: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+/loot replace block <position: x y z> slot.container <slotId: int> <count: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+/loot replace block <position: x y z> slot.container <slotId: int> <count: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+/loot replace block <position: x y z> slot.container <slotId: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+/loot replace block <position: x y z> slot.container <slotId: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 22
+[2026-10-07 22:51:34:588 INFO] §2--- Showing help page 22 of 44 (/help <page>) ---
+/loot replace block <position: x y z> slot.container <slotId: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+/loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> <count: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+/loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> <count: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+/loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> <count: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+/loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+/loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+/loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 23
+[2026-10-07 22:51:34:688 INFO] §2--- Showing help page 23 of 44 (/help <page>) ---
+/loot spawn <position: x y z> kill <entity: target> [<tool>|mainhand|offhand: string]
+/loot spawn <position: x y z> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+/loot spawn <position: x y z> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+/me <message: message>
+/mobevent <event: MobEvent> [value: Boolean]
+/msg <target: target> <message: message>
+/music play <trackName: string> [volume: float] [fadeSeconds: float] [repeatMode: MusicRepeatMode]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 24
+[2026-10-07 22:51:34:788 INFO] §2--- Showing help page 24 of 44 (/help <page>) ---
+/music queue <trackName: string> [volume: float] [fadeSeconds: float] [repeatMode: MusicRepeatMode]
+/music stop [fadeSeconds: float]
+/music volume <volume: float>
+/op <player: target>
+/ops <action: PermissionsAction>
+/ops <action: PermissionsAction> <player: target> [permission: PermissionLevel]
+/packstack <stackType: stackType> [verbose: verbose] [exclude-vanilla: exclude-vanilla]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 25
+[2026-10-07 22:51:34:888 INFO] §2--- Showing help page 25 of 44 (/help <page>) ---
+/particle <effect: string> [position: x y z]
+/permission <action: PermissionsAction>
+/permission <action: PermissionsAction> <player: target> [permission: PermissionLevel]
+/place feature <feature: features> [position: x y z]
+/place featurerule <featurerule: featureRules> [position: x y z]
+/place jigsaw <pool: filepath> <jigsawTarget: string> <maxDepth: int> [pos: x y z] [keepJigsaws: Boolean] [includeEntities: Boolean] [liquidSettings: LiquidSettings]
+/place structure <structure: string> [pos: x y z] [ignoreStartHeight: Boolean] [keepJigsaws: Boolean] [includeEntities: Boolean] [liquidSettings: LiquidSettings]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 26
+[2026-10-07 22:51:34:988 INFO] §2--- Showing help page 26 of 44 (/help <page>) ---
+/playanimation <entity: target> <animation: string> [next_state: string] [blend_out_time: float] [stop_expression: string] [controller: string]
+/playsound <sound: string> [player: target] [position: x y z] [volume: float] [pitch: float] [minimumVolume: float]
+/recipe give <player: target> <recipe: string>
+/recipe take <player: target> <recipe: string>
+/reload [all: reload_all]
+/reloadconfig
+/reloadpacketlimitconfig
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 27
+[2026-10-07 22:51:35:089 INFO] §2--- Showing help page 27 of 44 (/help <page>) ---
+/replaceitem block <position: x y z> slot.container <slotId: int> <itemName: Item> [amount: int] [data: int] [components: json]
+/replaceitem block <position: x y z> slot.container <slotId: int> <oldItemHandling: ReplaceMode> <itemName: Item> [amount: int] [data: int] [components: json]
+/replaceitem entity <target: target> <slotType: EntityEquipmentSlot> <slotId: int> <itemName: Item> [amount: int] [data: int] [components: json]
+/replaceitem entity <target: target> <slotType: EntityEquipmentSlot> <slotId: int> <oldItemHandling: ReplaceMode> <itemName: Item> [amount: int] [data: int] [components: json]
+/ride <riders: target> start_riding <ride: target> [teleportRules: TeleportRules] [howToFill: FillType]
+/ride <riders: target> stop_riding
+/ride <riders: target> summon_ride <entityType: EntityType> [rideRules: RideRules] [spawnEvent: string] [nameTag: string]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 28
+[2026-10-07 22:51:35:188 INFO] §2--- Showing help page 28 of 44 (/help <page>) ---
+/ride <rides: target> evict_riders
+/ride <rides: target> summon_rider <entityType: EntityType> [spawnEvent: string] [nameTag: string]
+/save <mode: SaveMode>
+/say <message: message>
+/schedule clear <function: filepath>
+/schedule delay add <function: filepath> <time: int> [replace|append]
+/schedule delay add <function: filepath> <time: int>D [replace|append]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 29
+[2026-10-07 22:51:35:288 INFO] §2--- Showing help page 29 of 44 (/help <page>) ---
+/schedule delay add <function: filepath> <time: int>S [replace|append]
+/schedule delay add <function: filepath> <time: int>T [replace|append]
+/schedule delay clear <function: filepath>
+/schedule on_area_loaded add <from: x y z> <to: x y z> <function: filepath>
+/schedule on_area_loaded add circle <center: x y z> <radius: int> <function: filepath>
+/schedule on_area_loaded add tickingarea <name: string> <function: filepath>
+/schedule on_area_loaded clear function <function: filepath>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 30
+[2026-10-07 22:51:35:388 INFO] §2--- Showing help page 30 of 44 (/help <page>) ---
+/schedule on_area_loaded clear tickingarea <name: string> [function: filepath]
+/scoreboard objectives add <objective: string> dummy [displayName: string]
+/scoreboard objectives list
+/scoreboard objectives remove <objective: string>
+/scoreboard objectives setdisplay <list|sidebar> [objective: string] [ascending|descending]
+/scoreboard objectives setdisplay belowname [objective: string]
+/scoreboard players <set|add|remove> <player: target> <objective: string> <count: int>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 31
+[2026-10-07 22:51:35:488 INFO] §2--- Showing help page 31 of 44 (/help <page>) ---
+/scoreboard players list [playername: target]
+/scoreboard players operation <targetName: target> <targetObjective: string> <operation: operator> <selector: target> <objective: string>
+/scoreboard players random <player: target> <objective: string> <min: int> <max: int>
+/scoreboard players reset <player: target> [objective: string]
+/scoreboard players test <player: target> <objective: string> <min: wildcard int> [max: wildcard int]
+/script debugger close
+/script debugger connect [host: string] [port: int]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 32
+[2026-10-07 22:51:35:594 INFO] §2--- Showing help page 32 of 44 (/help <page>) ---
+/script debugger listen <port: int>
+/script diagnostics startcapture
+/script diagnostics stopcapture
+/script profiler start
+/script profiler stop
+/scriptevent <messageId: string> <message: message>
+/sendshowstoreoffer <player: target> <redirectType: RedirectLocation> <offerId: string>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 33
+[2026-10-07 22:51:35:689 INFO] §2--- Showing help page 33 of 44 (/help <page>) ---
+/sendshowstoreoffer <player: target> server
+/serveridentity <action: ServerIdentityAction>
+/setblock <position: x y z> <tileName: Block> <blockStates: block states> [replace|destroy|keep]
+/setblock <position: x y z> <tileName: Block> [replace|destroy|keep]
+/setblock <position: x y z> <tileName: Block> [tileData: int] [replace|destroy|keep]
+/setmaxplayers <maxPlayers: int>
+/setworldspawn [spawnPoint: x y z]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 34
+[2026-10-07 22:51:35:793 INFO] §2--- Showing help page 34 of 44 (/help <page>) ---
+/spawnpoint [player: target] [spawnPos: x y z]
+/spreadplayers <x: value> <z: value> <spreadDistance: float> <maxRange: float> <victim: target> [maxHeight: value]
+/stop
+/stopsound <player: target> [sound: string]
+/structure delete <name: string>
+/structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [animationMode: StructureAnimationMode] [animationSeconds: float] [includeEntities: Boolean] [includeBlocks: Boolean] [integrity: float] [seed: string]
+/structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [animationMode: StructureAnimationMode] [animationSeconds: float] [includeEntities: Boolean] [includeBlocks: Boolean] [waterlogged: Boolean] [integrity: float] [seed: string]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 35
+[2026-10-07 22:51:35:893 INFO] §2--- Showing help page 35 of 44 (/help <page>) ---
+/structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [includeEntities: Boolean] [includeBlocks: Boolean] [integrity: float] [seed: string]
+/structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [includeEntities: Boolean] [includeBlocks: Boolean] [waterlogged: Boolean] [integrity: float] [seed: string]
+/structure save <name: string> <from: x y z> <to: x y z> [includeEntities: Boolean] [saveMode: StructureSaveMode] [includeBlocks: Boolean]
+/structure save <name: string> <from: x y z> <to: x y z> [saveMode: StructureSaveMode]
+/summon <entityType: EntityType> <nameTag: string> [spawnPos: x y z]
+/summon <entityType: EntityType> [spawnPos: x y z] [spawnEvent: string] [nameTag: string]
+/summon <entityType: EntityType> [spawnPos: x y z] [yRot: value] [xRot: value] [spawnEvent: string] [nameTag: string]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 36
+[2026-10-07 22:51:35:993 INFO] §2--- Showing help page 36 of 44 (/help <page>) ---
+/summon <entityType: EntityType> [spawnPos: x y z] facing <lookAtEntity: target> [spawnEvent: string] [nameTag: string]
+/summon <entityType: EntityType> [spawnPos: x y z] facing <lookAtPosition: x y z> [spawnEvent: string] [nameTag: string]
+/tag <entity: target> <add|remove> <name: string>
+/tag <entity: target> list
+/teleport <destination: target>
+/teleport <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/teleport <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 37
+[2026-10-07 22:51:36:094 INFO] §2--- Showing help page 37 of 44 (/help <page>) ---
+/teleport <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/teleport <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/teleport <victim: target> <destination: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/teleport <victim: target> <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/teleport <victim: target> <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/teleport <victim: target> <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/teleport <victim: target> <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 38
+[2026-10-07 22:51:36:193 INFO] §2--- Showing help page 38 of 44 (/help <page>) ---
+/tell <target: target> <message: message>
+/tellraw <target: target> <raw json message: json>
+/testfor <victim: target>
+/testforblock <position: x y z> <tileName: Block> [blockStates: block states]
+/testforblock <position: x y z> <tileName: Block> [dataValue: int]
+/testforblocks <begin: x y z> <end: x y z> <destination: x y z> [masked|all]
+/tickingarea add <from: x y z> <to: x y z> [name: string] [preload: Boolean]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 39
+[2026-10-07 22:51:36:293 INFO] §2--- Showing help page 39 of 44 (/help <page>) ---
+/tickingarea add circle <center: x y z> <radius: int> [name: string] [preload: Boolean]
+/tickingarea list [all-dimensions: AllDimensions]
+/tickingarea preload <name: string> [preload: Boolean]
+/tickingarea preload <position: x y z> [preload: Boolean]
+/tickingarea remove <name: string>
+/tickingarea remove <position: x y z>
+/tickingarea remove_all
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 40
+[2026-10-07 22:51:36:393 INFO] §2--- Showing help page 40 of 44 (/help <page>) ---
+/time add <amount: int>
+/time query <time: TimeQuery>
+/time set <amount: int>
+/time set <time: TimeSpec>
+/title <player: target> <title|subtitle|actionbar> <titleText: message>
+/title <player: target> clear
+/title <player: target> reset
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 41
+[2026-10-07 22:51:36:493 INFO] §2--- Showing help page 41 of 44 (/help <page>) ---
+/title <player: target> times <fadeIn: int> <stay: int> <fadeOut: int>
+/titleraw <player: target> <titleLocation: TitleRawSet> <raw json titleText: json>
+/titleraw <player: target> clear
+/titleraw <player: target> reset
+/titleraw <player: target> times <fadeIn: int> <stay: int> <fadeOut: int>
+/toggledownfall
+/tp <destination: target>
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 42
+[2026-10-07 22:51:36:594 INFO] §2--- Showing help page 42 of 44 (/help <page>) ---
+/tp <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/tp <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/tp <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/tp <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/tp <victim: target> <destination: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/tp <victim: target> <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/tp <victim: target> <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 43
+[2026-10-07 22:51:36:693 INFO] §2--- Showing help page 43 of 44 (/help <page>) ---
+/tp <victim: target> <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/tp <victim: target> <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+/transfer <pfidOrMSA: string> <server: string> [port: int]
+/w <target: target> <message: message>
+/weather <clear|rain|thunder> [duration: int]
+/weather query
+/whitelist <action: AllowListAction> [name: string]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help 44
+[2026-10-07 22:51:36:793 INFO] §2--- Showing help page 44 of 44 (/help <page>) ---
+/wsserver <serverUri: text>
+/xp <amount: int> [player: target]
+/xp <amount: int>L [player: target]
+§2Tip: Use the <tab> key while typing a command to auto-complete the command or its arguments
+>>> help ?
+[2026-10-07 22:51:36:893 INFO] §ehelp (also ?):
+§eProvides help/list of commands.
+Usage:
+- /? <page: int>
+- /? [command: CommandName]
+>>> help aimassist
+[2026-10-07 22:51:36:992 INFO] §eaimassist:
+§eEnable Aim Assist
+Usage:
+- /aimassist <players: target> clear
+- /aimassist <players: target> set [x angle: float] [y angle: float] [max distance: float] [target mode: AimAssistTargetMode] [preset id: string]
+>>> help allowlist
+[2026-10-07 22:51:37:097 INFO] §eallowlist (also whitelist):
+§eManages the server allowlist.
+Usage:
+- /allowlist <action: AllowListAction> [name: string]
+>>> help alwaysday
+[2026-10-07 22:51:37:197 INFO] §edaylock (also alwaysday):
+§eLocks and unlocks the day-night cycle.
+Usage:
+- /alwaysday [lock: Boolean]
+>>> help camera
+[2026-10-07 22:51:37:298 INFO] §ecamera:
+§eIssues a camera instruction
+Usage:
+- /camera <players: target> attach_to_entity <entity: target>
+- /camera <players: target> clear
+- /camera <players: target> detach_from_entity
+- /camera <players: target> fade
+- /camera <players: target> fade color <red: int> <green: int> <blue: int>
+- /camera <players: target> fade time <fadeInSeconds: float> <holdSeconds: float> <fadeOutSeconds: float>
+- /camera <players: target> fade time <fadeInSeconds: float> <holdSeconds: float> <fadeOutSeconds: float> color <red: int> <green: int> <blue: int>
+- /camera <players: target> fov_clear [fovEaseTime: float] [fovEaseType: Easing]
+- /camera <players: target> fov_set <fov_value: float> [fovEaseTime: float] [fovEaseType: Easing]
+- /camera <players: target> play_spline <name: string>
+- /camera <players: target> remove_target
+- /camera <players: target> set <preset: string> [default: default]
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> [default: default]
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> facing <lookAtEntity: target>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> facing <lookAtPosition: x y z>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z> facing <lookAtEntity: target>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z> facing <lookAtPosition: x y z>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> pos <position: x y z> rot <xRot: value> <yRot: value>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> view_offset <xViewOffset: float> <yViewOffset: float>
+- /camera <players: target> set <preset: string> ease <easeTime: float> <easeType: Easing> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> set <preset: string> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> set <preset: string> facing <lookAtEntity: target>
+- /camera <players: target> set <preset: string> facing <lookAtPosition: x y z>
+- /camera <players: target> set <preset: string> pos <position: x y z>
+- /camera <players: target> set <preset: string> pos <position: x y z> facing <lookAtEntity: target>
+- /camera <players: target> set <preset: string> pos <position: x y z> facing <lookAtPosition: x y z>
+- /camera <players: target> set <preset: string> pos <position: x y z> rot <xRot: value> <yRot: value>
+- /camera <players: target> set <preset: string> rot <xRot: value> <yRot: value>
+- /camera <players: target> set <preset: string> rot <xRot: value> <yRot: value> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> set <preset: string> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float>
+- /camera <players: target> set <preset: string> rot <xRot: value> <yRot: value> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> set <preset: string> view_offset <xViewOffset: float> <yViewOffset: float>
+- /camera <players: target> set <preset: string> view_offset <xViewOffset: float> <yViewOffset: float> entity_offset <xEntityOffset: float> <yEntityOffset: float> <zEntityOffset: float>
+- /camera <players: target> target_entity <entity: target>
+- /camera <players: target> target_entity <entity: target> target_center_offset <xTargetCenterOffset: float> <yTargetCenterOffset: float> <zTargetCenterOffset: float>
+>>> help camerashake
+[2026-10-07 22:51:37:398 INFO] §ecamerashake:
+§eApplies shaking to the players' camera with a specified intensity and duration.
+Usage:
+- /camerashake add <player: target> [intensity: float] [seconds: float] [shakeType: CameraShakeType]
+- /camerashake stop [player: target]
+>>> help changesetting
+[2026-10-07 22:51:37:497 INFO] §echangesetting:
+§eChanges a setting on the dedicated server while it's running.
+Usage:
+- /changesetting allow-cheats <value: Boolean>
+- /changesetting difficulty <value: Difficulty>
+- /changesetting difficulty <value: int>
+>>> help clear
+[2026-10-07 22:51:37:598 INFO] §eclear:
+§eClears items from player inventory.
+Usage:
+- /clear [player: target] [itemName: Item] [data: int] [maxCount: int]
+>>> help clearspawnpoint
+[2026-10-07 22:51:37:698 INFO] §eclearspawnpoint:
+§eRemoves the spawn point for a player.
+Usage:
+- /clearspawnpoint [player: target]
+>>> help clone
+[2026-10-07 22:51:37:798 INFO] §eclone:
+§eClones blocks from one region to another.
+Usage:
+- /clone <begin: x y z> <end: x y z> <destination: x y z> [maskMode: MaskMode] [cloneMode: CloneMode]
+- /clone <begin: x y z> <end: x y z> <destination: x y z> filtered <cloneMode: CloneMode> <tileName: Block> <tileData: int>
+- /clone <begin: x y z> <end: x y z> <destination: x y z> filtered <cloneMode: CloneMode> <tileName: Block> [blockStates: block states]
+>>> help connect
+[2026-10-07 22:51:37:897 INFO] §ewsserver (also connect):
+§eAttempts to connect to the websocket server on the provided URL.
+Usage:
+- /connect <serverUri: text>
+>>> help controlscheme
+[2026-10-07 22:51:37:997 INFO] §econtrolscheme:
+§eSets or clears control scheme.
+Usage:
+- /controlscheme <players: target> clear
+- /controlscheme <players: target> set <control scheme: controlscheme>
+>>> help damage
+[2026-10-07 22:51:38:097 INFO] §edamage:
+§eApply damage to the specified entities.
+Usage:
+- /damage <target: target> <amount: int> <cause: DamageCause> entity <damager: target>
+- /damage <target: target> <amount: int> <cause: DamageCauseSuicide> entity <damager: target>
+- /damage <target: target> <amount: int> [cause: DamageCauseSuicide]
+- /damage <target: target> <amount: int> [cause: DamageCause]
+>>> help daylock
+[2026-10-07 22:51:38:198 INFO] §edaylock (also alwaysday):
+§eLocks and unlocks the day-night cycle.
+Usage:
+- /daylock [lock: Boolean]
+>>> help deop
+[2026-10-07 22:51:38:298 INFO] §edeop:
+§eRevokes operator status from a player.
+Usage:
+- /deop <player: target>
+>>> help dialogue
+[2026-10-07 22:51:38:398 INFO] §edialogue:
+§eOpens NPC dialogue for a player.
+Usage:
+- /dialogue change <npc: target> <sceneName: string> [players: target]
+- /dialogue open <npc: target> <player: target> [sceneName: string]
+>>> help difficulty
+[2026-10-07 22:51:38:498 INFO] §edifficulty:
+§eSets the difficulty level.
+Usage:
+- /difficulty <difficulty: Difficulty>
+- /difficulty <difficulty: int>
+>>> help editor-allowlist
+[2026-10-07 22:51:38:603 INFO] §eeditor-allowlist:
+§eManages the editor allowlist.
+Usage:
+- /editor-allowlist reload
+>>> help effect
+[2026-10-07 22:51:38:702 INFO] §eeffect:
+§eAdd or remove status effects.
+Usage:
+- /effect <player: target> <effect: Effect> [seconds: int] [amplifier: int] [hideParticles: Boolean]
+- /effect <player: target> <effect: Effect> infinite [amplifier: int] [hideParticles: Boolean]
+- /effect <player: target> clear [effect: Effect]
+>>> help enchant
+[2026-10-07 22:51:38:802 INFO] §eenchant:
+§eAdds an enchantment to a player's selected item.
+Usage:
+- /enchant <player: target> <enchantmentId: int> [level: int]
+- /enchant <player: target> <enchantmentName: Enchant> [level: int]
+>>> help event
+[2026-10-07 22:51:38:902 INFO] §eevent:
+§eTriggers an event for the specified object(s)
+Usage:
+- /event entity <target: target> <eventName: string>
+>>> help execute
+[2026-10-07 22:51:39:003 INFO] §eexecute:
+§eExecutes a command on behalf of one or more entities.
+Usage:
+- /execute <origin: target> <position: x y z> <command: command>
+- /execute <origin: target> <position: x y z> detect <detectPos: x y z> <block: Block> <data: int> <command: command>
+- /execute <subcommand: Option_If_Unless> block <position: x y z> <block: Block> <blockStates: block states> [chainedCommand: ExecuteChainedOption_0]
+- /execute <subcommand: Option_If_Unless> block <position: x y z> <block: Block> <data: int> [chainedCommand: ExecuteChainedOption_0]
+- /execute <subcommand: Option_If_Unless> block <position: x y z> <block: Block> [chainedCommand: ExecuteChainedOption_0]
+- /execute <subcommand: Option_If_Unless> blocks <begin: x y z> <end: x y z> <destination: x y z> <scan mode: BlocksScanMode> [chainedCommand: ExecuteChainedOption_0]
+- /execute <subcommand: Option_If_Unless> entity <target: target> [chainedCommand: ExecuteChainedOption_0]
+- /execute <subcommand: Option_If_Unless> score <target: target> <objective: string> <operation: compare operator> <source: target> <objective: string> [chainedCommand: ExecuteChainedOption_0]
+- /execute <subcommand: Option_If_Unless> score <target: target> <objective: string> matches <range: integer range> [chainedCommand: ExecuteChainedOption_0]
+- /execute align <axes: string> <chainedCommand: ExecuteChainedOption_0>
+- /execute anchored <eyes|feet> <chainedCommand: ExecuteChainedOption_0>
+- /execute as <origin: target> <chainedCommand: ExecuteChainedOption_0>
+- /execute at <origin: target> <chainedCommand: ExecuteChainedOption_0>
+- /execute facing <position: x y z> <chainedCommand: ExecuteChainedOption_0>
+- /execute facing entity <origin: target> <eyes|feet> <chainedCommand: ExecuteChainedOption_0>
+- /execute in <dimension: Dimension> <chainedCommand: ExecuteChainedOption_0>
+- /execute positioned <position: x y z> <chainedCommand: ExecuteChainedOption_0>
+- /execute positioned as <origin: target> <chainedCommand: ExecuteChainedOption_0>
+- /execute rotated <yaw: value> <pitch: value> <chainedCommand: ExecuteChainedOption_0>
+- /execute rotated as <origin: target> <chainedCommand: ExecuteChainedOption_0>
+- /execute run <command: command>
+>>> help fill
+[2026-10-07 22:51:39:103 INFO] §efill:
+§eFills all or parts of a region with a specific block.
+Usage:
+- /fill <from: x y z> <to: x y z> <tileName: Block> <blockStates: block states> [oldBlockHandling: FillMode]
+- /fill <from: x y z> <to: x y z> <tileName: Block> <blockStates: block states> replace [replaceTileName: Block] [replaceBlockStates: block states]
+- /fill <from: x y z> <to: x y z> <tileName: Block> <tileData: int> replace [replaceTileName: Block] [replaceDataValue: int]
+- /fill <from: x y z> <to: x y z> <tileName: Block> [oldBlockHandling: FillMode]
+- /fill <from: x y z> <to: x y z> <tileName: Block> [tileData: int] [oldBlockHandling: FillMode]
+- /fill <from: x y z> <to: x y z> <tileName: Block> replace [replaceTileName: Block] [replaceBlockStates: block states]
+>>> help fog
+[2026-10-07 22:51:39:202 INFO] §efog:
+§eAdd or remove fog settings file
+Usage:
+- /fog <victim: target> <mode: delete> <userProvidedId: string>
+- /fog <victim: target> push <fogId: string> <userProvidedId: string>
+>>> help function
+[2026-10-07 22:51:39:303 INFO] §efunction:
+§eRuns commands found in the corresponding function file.
+Usage:
+- /function <name: filepath>
+>>> help gamemode
+[2026-10-07 22:51:39:403 INFO] §egamemode:
+§eSets a player's game mode.
+Usage:
+- /gamemode <gameMode: GameMode> [player: target]
+- /gamemode <gameMode: int> [player: target]
+>>> help gamerule
+[2026-10-07 22:51:39:502 INFO] §egamerule:
+§eSets or queries a game rule value.
+Usage:
+- /gamerule
+- /gamerule <rule: BoolGameRule> [value: Boolean]
+- /gamerule <rule: IntGameRule> [value: int]
+- /gamerule locatorbar [value: Boolean]
+- /gamerule playerwaypoints <value: playerwaypointsValues>
+>>> help gametest
+[2026-10-07 22:51:39:603 INFO] §egametest:
+§eInteracts with gametest.
+Usage:
+- /gametest clearall
+- /gametest create <testName: string> [width: int] [height: int] [depth: int]
+- /gametest pos
+- /gametest run <testName: string> <stopOnFailure: Boolean> <repeatCount: int> [rotationSteps: int]
+- /gametest run <testName: string> [rotationSteps: int]
+- /gametest runset [tag: string] [rotationSteps: int]
+- /gametest runsetuntilfail [tag: string] [rotationSteps: int]
+- /gametest runthese
+- /gametest runthis
+- /gametest stopall
+>>> help give
+[2026-10-07 22:51:39:703 INFO] §egive:
+§eGives an item to a player.
+Usage:
+- /give <player: target> <itemName: Item> [amount: int] [data: int] [components: json]
+>>> help help
+[2026-10-07 22:51:39:804 INFO] §ehelp (also ?):
+§eProvides help/list of commands.
+Usage:
+- /help <page: int>
+- /help [command: CommandName]
+>>> help hud
+[2026-10-07 22:51:39:902 INFO] §ehud:
+§eChanges the visibility of hud elements.
+Usage:
+- /hud <target: target> <visible: HudVisibility> [hud_element: HudElement]
+>>> help inputpermission
+[2026-10-07 22:51:40:008 INFO] §einputpermission:
+§eSets whether or not a player's input can affect their character.
+Usage:
+- /inputpermission query <targets: target> <permission: permission> [state: state]
+- /inputpermission set <targets: target> <permission: permission> <state: state>
+>>> help kick
+[2026-10-07 22:51:40:108 INFO] §ekick:
+§eKicks a player from the server.
+Usage:
+- /kick <name: target> <reason: message>
+>>> help kill
+[2026-10-07 22:51:40:208 INFO] §ekill:
+§eKills entities (players, mobs, etc.).
+Usage:
+- /kill [target: target]
+>>> help list
+[2026-10-07 22:51:40:308 INFO] §elist:
+§eLists players on the server.
+Usage:
+- /list
+>>> help locate
+[2026-10-07 22:51:40:408 INFO] §elocate:
+§eDisplays the coordinates for the closest structure or biome of a given type.
+Usage:
+- /locate <feature: string> [useNewChunksOnly: Boolean]
+- /locate biome <biome: Biome>
+- /locate structure <structure: string> [useNewChunksOnly: Boolean]
+>>> help loot
+[2026-10-07 22:51:40:508 INFO] §eloot:
+§eDrops the given loot table into the specified inventory or into the world.
+Usage:
+- /loot give <players: target> kill <entity: target> [<tool>|mainhand|offhand: string]
+- /loot give <players: target> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+- /loot give <players: target> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+- /loot insert <position: x y z> kill <entity: target> [<tool>|mainhand|offhand: string]
+- /loot insert <position: x y z> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+- /loot insert <position: x y z> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+- /loot replace block <position: x y z> slot.container <slotId: int> <count: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+- /loot replace block <position: x y z> slot.container <slotId: int> <count: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+- /loot replace block <position: x y z> slot.container <slotId: int> <count: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+- /loot replace block <position: x y z> slot.container <slotId: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+- /loot replace block <position: x y z> slot.container <slotId: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+- /loot replace block <position: x y z> slot.container <slotId: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+- /loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> <count: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+- /loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> <count: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+- /loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> <count: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+- /loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> kill <entity: target> [<tool>|mainhand|offhand: string]
+- /loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+- /loot replace entity <entity: target> <slotType: EntityEquipmentSlot> <slotId: int> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+- /loot spawn <position: x y z> kill <entity: target> [<tool>|mainhand|offhand: string]
+- /loot spawn <position: x y z> loot <loot_table: string> [<tool>|mainhand|offhand: string]
+- /loot spawn <position: x y z> mine <TargetBlockPosition: x y z> [<tool>|mainhand|offhand: string]
+>>> help me
+[2026-10-07 22:51:40:608 INFO] §eme:
+§eDisplays a message about yourself.
+Usage:
+- /me <message: message>
+>>> help mobevent
+[2026-10-07 22:51:40:708 INFO] §emobevent:
+§eControls what mob events are allowed to run.
+Usage:
+- /mobevent <event: MobEvent> [value: Boolean]
+>>> help msg
+[2026-10-07 22:51:40:808 INFO] §etell (also w, msg):
+§eSends a private message to one or more players.
+Usage:
+- /msg <target: target> <message: message>
+>>> help music
+[2026-10-07 22:51:40:908 INFO] §emusic:
+§eAllows you to control playing music tracks.
+Usage:
+- /music play <trackName: string> [volume: float] [fadeSeconds: float] [repeatMode: MusicRepeatMode]
+- /music queue <trackName: string> [volume: float] [fadeSeconds: float] [repeatMode: MusicRepeatMode]
+- /music stop [fadeSeconds: float]
+- /music volume <volume: float>
+>>> help op
+[2026-10-07 22:51:41:008 INFO] §eop:
+§eGrants operator status to a player.
+Usage:
+- /op <player: target>
+>>> help ops
+[2026-10-07 22:51:41:108 INFO] §epermission (also ops):
+§eReloads and applies permissions.
+Usage:
+- /ops <action: PermissionsAction>
+- /ops <action: PermissionsAction> <player: target> [permission: PermissionLevel]
+>>> help packstack
+[2026-10-07 22:51:41:208 INFO] §epackstack:
+§ePrints client or server pack stack to chat
+Usage:
+- /packstack <stackType: stackType> [verbose: verbose] [exclude-vanilla: exclude-vanilla]
+>>> help particle
+[2026-10-07 22:51:41:308 INFO] §eparticle:
+§eCreates a particle emitter
+Usage:
+- /particle <effect: string> [position: x y z]
+>>> help permission
+[2026-10-07 22:51:41:408 INFO] §epermission (also ops):
+§eReloads and applies permissions.
+Usage:
+- /permission <action: PermissionsAction>
+- /permission <action: PermissionsAction> <player: target> [permission: PermissionLevel]
+>>> help place
+[2026-10-07 22:51:41:508 INFO] §eplace:
+§ePlaces a jigsaw structure, feature, or feature rule in the world.
+Usage:
+- /place feature <feature: features> [position: x y z]
+- /place featurerule <featurerule: featureRules> [position: x y z]
+- /place jigsaw <pool: filepath> <jigsawTarget: string> <maxDepth: int> [pos: x y z] [keepJigsaws: Boolean] [includeEntities: Boolean] [liquidSettings: LiquidSettings]
+- /place structure <structure: string> [pos: x y z] [ignoreStartHeight: Boolean] [keepJigsaws: Boolean] [includeEntities: Boolean] [liquidSettings: LiquidSettings]
+>>> help playanimation
+[2026-10-07 22:51:41:608 INFO] §eplayanimation:
+§eMakes one or more entities play a one-off animation. Assumes all variables are setup correctly.
+Usage:
+- /playanimation <entity: target> <animation: string> [next_state: string] [blend_out_time: float] [stop_expression: string] [controller: string]
+>>> help playsound
+[2026-10-07 22:51:41:708 INFO] §eplaysound:
+§ePlays a sound.
+Usage:
+- /playsound <sound: string> [player: target] [position: x y z] [volume: float] [pitch: float] [minimumVolume: float]
+>>> help recipe
+[2026-10-07 22:51:41:812 INFO] §erecipe:
+§eUnlocks recipe in the recipe book for a player.
+Usage:
+- /recipe give <player: target> <recipe: string>
+- /recipe take <player: target> <recipe: string>
+>>> help reload
+[2026-10-07 22:51:41:914 INFO] §ereload:
+§eReloads all function and script files from all behavior packs, or optionally reloads the world and all resource and behavior packs.
+Usage:
+- /reload [all: reload_all]
+>>> help reloadconfig
+[2026-10-07 22:51:42:013 INFO] §ereloadconfig:
+§eReloads configuration files relating to variables, secrets, permissions, etc.
+Usage:
+- /reloadconfig
+>>> help reloadpacketlimitconfig
+[2026-10-07 22:51:42:113 INFO] §ereloadpacketlimitconfig:
+§eReload packet limit config from file
+Usage:
+- /reloadpacketlimitconfig
+>>> help replaceitem
+[2026-10-07 22:51:42:213 INFO] §ereplaceitem:
+§eReplaces items in inventories.
+Usage:
+- /replaceitem block <position: x y z> slot.container <slotId: int> <itemName: Item> [amount: int] [data: int] [components: json]
+- /replaceitem block <position: x y z> slot.container <slotId: int> <oldItemHandling: ReplaceMode> <itemName: Item> [amount: int] [data: int] [components: json]
+- /replaceitem entity <target: target> <slotType: EntityEquipmentSlot> <slotId: int> <itemName: Item> [amount: int] [data: int] [components: json]
+- /replaceitem entity <target: target> <slotType: EntityEquipmentSlot> <slotId: int> <oldItemHandling: ReplaceMode> <itemName: Item> [amount: int] [data: int] [components: json]
+>>> help ride
+[2026-10-07 22:51:42:313 INFO] §eride:
+§eMakes entities ride other entities, stops entities from riding, makes rides evict their riders, or summons rides or riders.
+Usage:
+- /ride <riders: target> start_riding <ride: target> [teleportRules: TeleportRules] [howToFill: FillType]
+- /ride <riders: target> stop_riding
+- /ride <riders: target> summon_ride <entityType: EntityType> [rideRules: RideRules] [spawnEvent: string] [nameTag: string]
+- /ride <rides: target> evict_riders
+- /ride <rides: target> summon_rider <entityType: EntityType> [spawnEvent: string] [nameTag: string]
+>>> help save
+[2026-10-07 22:51:42:412 INFO] §esave:
+§eControl or check how the game saves data to disk.
+Usage:
+- /save <mode: SaveMode>
+>>> help say
+[2026-10-07 22:51:42:512 INFO] §esay:
+§eSends a message in the chat to other players.
+Usage:
+- /say <message: message>
+>>> help schedule
+[2026-10-07 22:51:42:613 INFO] §eschedule:
+§eSchedules an action to be executed once an area is loaded, or after a certain amount of time.
+Usage:
+- /schedule clear <function: filepath>
+- /schedule delay add <function: filepath> <time: int> [replace|append]
+- /schedule delay add <function: filepath> <time: int>D [replace|append]
+- /schedule delay add <function: filepath> <time: int>S [replace|append]
+- /schedule delay add <function: filepath> <time: int>T [replace|append]
+- /schedule delay clear <function: filepath>
+- /schedule on_area_loaded add <from: x y z> <to: x y z> <function: filepath>
+- /schedule on_area_loaded add circle <center: x y z> <radius: int> <function: filepath>
+- /schedule on_area_loaded add tickingarea <name: string> <function: filepath>
+- /schedule on_area_loaded clear function <function: filepath>
+- /schedule on_area_loaded clear tickingarea <name: string> [function: filepath]
+>>> help scoreboard
+[2026-10-07 22:51:42:713 INFO] §escoreboard:
+§eTracks and displays scores for various objectives.
+Usage:
+- /scoreboard objectives add <objective: string> dummy [displayName: string]
+- /scoreboard objectives list
+- /scoreboard objectives remove <objective: string>
+- /scoreboard objectives setdisplay <list|sidebar> [objective: string] [ascending|descending]
+- /scoreboard objectives setdisplay belowname [objective: string]
+- /scoreboard players <set|add|remove> <player: target> <objective: string> <count: int>
+- /scoreboard players list [playername: target]
+- /scoreboard players operation <targetName: target> <targetObjective: string> <operation: operator> <selector: target> <objective: string>
+- /scoreboard players random <player: target> <objective: string> <min: int> <max: int>
+- /scoreboard players reset <player: target> [objective: string]
+- /scoreboard players test <player: target> <objective: string> <min: wildcard int> [max: wildcard int]
+>>> help script
+[2026-10-07 22:51:42:812 INFO] §escript:
+§eScript debugger commands.
+Usage:
+- /script debugger close
+- /script debugger connect [host: string] [port: int]
+- /script debugger listen <port: int>
+- /script diagnostics startcapture
+- /script diagnostics stopcapture
+- /script profiler start
+- /script profiler stop
+>>> help scriptevent
+[2026-10-07 22:51:42:912 INFO] §escriptevent:
+§eTriggers a script event with an ID and message.
+Usage:
+- /scriptevent <messageId: string> <message: message>
+>>> help sendshowstoreoffer
+[2026-10-07 22:51:43:013 INFO] §esendshowstoreoffer:
+§eSends a request to show a store offer to the target player.
+Usage:
+- /sendshowstoreoffer <player: target> <redirectType: RedirectLocation> <offerId: string>
+- /sendshowstoreoffer <player: target> server
+>>> help serveridentity
+[2026-10-07 22:51:43:118 INFO] §eserveridentity:
+§eManages the server identity key. Use save, delete, or status.
+Usage:
+- /serveridentity <action: ServerIdentityAction>
+>>> help setblock
+[2026-10-07 22:51:43:217 INFO] §esetblock:
+§eChanges a block to another block.
+Usage:
+- /setblock <position: x y z> <tileName: Block> <blockStates: block states> [replace|destroy|keep]
+- /setblock <position: x y z> <tileName: Block> [replace|destroy|keep]
+- /setblock <position: x y z> <tileName: Block> [tileData: int] [replace|destroy|keep]
+>>> help setmaxplayers
+[2026-10-07 22:51:43:317 INFO] §esetmaxplayers:
+§eSets the maximum number of players for this game session.
+Usage:
+- /setmaxplayers <maxPlayers: int>
+>>> help setworldspawn
+[2026-10-07 22:51:43:417 INFO] §esetworldspawn:
+§eSets the world spawn.
+Usage:
+- /setworldspawn [spawnPoint: x y z]
+>>> help spawnpoint
+[2026-10-07 22:51:43:517 INFO] §espawnpoint:
+§eSets the spawn point for a player.
+Usage:
+- /spawnpoint [player: target] [spawnPos: x y z]
+>>> help spreadplayers
+[2026-10-07 22:51:43:617 INFO] §espreadplayers:
+§eTeleports entities to random locations.
+Usage:
+- /spreadplayers <x: value> <z: value> <spreadDistance: float> <maxRange: float> <victim: target> [maxHeight: value]
+>>> help stop
+[2026-10-07 22:51:43:717 INFO] §estop:
+§eStops the server.
+Usage:
+- /stop
+>>> help stopsound
+[2026-10-07 22:51:43:817 INFO] §estopsound:
+§eStops a sound.
+Usage:
+- /stopsound <player: target> [sound: string]
+>>> help structure
+[2026-10-07 22:51:43:917 INFO] §estructure:
+§eSaves or loads a structure in the world.
+Usage:
+- /structure delete <name: string>
+- /structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [animationMode: StructureAnimationMode] [animationSeconds: float] [includeEntities: Boolean] [includeBlocks: Boolean] [integrity: float] [seed: string]
+- /structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [animationMode: StructureAnimationMode] [animationSeconds: float] [includeEntities: Boolean] [includeBlocks: Boolean] [waterlogged: Boolean] [integrity: float] [seed: string]
+- /structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [includeEntities: Boolean] [includeBlocks: Boolean] [integrity: float] [seed: string]
+- /structure load <name: string> <to: x y z> [rotation: Rotation] [mirror: Mirror] [includeEntities: Boolean] [includeBlocks: Boolean] [waterlogged: Boolean] [integrity: float] [seed: string]
+- /structure save <name: string> <from: x y z> <to: x y z> [includeEntities: Boolean] [saveMode: StructureSaveMode] [includeBlocks: Boolean]
+- /structure save <name: string> <from: x y z> <to: x y z> [saveMode: StructureSaveMode]
+>>> help summon
+[2026-10-07 22:51:44:017 INFO] §esummon:
+§eSummons an entity.
+Usage:
+- /summon <entityType: EntityType> <nameTag: string> [spawnPos: x y z]
+- /summon <entityType: EntityType> [spawnPos: x y z] [spawnEvent: string] [nameTag: string]
+- /summon <entityType: EntityType> [spawnPos: x y z] [yRot: value] [xRot: value] [spawnEvent: string] [nameTag: string]
+- /summon <entityType: EntityType> [spawnPos: x y z] facing <lookAtEntity: target> [spawnEvent: string] [nameTag: string]
+- /summon <entityType: EntityType> [spawnPos: x y z] facing <lookAtPosition: x y z> [spawnEvent: string] [nameTag: string]
+>>> help tag
+[2026-10-07 22:51:44:117 INFO] §etag:
+§eManages tags stored in entities.
+Usage:
+- /tag <entity: target> <add|remove> <name: string>
+- /tag <entity: target> list
+>>> help teleport
+[2026-10-07 22:51:44:217 INFO] §eteleport (also tp):
+§eTeleports entities (players, mobs, etc.).
+Usage:
+- /teleport <destination: target>
+- /teleport <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <victim: target> <destination: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <victim: target> <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <victim: target> <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <victim: target> <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /teleport <victim: target> <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+>>> help tell
+[2026-10-07 22:51:44:317 INFO] §etell (also w, msg):
+§eSends a private message to one or more players.
+Usage:
+- /tell <target: target> <message: message>
+>>> help tellraw
+[2026-10-07 22:51:44:417 INFO] §etellraw:
+§eSends a JSON message to players.
+Usage:
+- /tellraw <target: target> <raw json message: json>
+>>> help testfor
+[2026-10-07 22:51:44:517 INFO] §etestfor:
+§eCounts entities (players, mobs, items, etc.) matching specified conditions.
+Usage:
+- /testfor <victim: target>
+>>> help testforblock
+[2026-10-07 22:51:44:622 INFO] §etestforblock:
+§eTests whether a certain block is in a specific location.
+Usage:
+- /testforblock <position: x y z> <tileName: Block> [blockStates: block states]
+- /testforblock <position: x y z> <tileName: Block> [dataValue: int]
+>>> help testforblocks
+[2026-10-07 22:51:44:723 INFO] §etestforblocks:
+§eTests whether the blocks in two regions match.
+Usage:
+- /testforblocks <begin: x y z> <end: x y z> <destination: x y z> [masked|all]
+>>> help tickingarea
+[2026-10-07 22:51:44:823 INFO] §etickingarea:
+§eAdd, remove, or list ticking areas.
+Usage:
+- /tickingarea add <from: x y z> <to: x y z> [name: string] [preload: Boolean]
+- /tickingarea add circle <center: x y z> <radius: int> [name: string] [preload: Boolean]
+- /tickingarea list [all-dimensions: AllDimensions]
+- /tickingarea preload <name: string> [preload: Boolean]
+- /tickingarea preload <position: x y z> [preload: Boolean]
+- /tickingarea remove <name: string>
+- /tickingarea remove <position: x y z>
+- /tickingarea remove_all
+>>> help time
+[2026-10-07 22:51:44:920 INFO] §etime:
+§eChanges or queries the world's game time.
+Usage:
+- /time add <amount: int>
+- /time query <time: TimeQuery>
+- /time set <amount: int>
+- /time set <time: TimeSpec>
+>>> help title
+[2026-10-07 22:51:45:023 INFO] §etitle:
+§eControls screen titles.
+Usage:
+- /title <player: target> <title|subtitle|actionbar> <titleText: message>
+- /title <player: target> clear
+- /title <player: target> reset
+- /title <player: target> times <fadeIn: int> <stay: int> <fadeOut: int>
+>>> help titleraw
+[2026-10-07 22:51:45:123 INFO] §etitleraw:
+§eControls screen titles with JSON messages.
+Usage:
+- /titleraw <player: target> <titleLocation: TitleRawSet> <raw json titleText: json>
+- /titleraw <player: target> clear
+- /titleraw <player: target> reset
+- /titleraw <player: target> times <fadeIn: int> <stay: int> <fadeOut: int>
+>>> help toggledownfall
+[2026-10-07 22:51:45:223 INFO] §etoggledownfall:
+§eToggles the weather.
+Usage:
+- /toggledownfall
+>>> help tp
+[2026-10-07 22:51:45:323 INFO] §eteleport (also tp):
+§eTeleports entities (players, mobs, etc.).
+Usage:
+- /tp <destination: target>
+- /tp <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <victim: target> <destination: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <victim: target> <destination: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <victim: target> <destination: x y z> [yRot: value] [xRot: value] [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <victim: target> <destination: x y z> facing <lookAtEntity: target> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+- /tp <victim: target> <destination: x y z> facing <lookAtPosition: x y z> [checkForBlocks: Boolean] [forceProvidedPositionOnDimensionChange: Boolean]
+>>> help transfer
+[2026-10-07 22:51:45:423 INFO] §etransfer:
+§eTransfers a player to another server.
+Usage:
+- /transfer <pfidOrMSA: string> <server: string> [port: int]
+>>> help w
+[2026-10-07 22:51:45:522 INFO] §etell (also w, msg):
+§eSends a private message to one or more players.
+Usage:
+- /w <target: target> <message: message>
+>>> help weather
+[2026-10-07 22:51:45:623 INFO] §eweather:
+§eSets the weather.
+Usage:
+- /weather <clear|rain|thunder> [duration: int]
+- /weather query
+>>> help whitelist
+[2026-10-07 22:51:45:723 INFO] §eallowlist (also whitelist):
+§eManages the server allowlist.
+Usage:
+- /whitelist <action: AllowListAction> [name: string]
+>>> help wsserver
+[2026-10-07 22:51:45:828 INFO] §ewsserver (also connect):
+§eAttempts to connect to the websocket server on the provided URL.
+Usage:
+- /wsserver <serverUri: text>
+>>> help xp
+[2026-10-07 22:51:45:928 INFO] §exp:
+§eAdds or removes player experience.
+Usage:
+- /xp <amount: int> [player: target]
+- /xp <amount: int>L [player: target]
+>>> gamerule
+[2026-10-07 22:51:46:028 INFO] commandBlockOutput = true, doDayLightCycle = true, doEntityDrops = true, doFireTick = true, recipesUnlock = true, doLimitedCrafting = false, doMobLoot = true, doMobSpawning = true, doTileDrops = true, doWeatherCycle = true, drowningDamage = true, fallDamage = true, fireDamage = true, keepInventory = false, mobGriefing = true, pvp = true, showCoordinates = false, playerWaypoints = everyone, locatorbar = true, showDaysPlayed = false, naturalRegeneration = true, tntExplodes = true, sendCommandFeedback = true, maxCommandChainLength = 65535, doInsomnia = true, commandBlocksEnabled = true, randomTickSpeed = 1, doImmediateRespawn = false, showDeathMessages = true, functionCommandLimit = 10000, spawnRadius = 10, showTags = true, freezeDamage = true, respawnBlocksExplode = true, showBorderEffect = true, showRecipeMessages = true, playersSleepingPercentage = 100, projectilesCanBreakBlocks = true, tntExplosionDropDecay = false
+>>> aimassist @a set 0 0 0 angle
+[2026-10-07 22:51:46:128 ERROR] Aim assist X angle must be between 10 and 90
+>>> aimassist @a set 0 0 0 distance
+[2026-10-07 22:51:46:228 ERROR] Aim assist X angle must be between 10 and 90
+>>> allowlist add zzprobe
+[2026-10-07 22:51:46:331 INFO] Added zzprobe to the allowlist
+>>> allowlist remove zzprobe
+[2026-10-07 22:51:46:428 INFO] Removed zzprobe from the allowlist
+>>> allowlist list zzprobe
+[2026-10-07 22:51:46:528 INFO] ###* {"command":"allowlist","result":null}
+ *###
+>>> allowlist on zzprobe
+[2026-10-07 22:51:46:628 INFO] Turned on the allowlist
+>>> allowlist off zzprobe
+[2026-10-07 22:51:46:728 INFO] Turned off the allowlist
+>>> allowlist reload zzprobe
+[2026-10-07 22:51:46:828 INFO] Allowlist reloaded from file.
+>>> camerashake add @a 1 1 positional
+[2026-10-07 22:51:46:928 ERROR] No targets matched selector
+>>> camerashake add @a 1 1 rotational
+[2026-10-07 22:51:47:032 ERROR] No targets matched selector
+>>> clone 0 -64 0 0 -64 0 0 -64 0 replace force
+[2026-10-07 22:51:47:133 ERROR] Cannot access blocks outside of the world
+>>> clone 0 -64 0 0 -64 0 0 -64 0 replace move
+[2026-10-07 22:51:47:233 ERROR] Source and destination can not overlap
+>>> clone 0 -64 0 0 -64 0 0 -64 0 replace normal
+[2026-10-07 22:51:47:332 ERROR] Source and destination can not overlap
+>>> controlscheme @a set camera_relative
+[2026-10-07 22:51:47:433 ERROR] No targets matched selector
+>>> controlscheme @a set camera_relative_strafe
+[2026-10-07 22:51:47:533 ERROR] No targets matched selector
+>>> controlscheme @a set locked_player_relative_strafe
+[2026-10-07 22:51:47:633 ERROR] No targets matched selector
+>>> controlscheme @a set player_relative
+[2026-10-07 22:51:47:732 ERROR] No targets matched selector
+>>> controlscheme @a set player_relative_strafe
+[2026-10-07 22:51:47:832 ERROR] No targets matched selector
+>>> damage @a 1 all
+[2026-10-07 22:51:47:932 ERROR] Syntax error: Unexpected "all": at "mage @a 1 >>all<<"
+>>> damage @a 1 anvil
+[2026-10-07 22:51:48:032 ERROR] No targets matched selector
+>>> damage @a 1 block_explosion
+[2026-10-07 22:51:48:133 ERROR] No targets matched selector
+>>> damage @a 1 campfire
+[2026-10-07 22:51:48:232 ERROR] No targets matched selector
+>>> damage @a 1 charging
+[2026-10-07 22:51:48:333 ERROR] No targets matched selector
+>>> damage @a 1 contact
+[2026-10-07 22:51:48:438 ERROR] No targets matched selector
+>>> damage @a 1 drowning
+[2026-10-07 22:51:48:538 ERROR] No targets matched selector
+>>> damage @a 1 entity_attack
+[2026-10-07 22:51:48:637 ERROR] No targets matched selector
+>>> damage @a 1 entity_explosion
+[2026-10-07 22:51:48:738 ERROR] No targets matched selector
+>>> damage @a 1 fall
+[2026-10-07 22:51:48:837 ERROR] No targets matched selector
+>>> damage @a 1 falling_block
+[2026-10-07 22:51:48:937 ERROR] No targets matched selector
+>>> damage @a 1 fire
+[2026-10-07 22:51:49:037 ERROR] No targets matched selector
+>>> damage @a 1 fire_tick
+[2026-10-07 22:51:49:137 ERROR] No targets matched selector
+>>> damage @a 1 fireworks
+[2026-10-07 22:51:49:237 ERROR] No targets matched selector
+>>> damage @a 1 fly_into_wall
+[2026-10-07 22:51:49:338 ERROR] No targets matched selector
+>>> damage @a 1 freezing
+[2026-10-07 22:51:49:437 ERROR] No targets matched selector
+>>> damage @a 1 lava
+[2026-10-07 22:51:49:537 ERROR] No targets matched selector
+>>> damage @a 1 lightning
+[2026-10-07 22:51:49:637 ERROR] No targets matched selector
+>>> damage @a 1 mace_smash
+[2026-10-07 22:51:49:737 ERROR] No targets matched selector
+>>> damage @a 1 magic
+[2026-10-07 22:51:49:837 ERROR] No targets matched selector
+>>> damage @a 1 magma
+[2026-10-07 22:51:49:937 ERROR] No targets matched selector
+>>> damage @a 1 none
+[2026-10-07 22:51:50:037 ERROR] No targets matched selector
+>>> damage @a 1 override
+[2026-10-07 22:51:50:137 ERROR] No targets matched selector
+>>> damage @a 1 piston
+[2026-10-07 22:51:50:237 ERROR] No targets matched selector
+>>> damage @a 1 projectile
+[2026-10-07 22:51:50:337 ERROR] No targets matched selector
+>>> damage @a 1 ram_attack
+[2026-10-07 22:51:50:442 ERROR] No targets matched selector
+>>> damage @a 1 self_destruct
+[2026-10-07 22:51:50:543 ERROR] No targets matched selector
+>>> damage @a 1 sonic_boom
+[2026-10-07 22:51:50:642 ERROR] No targets matched selector
+>>> damage @a 1 soul_campfire
+[2026-10-07 22:51:50:742 ERROR] No targets matched selector
+>>> damage @a 1 stalactite
+[2026-10-07 22:51:50:843 ERROR] No targets matched selector
+>>> damage @a 1 stalagmite
+[2026-10-07 22:51:50:942 ERROR] No targets matched selector
+>>> damage @a 1 starve
+[2026-10-07 22:51:51:043 ERROR] No targets matched selector
+>>> damage @a 1 suffocation
+[2026-10-07 22:51:51:142 ERROR] No targets matched selector
+>>> damage @a 1 suicide
+[2026-10-07 22:51:51:243 ERROR] Syntax error: Unexpected "suicide": at "mage @a 1 >>suicide<<"
+>>> damage @a 1 temperature
+[2026-10-07 22:51:51:342 ERROR] No targets matched selector
+>>> damage @a 1 thorns
+[2026-10-07 22:51:51:442 ERROR] No targets matched selector
+>>> damage @a 1 void
+[2026-10-07 22:51:51:542 ERROR] No targets matched selector
+>>> damage @a 1 wither
+[2026-10-07 22:51:51:642 ERROR] No targets matched selector
+>>> camera @a set minecraft:free default
+[2026-10-07 22:51:51:743 ERROR] No targets matched selector
+>>> fog @a pop zzprobe
+[2026-10-07 22:51:51:842 ERROR] No targets matched selector
+>>> fog @a remove zzprobe
+[2026-10-07 22:51:51:942 ERROR] No targets matched selector
+>>> difficulty peaceful
+[2026-10-07 22:51:52:044 INFO] Set game difficulty to PEACEFUL
+>>> difficulty p
+[2026-10-07 22:51:52:143 INFO] Set game difficulty to PEACEFUL
+>>> difficulty easy
+[2026-10-07 22:51:52:249 INFO] Set game difficulty to EASY
+>>> difficulty e
+[2026-10-07 22:51:52:348 INFO] Set game difficulty to EASY
+>>> difficulty normal
+[2026-10-07 22:51:52:449 INFO] Set game difficulty to NORMAL
+>>> difficulty n
+[2026-10-07 22:51:52:548 INFO] Set game difficulty to NORMAL
+>>> difficulty hard
+[2026-10-07 22:51:52:649 INFO] Set game difficulty to HARD
+>>> difficulty h
+[2026-10-07 22:51:52:748 INFO] Set game difficulty to HARD
+>>> execute in overworld run list
+[2026-10-07 22:51:52:848 INFO] There are 0/10 players online:
+
+>>> execute in nether run list
+[2026-10-07 22:51:52:948 INFO] There are 0/10 players online:
+
+>>> execute in the_end run list
+[2026-10-07 22:51:53:048 INFO] There are 0/10 players online:
+
+>>> camera @a fov_clear 1 linear
+[2026-10-07 22:51:53:148 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 spring
+[2026-10-07 22:51:53:248 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_quad
+[2026-10-07 22:51:53:348 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_quad
+[2026-10-07 22:51:53:448 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_quad
+[2026-10-07 22:51:53:548 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_cubic
+[2026-10-07 22:51:53:648 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_cubic
+[2026-10-07 22:51:53:748 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_cubic
+[2026-10-07 22:51:53:848 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_quart
+[2026-10-07 22:51:53:948 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_quart
+[2026-10-07 22:51:54:053 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_quart
+[2026-10-07 22:51:54:153 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_quint
+[2026-10-07 22:51:54:253 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_quint
+[2026-10-07 22:51:54:352 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_quint
+[2026-10-07 22:51:54:452 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_sine
+[2026-10-07 22:51:54:552 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_sine
+[2026-10-07 22:51:54:652 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_sine
+[2026-10-07 22:51:54:753 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_expo
+[2026-10-07 22:51:54:853 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_expo
+[2026-10-07 22:51:54:958 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_expo
+[2026-10-07 22:51:55:059 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_circ
+[2026-10-07 22:51:55:158 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_circ
+[2026-10-07 22:51:55:258 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_circ
+[2026-10-07 22:51:55:358 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_bounce
+[2026-10-07 22:51:55:458 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_bounce
+[2026-10-07 22:51:55:558 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_bounce
+[2026-10-07 22:51:55:658 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_back
+[2026-10-07 22:51:55:758 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_back
+[2026-10-07 22:51:55:858 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_back
+[2026-10-07 22:51:55:960 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_elastic
+[2026-10-07 22:51:56:058 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 out_elastic
+[2026-10-07 22:51:56:158 ERROR] No targets matched selector
+>>> camera @a fov_clear 1 in_out_elastic
+[2026-10-07 22:51:56:258 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.armor 0 dirt
+[2026-10-07 22:51:56:358 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.armor.body 0 dirt
+[2026-10-07 22:51:56:458 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.armor.chest 0 dirt
+[2026-10-07 22:51:56:558 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.armor.feet 0 dirt
+[2026-10-07 22:51:56:658 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.armor.head 0 dirt
+[2026-10-07 22:51:56:758 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.armor.legs 0 dirt
+[2026-10-07 22:51:56:858 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.chest 0 dirt
+[2026-10-07 22:51:56:958 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.container 0 dirt
+[2026-10-07 22:51:57:058 ERROR] Syntax error: Unexpected "slot.container": at "entity @a >>slot.container<< 0 dirt"
+>>> replaceitem entity @a slot.enderchest 0 dirt
+[2026-10-07 22:51:57:163 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.equippable 0 dirt
+[2026-10-07 22:51:57:262 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.hotbar 0 dirt
+[2026-10-07 22:51:57:362 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.inventory 0 dirt
+[2026-10-07 22:51:57:463 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.saddle 0 dirt
+[2026-10-07 22:51:57:563 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.weapon.mainhand 0 dirt
+[2026-10-07 22:51:57:663 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.weapon.offhand 0 dirt
+[2026-10-07 22:51:57:763 ERROR] No targets matched selector
+>>> fill 0 -64 0 0 -64 0 bedrock destroy
+[2026-10-07 22:51:57:863 ERROR] Cannot place blocks outside of the world
+>>> fill 0 -64 0 0 -64 0 bedrock hollow
+[2026-10-07 22:51:57:962 ERROR] Cannot place blocks outside of the world
+>>> fill 0 -64 0 0 -64 0 bedrock keep
+[2026-10-07 22:51:58:062 ERROR] Cannot place blocks outside of the world
+>>> fill 0 -64 0 0 -64 0 bedrock outline
+[2026-10-07 22:51:58:162 ERROR] Cannot place blocks outside of the world
+>>> fill 0 -64 0 0 -64 0 bedrock replace
+[2026-10-07 22:51:58:262 ERROR] Cannot place blocks outside of the world
+>>> ride @a start_riding @a teleport_rider if_group_fits
+[2026-10-07 22:51:58:362 ERROR] No targets matched selector
+>>> ride @a start_riding @a teleport_rider until_full
+[2026-10-07 22:51:58:462 ERROR] No targets matched selector
+>>> gamemode survival @a
+[2026-10-07 22:51:58:562 ERROR] No targets matched selector
+>>> gamemode s @a
+[2026-10-07 22:51:58:668 ERROR] No targets matched selector
+>>> gamemode creative @a
+[2026-10-07 22:51:58:768 ERROR] No targets matched selector
+>>> gamemode c @a
+[2026-10-07 22:51:58:868 ERROR] No targets matched selector
+>>> gamemode adventure @a
+[2026-10-07 22:51:58:968 ERROR] No targets matched selector
+>>> gamemode a @a
+[2026-10-07 22:51:59:068 ERROR] No targets matched selector
+>>> gamemode spectator @a
+[2026-10-07 22:51:59:168 ERROR] No targets matched selector
+>>> gamemode sp @a
+[2026-10-07 22:51:59:268 ERROR] Syntax error: Unexpected "sp": at "/gamemode >>sp<< @a"
+>>> gamemode default @a
+[2026-10-07 22:51:59:368 ERROR] No targets matched selector
+>>> gamemode d @a
+[2026-10-07 22:51:59:468 ERROR] No targets matched selector
+>>> hud @a hide
+[2026-10-07 22:51:59:568 ERROR] No targets matched selector
+>>> hud @a reset
+[2026-10-07 22:51:59:668 ERROR] No targets matched selector
+>>> hud @a hide all
+[2026-10-07 22:51:59:768 ERROR] No targets matched selector
+>>> hud @a hide paperdoll
+[2026-10-07 22:51:59:868 ERROR] No targets matched selector
+>>> hud @a hide armor
+[2026-10-07 22:51:59:968 ERROR] No targets matched selector
+>>> hud @a hide tooltips
+[2026-10-07 22:52:00:068 ERROR] No targets matched selector
+>>> hud @a hide touch_controls
+[2026-10-07 22:52:00:172 ERROR] No targets matched selector
+>>> hud @a hide crosshair
+[2026-10-07 22:52:00:273 ERROR] No targets matched selector
+>>> hud @a hide hotbar
+[2026-10-07 22:52:00:373 ERROR] No targets matched selector
+>>> hud @a hide health
+[2026-10-07 22:52:00:472 ERROR] No targets matched selector
+>>> hud @a hide progress_bar
+[2026-10-07 22:52:00:572 ERROR] No targets matched selector
+>>> hud @a hide hunger
+[2026-10-07 22:52:00:673 ERROR] No targets matched selector
+>>> hud @a hide air_bubbles
+[2026-10-07 22:52:00:772 ERROR] No targets matched selector
+>>> hud @a hide horse_health
+[2026-10-07 22:52:00:872 ERROR] No targets matched selector
+>>> hud @a hide status_effects
+[2026-10-07 22:52:00:972 ERROR] No targets matched selector
+>>> hud @a hide item_text
+[2026-10-07 22:52:01:073 ERROR] No targets matched selector
+>>> place structure zzprobe 0 0 0 false false false apply_waterlogging
+[2026-10-07 22:52:01:172 ERROR] Invalid structure name.
+>>> place structure zzprobe 0 0 0 false false false ignore_waterlogging
+[2026-10-07 22:52:01:272 ERROR] Invalid structure name.
+>>> clone 0 -64 0 0 -64 0 0 -64 0 masked
+[2026-10-07 22:52:01:377 ERROR] Cannot access blocks outside of the world
+>>> clone 0 -64 0 0 -64 0 0 -64 0 replace
+[2026-10-07 22:52:01:477 ERROR] Source and destination can not overlap
+>>> mobevent minecraft:pillager_patrols_event
+[2026-10-07 22:52:01:577 INFO] Mob Event Pillager (id: minecraft:pillager_patrols_event) is set to true.
+>>> mobevent minecraft:wandering_trader_event
+[2026-10-07 22:52:01:677 INFO] Mob Event Wandering Trader (id: minecraft:wandering_trader_event) is set to true.
+>>> mobevent minecraft:ender_dragon_event
+[2026-10-07 22:52:01:777 INFO] Mob Event Ender Dragon (id: minecraft:ender_dragon_event) is set to true.
+>>> mobevent events_enabled
+[2026-10-07 22:52:01:877 INFO] Mob Events are enabled. Individual events which are set to false will not run.
+>>> music play zzprobe 1 0 loop
+[2026-10-07 22:52:01:977 INFO] zzprobe has been queued to start playing.
+>>> music play zzprobe 1 0 play_once
+[2026-10-07 22:52:02:077 INFO] zzprobe has been queued to start playing.
+>>> scoreboard players operation @a zz %= @a zz
+[2026-10-07 22:52:02:178 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz *= @a zz
+[2026-10-07 22:52:02:277 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz += @a zz
+[2026-10-07 22:52:02:377 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz -= @a zz
+[2026-10-07 22:52:02:478 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz /= @a zz
+[2026-10-07 22:52:02:578 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz < @a zz
+[2026-10-07 22:52:02:677 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz = @a zz
+[2026-10-07 22:52:02:777 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz > @a zz
+[2026-10-07 22:52:02:882 ERROR] No objective was found by the name 'zz'
+>>> scoreboard players operation @a zz >< @a zz
+[2026-10-07 22:52:02:982 ERROR] No objective was found by the name 'zz'
+>>> execute if score @a zz < @a zz run list
+[2026-10-07 22:52:03:083 ERROR] No targets matched selector
+No targets matched selector
+Only one entity is allowed, but the provided selector allows more than one
+Execute subcommand if score test failed.
+>>> execute if score @a zz <= @a zz run list
+[2026-10-07 22:52:03:183 ERROR] No targets matched selector
+No targets matched selector
+Only one entity is allowed, but the provided selector allows more than one
+Execute subcommand if score test failed.
+>>> execute if score @a zz = @a zz run list
+[2026-10-07 22:52:03:283 ERROR] No targets matched selector
+No targets matched selector
+Only one entity is allowed, but the provided selector allows more than one
+Execute subcommand if score test failed.
+>>> execute if score @a zz >= @a zz run list
+[2026-10-07 22:52:03:382 ERROR] No targets matched selector
+No targets matched selector
+Only one entity is allowed, but the provided selector allows more than one
+Execute subcommand if score test failed.
+>>> execute if score @a zz > @a zz run list
+[2026-10-07 22:52:03:483 ERROR] No targets matched selector
+No targets matched selector
+Only one entity is allowed, but the provided selector allows more than one
+Execute subcommand if score test failed.
+>>> execute if entity @a
+[2026-10-07 22:52:03:582 ERROR] Execute subcommand if entity test failed.
+>>> execute unless entity @a
+[2026-10-07 22:52:03:682 INFO] Test passed.
+>>> inputpermission query @a camera
+[2026-10-07 22:52:03:782 INFO] <Camera>: 0 enabled | 0 disabled
+>>> inputpermission query @a movement
+[2026-10-07 22:52:03:882 INFO] <Movement>: 0 enabled | 0 disabled
+>>> inputpermission query @a lateral_movement
+[2026-10-07 22:52:03:983 INFO] <Lateral Movement >: 0 enabled | 0 disabled
+>>> inputpermission query @a sneak
+[2026-10-07 22:52:04:083 INFO] <Sneak>: 0 enabled | 0 disabled
+>>> inputpermission query @a jump
+[2026-10-07 22:52:04:182 INFO] <Jump>: 0 enabled | 0 disabled
+>>> inputpermission query @a mount
+[2026-10-07 22:52:04:282 INFO] <Mount >: 0 enabled | 0 disabled
+>>> inputpermission query @a dismount
+[2026-10-07 22:52:04:382 INFO] <Dismount >: 0 enabled | 0 disabled
+>>> inputpermission query @a move_forward
+[2026-10-07 22:52:04:482 INFO] <Move Forward >: 0 enabled | 0 disabled
+>>> inputpermission query @a move_backward
+[2026-10-07 22:52:04:588 INFO] <Move Backward>: 0 enabled | 0 disabled
+>>> inputpermission query @a move_left
+[2026-10-07 22:52:04:688 INFO] <Move Left>: 0 enabled | 0 disabled
+>>> inputpermission query @a move_right
+[2026-10-07 22:52:04:788 INFO] <Move Right>: 0 enabled | 0 disabled
+>>> inputpermission query @a camera enabled
+[2026-10-07 22:52:04:888 INFO] <Camera>: 0 enabled
+>>> inputpermission query @a camera disabled
+[2026-10-07 22:52:04:988 INFO] <Camera>: 0 disabled
+>>> permission list
+[2026-10-07 22:52:05:087 INFO] ###* {"command":"ops","result":[]}
+ *###
+###* {"command":"permissions","result":[]}
+ *###
+>>> permission reload
+[2026-10-07 22:52:05:188 INFO] Ops reloaded from file.
+Permissions reloaded from file.
+>>> permission set
+[2026-10-07 22:52:05:287 ERROR] No targets matched selector
+>>> permission set @a visitor
+[2026-10-07 22:52:05:388 ERROR] No targets matched selector
+>>> permission set @a member
+[2026-10-07 22:52:05:487 ERROR] No targets matched selector
+>>> permission set @a operator
+[2026-10-07 22:52:05:587 ERROR] No targets matched selector
+>>> permission set @a custom
+[2026-10-07 22:52:05:687 ERROR] Syntax error: Unexpected "custom": at "on set @a >>custom<<"
+>>> gamerule playerwaypoints disabled
+[2026-10-07 22:52:05:787 ERROR] Syntax error: Unexpected "disabled": at "waypoints >>disabled<<"
+>>> gamerule playerwaypoints enabled
+[2026-10-07 22:52:05:888 ERROR] Syntax error: Unexpected "enabled": at "waypoints >>enabled<<"
+>>> gamerule playerwaypoints everyone
+[2026-10-07 22:52:05:992 INFO] Game rule playerwaypoints has been updated to everyone
+>>> gamerule playerwaypoints operators
+[2026-10-07 22:52:06:092 ERROR] Syntax error: Unexpected "operators": at "waypoints >>operators<<"
+>>> gamerule playerwaypoints operator
+[2026-10-07 22:52:06:192 ERROR] Syntax error: Unexpected "operator": at "waypoints >>operator<<"
+>>> gamerule playerwaypoints off
+[2026-10-07 22:52:06:293 INFO] Game rule playerwaypoints has been updated to off
+>>> gamerule playerwaypoints on
+[2026-10-07 22:52:06:392 ERROR] Syntax error: Unexpected "on": at "waypoints >>on<<"
+>>> gamerule playerwaypoints none
+[2026-10-07 22:52:06:492 ERROR] Syntax error: Unexpected "none": at "waypoints >>none<<"
+>>> gamerule playerwaypoints all
+[2026-10-07 22:52:06:592 ERROR] Syntax error: Unexpected "all": at "waypoints >>all<<"
+>>> gamerule playerwaypoints teams
+[2026-10-07 22:52:06:692 ERROR] Syntax error: Unexpected "teams": at "waypoints >>teams<<"
+>>> sendshowstoreoffer @a servertab zzprobe
+[2026-10-07 22:52:06:792 ERROR] Syntax error: Unexpected "servertab": at "eoffer @a >>servertab<< zzprobe"
+>>> sendshowstoreoffer @a server_tab zzprobe
+[2026-10-07 22:52:06:892 ERROR] Syntax error: Unexpected "server_tab": at "eoffer @a >>server_tab<< zzprobe"
+>>> sendshowstoreoffer @a store zzprobe
+[2026-10-07 22:52:06:992 ERROR] Syntax error: Unexpected "store": at "eoffer @a >>store<< zzprobe"
+>>> sendshowstoreoffer @a marketplace zzprobe
+[2026-10-07 22:52:07:092 ERROR] No targets matched selector
+>>> sendshowstoreoffer @a home zzprobe
+[2026-10-07 22:52:07:192 ERROR] Syntax error: Unexpected "home": at "eoffer @a >>home<< zzprobe"
+>>> sendshowstoreoffer @a offer zzprobe
+[2026-10-07 22:52:07:292 ERROR] Syntax error: Unexpected "offer": at "eoffer @a >>offer<< zzprobe"
+>>> reload all
+[2026-10-07 22:52:07:401 INFO] Function and script files have been reloaded.
+>>> replaceitem entity @a slot.weapon.mainhand 0 destroy dirt
+[2026-10-07 22:52:07:492 ERROR] No targets matched selector
+>>> replaceitem entity @a slot.weapon.mainhand 0 keep dirt
+[2026-10-07 22:52:07:592 ERROR] No targets matched selector
+>>> ride @a summon_ride pig no_ride_change
+[2026-10-07 22:52:07:692 ERROR] No targets matched selector
+>>> ride @a summon_ride pig reassign_rides
+[2026-10-07 22:52:07:792 ERROR] No targets matched selector
+>>> ride @a summon_ride pig skip_riders
+[2026-10-07 22:52:07:892 ERROR] No targets matched selector
+>>> structure load zzprobe 0 0 0 0_degrees
+[2026-10-07 22:52:07:998 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 90_degrees
+[2026-10-07 22:52:08:098 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 180_degrees
+[2026-10-07 22:52:08:198 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 270_degrees
+[2026-10-07 22:52:08:298 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 0_degrees none
+[2026-10-07 22:52:08:398 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 0_degrees x
+[2026-10-07 22:52:08:498 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 0_degrees z
+[2026-10-07 22:52:08:598 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 0_degrees xz
+[2026-10-07 22:52:08:698 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 0_degrees none block_by_block
+[2026-10-07 22:52:08:798 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure load zzprobe 0 0 0 0_degrees none layer_by_layer
+[2026-10-07 22:52:08:898 ERROR] The structure mystructure:zzprobe can't be found. Make sure the name was spelled correctly and try again.
+>>> structure save zzprobe 0 -64 0 0 -64 0 disk
+[2026-10-07 22:52:08:997 ERROR] Cannot access blocks outside of the world
+>>> structure save zzprobe 0 -64 0 0 -64 0 memory
+[2026-10-07 22:52:09:097 ERROR] Cannot access blocks outside of the world
+>>> ride @a start_riding @a teleport_ride
+[2026-10-07 22:52:09:197 ERROR] No targets matched selector
+>>> ride @a start_riding @a teleport_rider
+[2026-10-07 22:52:09:297 ERROR] No targets matched selector
+>>> time query daytime
+[2026-10-07 22:52:09:398 INFO] Daytime is 741
+>>> time query gametime
+[2026-10-07 22:52:09:497 INFO] Gametime is 743
+>>> time query day
+[2026-10-07 22:52:09:602 INFO] Day is 0
+>>> time set day
+[2026-10-07 22:52:09:703 INFO] Set the time to 1000
+>>> time set night
+[2026-10-07 22:52:09:802 INFO] Set the time to 13000
+>>> time set noon
+[2026-10-07 22:52:09:902 INFO] Set the time to 30000
+>>> time set midnight
+[2026-10-07 22:52:10:002 INFO] Set the time to 42000
+>>> time set sunrise
+[2026-10-07 22:52:10:102 INFO] Set the time to 47000
+>>> time set sunset
+[2026-10-07 22:52:10:203 INFO] Set the time to 60000
+>>> titleraw @a title {"rawtext":[]}
+[2026-10-07 22:52:10:302 ERROR] No targets matched selector
+>>> titleraw @a subtitle {"rawtext":[]}
+[2026-10-07 22:52:10:402 ERROR] No targets matched selector
+>>> titleraw @a actionbar {"rawtext":[]}
+[2026-10-07 22:52:10:503 ERROR] No targets matched selector
+>>> tickingarea list all-dimensions
+[2026-10-07 22:52:10:602 ERROR] No ticking areas exist in any dimension.
+>>> execute if blocks 0 -64 0 0 -64 0 0 -64 0 all
+[2026-10-07 22:52:10:703 ERROR] Source volume is not loaded
+Execute subcommand if blocks test failed.
+>>> execute if blocks 0 -64 0 0 -64 0 0 -64 0 masked
+[2026-10-07 22:52:10:803 ERROR] Source volume is not loaded
+Execute subcommand if blocks test failed.
+>>> packstack client
+[2026-10-07 22:52:10:902 INFO] Minecraft Texture Pack (0.0.1)
+
+>>> packstack server
+[2026-10-07 22:52:11:003 INFO] @minecraft/server TS Library (0.0.1)
+
+@minecraft/server-ui TS Library (0.0.1)
+
+resourcePack.vanilla_server.name (1.26.52)
+
+>>> packstack behavior
+[2026-10-07 22:52:11:102 ERROR] Syntax error: Unexpected "behavior": at "packstack >>behavior<<"
+>>> packstack resource
+[2026-10-07 22:52:11:202 ERROR] Syntax error: Unexpected "resource": at "packstack >>resource<<"
+>>> packstack behavior_packs
+[2026-10-07 22:52:11:308 ERROR] Syntax error: Unexpected "behavior_packs": at "packstack >>behavior_packs<<"
+>>> packstack resource_packs
+[2026-10-07 22:52:11:408 ERROR] Syntax error: Unexpected "resource_packs": at "packstack >>resource_packs<<"
+>>> packstack all
+[2026-10-07 22:52:11:508 ERROR] Syntax error: Unexpected "all": at "packstack >>all<<"
+>>> packstack server verbose
+[2026-10-07 22:52:11:608 INFO] Pack Name: @minecraft/server TS Library
+  UUID: 37ca4282-69e9-4402-b40b-0b07de579f02
+  Type: Behavior
+  Version: 0.0.1
+
+
+Pack Name: @minecraft/server-ui TS Library
+  UUID: f53f490f-9d47-45ca-86de-0946b6d1c366
+  Type: Behavior
+  Version: 0.0.1
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.26.52
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.26.50
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.26.40
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.26.30
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.26.20
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.26.10
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.26.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.130
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.120
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.110
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.100
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.90
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.80
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.70
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.60
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.50
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.40
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.30
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.20
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.10
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.21.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.80
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.70
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.60
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.50
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.40
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.30
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.20
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.10
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.20.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.80
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.70
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.60
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.50
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.40
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.30
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.20
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.10
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.19.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.18.30
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.18.20
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.18.10
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.18.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.17.40
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.17.30
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.17.20
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.17.10
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.17.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.16.220
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.16.210
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.16.200
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.16.100
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.16.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.15.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 1.14.0
+
+
+Pack Name: resourcePack.vanilla_server.name
+  UUID: fe9f8597-5454-481a-8730-8d070a8e2e58
+  Type: Behavior
+  Version: 0.0.1
+
+
+>>> packstack server verbose exclude-vanilla
+[2026-10-07 22:52:11:708 INFO] No packs found

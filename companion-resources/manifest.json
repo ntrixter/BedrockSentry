@@ -1,0 +1,18 @@
+{
+  "format_version": 3,
+  "header": {
+    "name": "BedrockSentry companion resources",
+    "description": "The line BedrockSentry's companion pack draws to outline Sync Areas and ticking areas for operators.",
+    "uuid": "85ae0ca9-3ded-45be-a457-84e96a3ec048",
+    "version": "1.0.1",
+    "min_engine_version": "1.26.40"
+  },
+  "metadata": { "product_type": "addon" },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "b586d94d-54a8-4534-9dde-3930e42003e1",
+      "version": "1.0.1"
+    }
+  ]
+}

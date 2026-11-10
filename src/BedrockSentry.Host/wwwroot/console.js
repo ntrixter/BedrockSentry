@@ -46,5 +46,24 @@ window.bedrockSentryConsole = {
         if (el && el.dataset.sentryPinned) {
             el.scrollTop = el.scrollHeight;
         }
+    },
+
+    // The viewer's show or hide per boxed notice (ConsoleNoticeChoices), kept in this
+    // browser per instance, so hiding a warning on one server leaves it on the others. Storage can be refused (a private window, blocked
+    // site data); then nothing is kept and each notice keeps its default.
+    noticeChoices: function (instanceId) {
+        try {
+            return window.localStorage.getItem("bedrockSentry.consoleNotices." + instanceId);
+        } catch (e) {
+            return null;
+        }
+    },
+
+    saveNoticeChoices: function (instanceId, json) {
+        try {
+            window.localStorage.setItem("bedrockSentry.consoleNotices." + instanceId, json);
+        } catch (e) {
+            // The choice holds for this page only.
+        }
     }
 };

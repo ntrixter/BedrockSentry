@@ -28,6 +28,35 @@ public static class PortConflictText
         "A Bedrock server that cannot bind its port starts, binds nothing and exits, "
         + "which the watchdog reports as a crash loop with no mention of ports.";
 
+    /// <summary>
+    /// A list of port numbers as an administrator would read it aloud:
+    /// <c>port 19132</c>, <c>ports 19132 and 19133</c>, <c>ports 19132, 19133 and 19134</c>.
+    /// </summary>
+    /// <remarks>
+    /// Here rather than at the one call site because `T200`'s fix put a second
+    /// one in the supervisor, and a port list built inline is how the next author
+    /// ends up with a third spelling of it. Empty renders as <c>no ports</c>,
+    /// which no caller should reach and none of them has to guard against.
+    /// </remarks>
+    public static string PortList(IReadOnlyList<int> ports)
+    {
+        if (ports.Count == 0)
+        {
+            return "no ports";
+        }
+
+        if (ports.Count == 1)
+        {
+            return $"port {ports[0]}";
+        }
+
+        var all = ports.Select(p => p.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        return "ports "
+            + string.Join(", ", all.Take(ports.Count - 1))
+            + $" and {ports[^1]}";
+    }
+
     /// <summary>One conflict as a sentence: <c>Port 19136 is already open on this machine by bedrock_server (PID 8172).</c></summary>
     public static string Line(PortConflict conflict) =>
         $"Port {conflict.Port} {conflict.Reason}.";

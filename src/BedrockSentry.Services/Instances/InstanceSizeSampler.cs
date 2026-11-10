@@ -15,11 +15,24 @@ namespace BedrockSentry.Services.Instances;
 /// Answers "what is this server costing me" rather than "what is at risk".
 /// </param>
 /// <param name="TakenUtc">When the walk ran. Shown, because it is not live.</param>
-public sealed record InstanceSize(long WorldBytes, long FolderBytes, DateTimeOffset TakenUtc)
+/// <param name="FreeBytes">
+/// Free space on the volume the world is on, not the system drive's (<c>D48</c>):
+/// instances can have volumes of their own (<c>T96b</c>, <c>T99</c>). Null when the
+/// volume could not be asked.
+/// </param>
+/// <param name="Growth">The world's samples over the last day, this one included.</param>
+public sealed record InstanceSize(
+    long WorldBytes, long FolderBytes, DateTimeOffset TakenUtc, long? FreeBytes = null, WorldGrowthHistory? Growth = null)
 {
     public string World => ByteSize.Format(WorldBytes);
 
     public string Folder => ByteSize.Format(FolderBytes);
+
+    /// <summary>The free space, or a dash when it is not known.</summary>
+    public string Free => FreeBytes is { } free ? $"{ByteSize.Format(free)} free" : "—";
+
+    /// <summary>Never null: a sample with no history behind it has only itself.</summary>
+    public WorldGrowthHistory History => Growth ?? WorldGrowthHistory.Empty.With(new WorldSample(TakenUtc, WorldBytes));
 }
 
 /// <summary>
@@ -41,10 +54,10 @@ public sealed record InstanceSize(long WorldBytes, long FolderBytes, DateTimeOff
 /// polling for it.
 /// </para>
 /// <para>
-/// This is the first piece of <c>D48-StatusConsumptionBlock</c>, which specifies
-/// world and folder size, free space, growth and a sparkline on a 15-minute
-/// directory-walk sample. The rest of that block extends this rather than
-/// growing a second answer to the same question.
+/// The directory-walk half of <c>D48-StatusConsumptionBlock</c>: world and folder
+/// size, free space on the world's volume, and a day of world sizes for the growth
+/// row and its sparkline. <see cref="InstanceSizeSchedule"/> walks every instance on
+/// the 15-minute cadence whether or not a page is open, so the day fills in.
 /// </para>
 /// </remarks>
 public sealed class InstanceSizeSampler
@@ -109,10 +122,18 @@ public sealed class InstanceSizeSampler
         {
             try
             {
+                var worlds = Path.Combine(workingDirectory, "worlds");
                 var folder = Measure(workingDirectory);
-                var world = Measure(Path.Combine(workingDirectory, "worlds"));
+                var world = Measure(worlds);
+                var now = _time.GetUtcNow();
 
-                _samples[instanceId] = new InstanceSize(world, folder, _time.GetUtcNow());
+                var history = _samples.TryGetValue(instanceId, out var previous)
+                    ? previous.History
+                    : WorldGrowthHistory.Empty;
+
+                _samples[instanceId] = new InstanceSize(
+                    world, folder, now, FreeSpace(Directory.Exists(worlds) ? worlds : workingDirectory),
+                    history.With(new WorldSample(now, world)));
                 Raise(instanceId);
             }
             catch (Exception ex)
@@ -170,6 +191,31 @@ public sealed class InstanceSizeSampler
 
         return total;
     }
+
+    /// <summary>Free bytes on the volume holding <paramref name="path"/>, or null.</summary>
+    /// <remarks>
+    /// By the volume's root, so a volume mounted into a folder rather than given a
+    /// letter reports the volume holding that folder's drive letter.
+    /// </remarks>
+    internal static long? FreeSpace(string path)
+    {
+        try
+        {
+            return Path.GetPathRoot(Path.GetFullPath(path)) is { Length: > 0 } root
+                ? new DriveInfo(root).AvailableFreeSpace
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The instances with a sample.</summary>
+    public IReadOnlyCollection<string> Known => [.. _samples.Keys];
+
+    /// <summary>Forgets an instance's samples, so a later instance given its id starts afresh.</summary>
+    public void Forget(string instanceId) => _samples.TryRemove(instanceId, out _);
 
     private void Raise(string instanceId) =>
         EventRaising.RaiseIndependently(

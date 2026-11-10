@@ -1,0 +1,131 @@
+@* D116: a face set by hand for one player, for the many GeyserMC has never seen.
+   From a skin PNG, which contacts nobody, or from a Java username typed here,
+   which asks Mojang once. The rules and sentences live in PlayerFaces. *@
+
+@using BedrockSentry.Services.Players
+@using Microsoft.AspNetCore.Components.Forms
+
+@inject PlayerFaces Faces
+
+<section class="face-set">
+    <h2>Face</h2>
+    <p class="lead">
+        Shown beside this player's name on every list, in place of GeyserMC's face or
+        the one made up from their XUID.
+    </p>
+
+    @* The picker sits directly in a provision-controls row, which wraps it (T317). *@
+    <label class="face-set-caption" for="face-set-skin">From a skin file (PNG)</label>
+    <div class="provision-controls">
+        <InputFile id="face-set-skin" OnChange="UploadAsync" accept=".png,image/png" disabled="@busy" class="form-control" />
+    </div>
+
+    <div class="face-set-row">
+        <label>
+            <span>Or from a Java username</span>
+            <input class="form-control" value="@javaName" maxlength="16" autocomplete="off" spellcheck="false"
+                   @oninput="e => javaName = e.Value?.ToString() ?? string.Empty" disabled="@busy" />
+        </label>
+        <button class="btn btn-secondary" @onclick="FromJavaAsync" disabled="@(busy || javaName.Trim().Length == 0)">
+            @(busy ? "Working…" : "Use this Java skin")
+        </button>
+    </div>
+    <p class="check-detail">
+        The Java username goes to Mojang once, when you click. The account holding a
+        name is not always the same person as the gamertag, so check the face you get.
+    </p>
+
+    @if (Faces.HasSetFace(Xuid))
+    {
+        <div class="face-set-row">
+            <button class="btn btn-outline-secondary" @onclick="Clear" disabled="@busy">Remove the face set here</button>
+        </div>
+    }
+
+    @if (message is not null)
+    {
+        <p class="@(failed ? "console-fault" : "check-detail")">@message</p>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Xuid { get; set; } = string.Empty;
+
+    /// <summary>Raised when the face changes, so the page redraws its image.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private string javaName = string.Empty;
+    private bool busy;
+    private bool failed;
+    private string? message;
+
+    private async Task UploadAsync(InputFileChangeEventArgs args)
+    {
+        await RunAsync(async () =>
+        {
+            byte[] skin;
+            try
+            {
+                // One byte past the limit, so an oversized file reads as not a skin
+                // rather than as a stream error.
+                await using var stream = args.File.OpenReadStream(PlayerFaces.MaxSkinBytes + 1);
+                using var buffer = new MemoryStream();
+                await stream.CopyToAsync(buffer);
+                skin = buffer.ToArray();
+            }
+            catch (IOException)
+            {
+                return SetFaceOutcome.NotASkin;
+            }
+
+            return Faces.SetFromSkin(Xuid, skin);
+        });
+    }
+
+    private async Task FromJavaAsync() =>
+        await RunAsync(() => Faces.SetFromJavaNameAsync(Xuid, javaName));
+
+    private async Task RunAsync(Func<Task<SetFaceOutcome>> set)
+    {
+        busy = true;
+        message = null;
+
+        try
+        {
+            var outcome = await set();
+            failed = outcome is not SetFaceOutcome.Set;
+            message = PlayerFaces.Describe(outcome);
+            if (!failed)
+            {
+                javaName = string.Empty;
+                await OnChanged.InvokeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            failed = true;
+            message = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task Clear()
+    {
+        try
+        {
+            Faces.ClearSetFace(Xuid);
+            failed = false;
+            message = "Face removed.";
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            failed = true;
+            message = ex.Message;
+        }
+    }
+}

@@ -19,6 +19,7 @@
    Settings page now, and a startup snapshot would have this page contradicting
    that one until the service restarted. *@
 @inject IOptionsMonitor<UpdateOptions> Update
+@inject BedrockSentry.Services.Updates.UpdateService SelfUpdates
 @inject ServiceUptime Uptime
 @inject InstanceRegistry Registry
 @inject ProcessSampler Sampler
@@ -90,17 +91,13 @@ else
                         </td>
                         <td class="num">@(instance.ServerVersion ?? "—")</td>
                         <td class="num" title="@(instance.ProcessId is { } pid ? $"process {pid}" : null)">
-                            @(Usage(instance) is { } used
-                                ? $"{used.WorkingSetBytes / 1024.0 / 1024.0:N0} MB"
-                                : "—")
+                            @(Usage(instance) is { } used ? used.Memory : "—")
                         </td>
                         <td class="num">
                             @(Usage(instance)?.CpuPercent is { } cpu ? $"{cpu:0.0}%" : "—")
                         </td>
-                        <td class="num" title="@(LastBackup(instance)?.ToString("u"))">
-                            @(LastBackup(instance) is { } backedUp
-                                ? UptimeFormatter.Format(DateTimeOffset.UtcNow - backedUp) + " ago"
-                                : "never")
+                        <td class="num" title="@(LastBackup(instance) is { } exact ? ClockText.Utc(exact) : null)">
+                            @LastBackupText.Since(LastBackup(instance), DateTimeOffset.UtcNow, !unreadBackups.Contains(instance.InstanceId))
                         </td>
                     </tr>
                 }
@@ -120,8 +117,8 @@ else
             <dt>Uptime</dt>
             <dd class="uptime-counter">@elapsedDisplay</dd>
             <dt>Started</dt>
-            <dd title="@Uptime.StartedUtc.ToString("u")">
-                @Uptime.StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+            <dd title="@ClockText.Utc(Uptime.StartedUtc)">
+                @ClockText.DateAndTimeWithSeconds(Uptime.StartedUtc.ToLocalTime())
             </dd>
         </dl>
     </div>
@@ -162,7 +159,7 @@ else
             @* Was the raw enum — "Notify", "Disabled" — while the Settings page said
                "when told" for the same setting. One phrase now, in Core. *@
             <dt>Applying</dt>
-            <dd>@UpdateModeText.Applying(Update.CurrentValue.Mode)</dd>
+            <dd>@UpdateModeText.Applying(Update.CurrentValue.Mode, SelfUpdates.Ledger)</dd>
         </dl>
     </div>
 </div>
@@ -207,6 +204,9 @@ else
     /// for the uptime counters.
     /// </remarks>
     private Dictionary<string, DateTimeOffset> lastBackups = [];
+
+    /// Instances whose backup history could not be read on the last pass.
+    private HashSet<string> unreadBackups = [];
 
     private DateTimeOffset lastBackupRead;
 
@@ -258,6 +258,7 @@ else
     private async Task ReadBackupsAsync()
     {
         var read = new Dictionary<string, DateTimeOffset>();
+        var unread = new HashSet<string>();
 
         foreach (var instance in instances)
         {
@@ -270,13 +271,14 @@ else
             }
             catch (IOException)
             {
-                // An unreadable history file means "we do not know", which the
-                // column already renders. It is not worth failing the status
-                // page over.
+                // An unreadable history file means "we do not know", which is not
+                // "never". It is not worth failing the status page over.
+                unread.Add(instance.InstanceId);
             }
         }
 
         lastBackups = read;
+        unreadBackups = unread;
         lastBackupRead = DateTimeOffset.UtcNow;
     }
 

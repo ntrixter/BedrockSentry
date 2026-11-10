@@ -8,7 +8,7 @@ namespace BedrockSentry.Core.Backups;
 /// <remarks>
 /// <para>
 /// One implementation for every strategy that writes timestamped artifacts. Both
-/// the ZIP and VSS strategies compose their names from <see cref="StampFormat"/>
+/// the ZIP and folder-copy strategies compose their names from <see cref="StampFormat"/>
 /// and read them back through here, so the format cannot be written one way and
 /// parsed another.
 /// </para>
@@ -50,6 +50,33 @@ public static class BackupRetentionPlan
     /// </summary>
     public const string StampFormat = "yyyyMMdd-HHmmss";
 
+    /// <summary>
+    /// What a save writes, given what the form actually rendered (<c>D76</c>).
+    /// </summary>
+    /// <param name="mode">The mode the form shows.</param>
+    /// <param name="shown">The number in the input, when there is one.</param>
+    /// <param name="stored">The value already in the settings.</param>
+    /// <remarks>
+    /// <para><strong>A form writes what it shows.</strong> The retention input is
+    /// not rendered at all in <see cref="BackupRetentionMode.KeepAll"/> mode, and
+    /// the tab seeds its field with <c>Math.Max(1, stored)</c> — so a save that was
+    /// about a schedule or a trigger rewrote a retention value nobody had been
+    /// shown, silently turning a stored 0 into a 1. Harmless while the mode stays
+    /// <c>KeepAll</c>, and not harmless the day somebody switches to
+    /// <see cref="BackupRetentionMode.Count"/>, where 1 means <em>delete every
+    /// archive but the newest</em>.</para>
+    ///
+    /// <para>Here rather than in the tab because there are two of them, one per
+    /// format, and a rule stated twice is enforced once. The tab cannot be reached
+    /// by the test suite at all, which is the other half of the same reason.</para>
+    /// </remarks>
+    public static BackupRetention AsSaved(BackupRetentionMode mode, int shown, int stored) =>
+        new()
+        {
+            Mode = mode,
+            Value = mode is BackupRetentionMode.KeepAll ? stored : shown,
+        };
+
     /// <summary>Composes an artifact name: <paramref name="prefix"/>, the stamp, then <paramref name="suffix"/>.</summary>
     public static string ComposeName(string prefix, DateTimeOffset startedUtc, string suffix = "") =>
         prefix + startedUtc.UtcDateTime.ToString(StampFormat, CultureInfo.InvariantCulture) + suffix;
@@ -87,13 +114,27 @@ public static class BackupRetentionPlan
     /// The artifact this backup run produced, never removed and never costing a
     /// keep slot. Null when the caller has none to protect.
     /// </param>
+    /// <param name="locked">
+    /// Artifacts an administrator has locked (<c>D68</c>). Never removed, <strong>and
+    /// never counted</strong> — keep 5 with 2 locked is 5 unlocked plus 2 locked on
+    /// disk, which is the only reading under which a lock does not silently shrink
+    /// the retention somebody asked for.
+    /// </param>
+    /// <remarks>
+    /// Locked names are dropped before the count is applied rather than filtered
+    /// out of the result afterwards. Filtering afterwards gives "never removed" and
+    /// not "never counted": five locked artifacts under a keep-5 rule would occupy
+    /// every slot and quietly delete every unlocked one. The two properties are one
+    /// line apart and only one arrangement has both.
+    /// </remarks>
     public static IReadOnlyList<string> NamesToRemove(
         IEnumerable<string> names,
         string prefix,
         string suffix,
         BackupRetention retention,
         DateTime nowUtc,
-        string? justWritten)
+        string? justWritten,
+        IReadOnlySet<string>? locked = null)
     {
         if (retention.Mode is BackupRetentionMode.KeepAll || retention.Value <= 0)
         {
@@ -104,6 +145,11 @@ public static class BackupRetentionPlan
 
         foreach (var name in names)
         {
+            if (locked is not null && locked.Contains(name))
+            {
+                continue;
+            }
+
             if (TryReadStamp(name, prefix, suffix, out var stamp))
             {
                 dated.Add((name, stamp));

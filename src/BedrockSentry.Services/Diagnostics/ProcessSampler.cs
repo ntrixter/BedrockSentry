@@ -10,7 +10,14 @@ namespace BedrockSentry.Services.Diagnostics;
 /// there has not been a previous one yet. Normalised across all cores, so 100
 /// means the whole machine rather than one core of it.
 /// </param>
-public sealed record ProcessUsage(long WorkingSetBytes, double? CpuPercent);
+public sealed record ProcessUsage(long WorkingSetBytes, double? CpuPercent)
+{
+    /// <summary>
+    /// The memory as the panel writes it: whole megabytes, because this number is
+    /// watched for growth and one decimal of a gigabyte hides fifty megabytes.
+    /// </summary>
+    public string Memory => $"{WorkingSetBytes / 1024.0 / 1024.0:N0} MB";
+}
 
 /// <summary>
 /// Reads memory and CPU for the servers the wrapper is running

@@ -43,6 +43,28 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      The companion pack, beside the executable in every build and every release
+      archive. CompanionPackSeeder adds it to the add-on library at each start
+      (D93), and scripts/ReleaseContents.ps1 fails a release without its files.
+      README.md is the repository's description of the folder, not part of the
+      pack, and CompanionPackTests hash exactly this set.
+    -->
+    <None Include="..\..\companion-pack\**\*"
+          Exclude="..\..\companion-pack\README.md"
+          LinkBase="companion-pack"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <!-- D109. The companion's resource pack, which defines the line outlines are drawn
+         with, beside it and seeded the same way. -->
+    <None Include="..\..\companion-resources\**\*"
+          Exclude="..\..\companion-resources\README.md"
+          LinkBase="companion-resources"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\BedrockSentry.Core\BedrockSentry.Core.csproj" />
     <ProjectReference Include="..\BedrockSentry.Services\BedrockSentry.Services.csproj" />
   </ItemGroup>

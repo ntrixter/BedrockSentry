@@ -80,10 +80,10 @@ public static class InstanceRoot
     /// Creates the folder and proves something can be written into it.
     /// </summary>
     /// <remarks>
-    /// The write is the point. The service runs as SYSTEM, and a path that exists
-    /// and is readable is not necessarily one it can create a world in — a network
-    /// share and a folder owned by another account both look fine until the first
-    /// server tries to start.
+    /// The write is the point. The service runs under its own account (milestone
+    /// 18.5), and a path that exists and is readable is not necessarily one it can
+    /// create a world in — a network share and a folder owned by another account
+    /// both look fine until the first server tries to start.
     /// </remarks>
     /// <exception cref="IOException"/>
     /// <exception cref="UnauthorizedAccessException"/>

@@ -23,11 +23,22 @@ public sealed class BackupScheduler(
     /// <summary>
     /// A minute, not the restart scheduler's ten seconds: backups have no player
     /// countdown to land on time, so the tick only has to be finer than the
-    /// shortest schedule anyone can set. That is now a minute rather than an
-    /// hour, which this still satisfies — a minute schedule simply fires on the
-    /// tick after it comes due.
+    /// shortest schedule anyone can set, which is a minute. It takes
+    /// <see cref="DueTolerance"/> to make that true.
     /// </summary>
     public static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// How far ahead of its moment an interval run is taken (<c>T288</c>).
+    /// </summary>
+    /// <remarks>
+    /// A run is anchored on the tick that started it, and the tick one interval
+    /// later is observed a few milliseconds earlier or later than that one was.
+    /// Compared exactly, a tick that landed short waited a whole tick more, so a
+    /// one-minute schedule ran after one minute or two, at random. Half a tick puts
+    /// the run on the tick nearest its moment and keeps it off the tick before.
+    /// </remarks>
+    public static readonly TimeSpan DueTolerance = TickInterval / 2;
 
     /// <summary>See <see cref="RestartScheduler.TimeZone"/>.</summary>
     public TimeZoneInfo TimeZone { get; init; } = TimeZoneInfo.Local;
@@ -46,6 +57,14 @@ public sealed class BackupScheduler(
 
     private readonly ConcurrentDictionary<string, bool> _inFlight =
         new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether a backup of this instance started here is still running.</summary>
+    /// <remarks>
+    /// Read-only, for a test to wait on. The slot is released after the run's record
+    /// is written, so a caller that waits for the record alone can ask for the next
+    /// run before the release and be dropped as a run still in flight.
+    /// </remarks>
+    internal bool IsInFlight(string instanceId) => _inFlight.ContainsKey(instanceId);
 
     /// <summary>
     /// When each instance last had an activity-triggered backup, for the
@@ -136,7 +155,10 @@ public sealed class BackupScheduler(
             _ => false,
         };
 
-        if (!wanted)
+        // A join or leave during a claimed job, such as a sync, takes no backup:
+        // the job is stopping or replacing the world this would copy, and the
+        // next join or leave after it asks again.
+        if (!wanted || supervisor.Status.ClaimedFor is not null)
         {
             return;
         }
@@ -208,18 +230,25 @@ public sealed class BackupScheduler(
 
         if (schedule.Mode is RestartScheduleMode.EveryNHours or RestartScheduleMode.EveryNMinutes)
         {
-            if (schedule.Interval is not { } interval)
-            {
-                return;
-            }
-
             var anchor = await AnchorAsync(supervisor.InstanceId, now, cancellationToken).ConfigureAwait(false);
 
-            // Overdue means due now — a backup is not a restart, where jumping
-            // to the next slot is the kinder behaviour. If the wrapper was down
-            // past the interval, the world has unarchived changes and waiting
-            // another period would stretch the exposure further.
-            due = now - anchor >= interval;
+            // Through NextBackup rather than inline, because the Backups tab
+            // renders the same moment as a countdown and a card that disagrees
+            // with the thing it is describing is this repository's recurring
+            // defect in the form that lies to somebody (`T248`). Both callers
+            // want the same answer here — the panel wants the moment, this wants
+            // whether it has passed — which is what makes sharing it safe.
+            //
+            // Overdue means due now, and that lives in the shared rule: a backup
+            // is not a restart, where jumping to the next slot is the kinder
+            // behaviour. If the wrapper was down past the interval, the world has
+            // unarchived changes and waiting another period would stretch the
+            // exposure further.
+            //
+            // The card shows the moment itself; DueTolerance only decides which tick
+            // takes it.
+            due = NextBackup.For(
+                supervisor.Definition.Backup, anchor, now + DueTolerance, TimeZone).IsDue;
         }
         else
         {
@@ -247,9 +276,12 @@ public sealed class BackupScheduler(
 
     private async Task RunAsync(InstanceSupervisor supervisor, CancellationToken cancellationToken)
     {
+        var id = supervisor.InstanceId;
         var now = timeProvider.GetUtcNow();
-        _lastAttempt[supervisor.InstanceId] = now;
-        _nextDaily.TryRemove(supervisor.InstanceId, out _);
+        var hadAttempt = _lastAttempt.TryGetValue(id, out var lastAttempt);
+        var hadDaily = _nextDaily.TryGetValue(id, out var nextDaily);
+        _lastAttempt[id] = now;
+        _nextDaily.TryRemove(id, out _);
 
         try
         {
@@ -273,6 +305,28 @@ public sealed class BackupScheduler(
         catch (OperationCanceledException)
         {
             // Host shutting down; nothing to record.
+        }
+        catch (InstanceClaimedException claimed)
+        {
+            // A job claims the server, such as a sync, and the orchestrator refused
+            // before attempting anything (`BackupClaimRule`). It stays due, so the
+            // first tick after the claim ends takes it.
+            if (hadAttempt)
+            {
+                _lastAttempt[id] = lastAttempt;
+            }
+            else
+            {
+                _lastAttempt.TryRemove(id, out _);
+            }
+
+            if (hadDaily)
+            {
+                _nextDaily[id] = nextDaily;
+            }
+
+            logger.LogDebug(
+                "Scheduled backup of {InstanceId} waits for {Purpose}", id, claimed.Purpose);
         }
         catch (Exception ex)
         {
@@ -298,7 +352,7 @@ public sealed class BackupScheduler(
         }
 
         var records = await history.ReadAsync(instanceId, cancellationToken).ConfigureAwait(false);
-        var anchor = records.Count > 0 ? records[^1].FinishedUtc : now;
+        var anchor = NextBackup.AnchorFrom(records, now);
 
         _lastAttempt[instanceId] = anchor;
         return anchor;

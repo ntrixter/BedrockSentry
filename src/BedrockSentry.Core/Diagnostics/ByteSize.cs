@@ -5,7 +5,7 @@ namespace BedrockSentry.Core.Diagnostics;
 /// </summary>
 /// <remarks>
 /// Moved here from <c>HostPanel.razor</c> on 2026-09-04, unchanged, because
-/// <see cref="VolumeDeduplication.Describe"/> needed it and a second copy in
+/// <see cref="VolumeDeduplication"/> needed it and a second copy in
 /// <c>Core</c> would have been the <c>T126</c> shape all over again: two
 /// formatters that agree today and drift the first time one is touched.
 /// Binary units, one decimal, and the largest unit that keeps the number at or

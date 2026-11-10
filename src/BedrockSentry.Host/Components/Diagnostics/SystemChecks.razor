@@ -1,20 +1,24 @@
 @* Firewall and Defender: what is set up, what is not, and a button for each
-   thing BedrockSentry can do about it. *@
+   thing BedrockSentry can do about it. Grouped by server, with the machine's
+   own rows last; given `Only`, it is that one server's group and nothing else,
+   which is how a server's Status tab shows its own. *@
 @implements IDisposable
 
 @using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Core.Instances
 @using BedrockSentry.Services.Diagnostics
 @using BedrockSentry.Services.Instances
 
 @inject InstanceRegistry Registry
-@inject FirewallInspector Firewall
-@inject DefenderInspector Defender
-@inject AppIsolationInspector AppIsolation
+@inject IFirewallService Firewall
+@inject IDefenderService Defender
+@inject ILoopbackExemptionService AppIsolation
+@inject PrivilegedWork Work
 
 <h2>Reachability and scanning</h2>
 
 <p class="lead">
-    The two things that make a working server look broken. Neither is changed
+    The two things that make @(Only is null ? "a working server" : "this server") look broken. Neither is changed
     unless you press a button.
 </p>
 
@@ -34,17 +38,35 @@ else if (checks.Count == 0)
 }
 else
 {
-    <div class="prop-panel">
-        @foreach (var item in checks)
+    @* Insertion order is the order the rows were built in: servers by name,
+       then this machine, so GroupBy keeps the page's shape. *@
+    @foreach (var group in checks.GroupBy(c => c.Group))
+    {
+        @if (Only is null)
         {
-            <SystemCheckRow Title="@item.Title"
-                            Check="@item.Check"
-                            Applying="@(busy == item.Key)"
-                            Disabled="@(busy is not null)"
-                            Outcome="@Outcome(item)"
-                            OnFix="@(() => FixAsync(item))" />
+            var waiting = group.Count(c => c.Check is { State: SystemCheckState.Missing });
+
+            <h3 class="prop-group check-group">
+                @group.Key
+                @if (waiting > 0)
+                {
+                    <span class="prop-group-count">@waiting need@(waiting == 1 ? "s" : "") attention</span>
+                }
+            </h3>
         }
-    </div>
+
+        <div class="prop-panel">
+            @foreach (var item in group)
+            {
+                <SystemCheckRow Title="@item.Title"
+                                Check="@item.Check"
+                                Applying="@(busy == item.Key)"
+                                Disabled="@(busy is not null || running)"
+                                Outcome="@Outcome(item)"
+                                OnFix="@(() => FixAsync(item))" />
+            }
+        </div>
+    }
 
     <p class="console-hint">
         Rechecked when you reload this page.
@@ -55,9 +77,24 @@ else
 }
 
 @code {
+    /// <summary>One server's rows only, without the machine's own.</summary>
+    [Parameter]
+    public InstanceSupervisor? Only { get; set; }
+
+    private const string MachineGroup = "This machine";
+
+    /// Which read a row is decided against, so a fix re-reads that one alone
+    /// rather than every probe on the page.
+    private enum Source { Firewall, Defender, Isolation, File }
+
     private sealed class Item
     {
         public required string Key { get; init; }
+
+        /// The heading the row sits under: its server's name, or this machine.
+        public required string Group { get; init; }
+
+        public required Source Source { get; init; }
 
         /// What the row is called before it has an answer to call itself.
         public required string Title { get; init; }
@@ -75,14 +112,14 @@ else
     private bool running;
 
     /// The machine's answers, read once per run and shared by every row.
-    private FirewallInspector.Rules firewall = new(false, string.Empty, string.Empty);
-    private DefenderInspector.Exclusions defender = new(false, string.Empty, string.Empty);
+    private FirewallRules firewall = new(false, string.Empty, string.Empty);
+    private DefenderExclusions defender = new(false, string.Empty, string.Empty);
 
     private CancellationTokenSource? cts;
 
-    /// Kept beside the checks rather than on them: a fix re-runs every check,
-    /// which rebuilds the list, and an outcome stored on an Item would vanish at
-    /// the moment it became worth reading.
+    /// Kept beside the checks rather than on them: "Check again" rebuilds the
+    /// list, and an outcome stored on an Item would vanish at the moment it
+    /// became worth reading.
     private readonly Dictionary<string, SystemCheckFix> outcomes = [];
 
     private SystemCheckFix? Outcome(Item item) =>
@@ -119,30 +156,136 @@ else
             // than a moment with no rows at all.
             var built = new List<Item>();
 
-            foreach (var supervisor in Registry.All.OrderBy(s => s.Definition.Name))
+            List<InstanceSupervisor> servers = Only is { } only
+                ? [only]
+                : [.. Registry.All.OrderBy(s => s.Definition.Name)];
+
+            foreach (var supervisor in servers)
             {
                 var name = supervisor.Definition.Name;
                 var directory = supervisor.WorkingDirectory;
 
-                foreach (var port in PortInspector.PortsOf(directory)
-                    .Where(p => p.Key is "server-port")
-                    .Select(p => p.Port))
+                // Which program a firewall rule is scoped to decides whether it
+                // lets THIS server in (`T207`). Composed from the instance's own
+                // definition rather than assumed, because the executable name is
+                // configurable.
+                var executable = Path.Combine(directory, supervisor.Definition.Executable);
+
+                // The protocol travels with the number (`D70`). A NetherNet
+                // server's server-port is bound as a TCP listener, so a row that read UDP
+                // rules reported it closed against a TCP rule that already allowed
+                // it — and its fix added a UDP rule opening nothing the server
+                // uses. The key carries the protocol too, or the two rows for an
+                // instance whose transport is unrecognised collide.
+                //
+                // ReachableFor rather than PortsOf, and that is the whole of
+                // `T225`. PortsOf answers the LAUNCH question and deliberately
+                // leaves out a pinned play window; a firewall row asks whether
+                // somebody outside can reach this server, which is a different
+                // question with a different answer. Built from the launch model,
+                // applying the panel's own suggested server-udp-ports line made the
+                // play ports vanish from this section entirely — the administrator
+                // did as they were told and the panel went quieter.
+                //
+                // `T411`: a rule this server already has on an old port is moved
+                // rather than joined by a second one, so a port change leaves one rule
+                // per socket and nothing open where the server no longer listens.
+                var sockets = PortInspector.ReachableOn(directory);
+
+                foreach (var socket in sockets)
                 {
+                    var ports = socket.Ports;
+                    var protocol = socket.Protocol;
+
                     built.Add(new Item
                     {
-                        Key = $"firewall:{supervisor.InstanceId}:{port}",
-                        Title = FirewallInspector.CheckTitle(name, port),
-                        Read = () => FirewallInspector.Check(firewall, name, port),
-                        Fix = () => Firewall.AllowAsync(name, port),
+                        Group = name,
+                        Source = Source.Firewall,
+                        Key = $"firewall:{supervisor.InstanceId}:{FirewallInspector.Name(protocol)}:{ports}",
+                        Title = FirewallInspector.CheckTitle(name, ports, protocol),
+                        Read = () => FirewallInspector.Check(
+                            firewall, name, ports, protocol, executable, Work.FixesUnavailable,
+                            FirewallRuleSync.Stale(firewall, name, sockets)),
+                        Fix = () => FirewallRuleSync.Stale(firewall, name, sockets).Count > 0
+                            ? Firewall.UpdateServerRulesAsync(supervisor.InstanceId, name, sockets)
+                            : Firewall.AllowAsync(supervisor.InstanceId, name, ports, protocol),
                     });
                 }
 
+                @* D73. A key generated in memory is harmless on a server somebody
+                   restarts by hand; this wrapper restarts them on a schedule, on a
+                   Bedrock update and after a crash, so it is the reason players
+                   keep being asked to trust the server again. The fix is a console
+                   write, so it can only act while the server is up -- reported
+                   either way, offered only when there is somewhere to send it. *@
                 built.Add(new Item
                 {
+                    Group = name,
+                    Source = Source.File,
+                    Key = $"identity:{supervisor.InstanceId}",
+                    Title = ServerIdentity.CheckTitle(name),
+                    Read = () => ServerIdentity.Check(
+                        ServerIdentity.StateOf(directory),
+                        supervisor.Status.State is InstanceState.Running,
+                        name),
+                    Fix = async () =>
+                    {
+                        // T235. The watch is created BEFORE the send, which is the
+                        // ordering ConsoleWatch exists to enforce (T170): a reply
+                        // that arrives while nobody is looking is a reply nobody
+                        // can report. Nothing is polled and no cursor can go stale.
+                        using var refused = ConsoleWatch.For(
+                            supervisor.Console, line => ServerIdentity.IsRefusal(line.Message));
+
+                        try
+                        {
+                            await supervisor.SendCommandAsync(ServerIdentity.SaveCommand);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Stopping between the render and the press is an
+                            // ordinary race, not a fault: the row is rebuilt from
+                            // the registry on a timer and the server is a separate
+                            // process somebody else can stop.
+                            return new SystemCheckFix(false, ex.Message);
+                        }
+
+                        // A build without the command answers "Unknown command:
+                        // serveridentity." and this used to return Succeeded: true
+                        // anyway -- a refusal in the success style, on a row that
+                        // could then never go green.
+                        var reply = await refused.WaitAsync(
+                            TimeSpan.FromSeconds(3), TimeProvider.System);
+
+                        if (reply is not null)
+                        {
+                            return new SystemCheckFix(
+                                false,
+                                $"This server refused {ServerIdentity.SaveCommand}: "
+                                + $"{reply.Message} Its Bedrock build does not have that command.");
+                        }
+
+                        // TRUE MEANS NOT REFUSED, and deliberately not "the key
+                        // exists" -- that is a claim only the file can make, and
+                        // the row reads the file again on the next pass. The
+                        // deadline passing lands here too: no answer is not a
+                        // refusal, and reporting silence as failure would fail a
+                        // command that worked on a busy console.
+                        return new SystemCheckFix(
+                            true,
+                            $"{ServerIdentity.SaveCommand} was sent and was not refused. This row "
+                            + "reads the key file again on the next check.");
+                    },
+                });
+
+                built.Add(new Item
+                {
+                    Group = name,
+                    Source = Source.Defender,
                     Key = $"defender:{supervisor.InstanceId}",
                     Title = DefenderInspector.CheckTitle(name),
                     Read = () => DefenderInspector.Check(defender, name, directory),
-                    Fix = () => Defender.ExcludeAsync(directory),
+                    Fix = () => Defender.ExcludeAsync(supervisor.InstanceId, directory),
                 });
             }
 
@@ -157,13 +300,13 @@ else
             // read once here and every row is decided against them. Together
             // rather than in turn: they are unrelated processes and no answer
             // depends on another.
+            // A server's own tab has no local-Minecraft rows, so it does not ask.
             var firewallRead = Firewall.ReadAsync(token);
             var defenderRead = Defender.ReadAsync(token);
-            var isolationRead = AppIsolation.ReadAsync(token);
+            var isolationRead = Only is null ? AppIsolation.ReadAsync(token) : null;
 
             firewall = await firewallRead;
             defender = await defenderRead;
-            var isolation = await isolationRead;
 
             foreach (var item in built)
             {
@@ -174,7 +317,10 @@ else
             // are not known until the read returns — a machine with no Minecraft
             // client on it has no row here at all, which is the answer rather than
             // a Good nobody needs to think about.
-            AddLocalMinecraft(built, isolation);
+            if (isolationRead is not null)
+            {
+                AddLocalMinecraft(built, await isolationRead);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -191,7 +337,7 @@ else
     }
 
     /// One row per Minecraft installed here, and none at all when there is none.
-    private void AddLocalMinecraft(List<Item> built, AppIsolationInspector.Isolation isolation)
+    private void AddLocalMinecraft(List<Item> built, LoopbackExemptions isolation)
     {
         if (!isolation.Read)
         {
@@ -199,10 +345,12 @@ else
             // against it — Unavailable carries no fix.
             built.Add(new Item
             {
+                Group = MachineGroup,
+                Source = Source.Isolation,
                 Key = "isolation:unknown",
                 Title = "Local Minecraft",
-                Check = AppIsolationInspector.Unavailable(isolation.Error),
-                Read = () => AppIsolationInspector.Unavailable(isolation.Error),
+                Check = AppIsolationInspector.Unavailable(isolation.Error, Work.FixesUnavailable),
+                Read = () => AppIsolationInspector.Unavailable(isolation.Error, Work.FixesUnavailable),
                 Fix = () => throw new InvalidOperationException("Nothing to apply."),
             });
 
@@ -213,12 +361,61 @@ else
         {
             built.Add(new Item
             {
+                Group = MachineGroup,
+                Source = Source.Isolation,
                 Key = $"isolation:{package.Family}",
                 Title = AppIsolationInspector.CheckTitle(package.Family),
                 Check = AppIsolationInspector.Check(package),
                 Read = () => AppIsolationInspector.Check(package),
                 Fix = () => AppIsolation.ExemptAsync(package.Family),
             });
+        }
+    }
+
+    /// <summary>
+    /// Reads one source again and re-decides every row that uses it. All of a
+    /// source's rows, not the pressed one alone: they share one read, and a row
+    /// left on the older read would disagree with its neighbour about the same
+    /// firewall.
+    /// </summary>
+    private async Task RecheckAsync(Source source)
+    {
+        if (checks is null)
+        {
+            return;
+        }
+
+        var token = cts?.Token ?? CancellationToken.None;
+
+        try
+        {
+            switch (source)
+            {
+                case Source.Firewall:
+                    firewall = await Firewall.ReadAsync(token);
+                    break;
+                case Source.Defender:
+                    defender = await Defender.ReadAsync(token);
+                    break;
+                case Source.Isolation:
+                    // The package list is part of the answer, so its rows are
+                    // rebuilt rather than re-decided.
+                    var isolation = await AppIsolation.ReadAsync(token);
+                    checks.RemoveAll(c => c.Source is Source.Isolation);
+                    AddLocalMinecraft(checks, isolation);
+                    return;
+                case Source.File:
+                    break;
+            }
+
+            foreach (var row in checks.Where(c => c.Source == source))
+            {
+                row.Check = row.Read();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away mid-probe.
         }
     }
 
@@ -243,8 +440,10 @@ else
 
             // Re-read rather than assuming the fix worked. A cmdlet can report
             // success and still leave a machine where policy overrode it, and
-            // the check is the only thing that actually knows.
-            await RunAsync();
+            // the check is the only thing that actually knows. Only the read
+            // this row is decided against: every other row keeps its answer
+            // rather than going back to "Checking…" for a probe it does not use.
+            await RecheckAsync(item.Source);
         }
         catch (Exception ex)
         {

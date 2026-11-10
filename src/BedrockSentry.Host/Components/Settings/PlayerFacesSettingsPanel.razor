@@ -1,0 +1,68 @@
+@* D47, answered by the operator 2026-10-15: faces beside player names, off by
+   default because switching them on sends every player's XUID to a third party.
+   The switch says who, so it is a disclosure as well as a setting. *@
+
+@using BedrockSentry.Core.Configuration
+@using BedrockSentry.Services.Players
+@using Microsoft.Extensions.Options
+
+@inject IOptionsMonitor<PlayerFacesOptions> Options
+@inject PlayerFacesSettingsStore Store
+
+<h2>Player faces</h2>
+
+<div class="prop-panel">
+    <div class="prop">
+        <div class="prop-edit">
+            <label class="field-row">
+                <input type="checkbox" @bind="enabled" @bind:after="SaveAsync" disabled="@saving" />
+                Show players' faces from @PlayerFacesOptions.SourceName
+            </label>
+            @if (error is not null)
+            {
+                <p class="text-danger">Could not save: @error</p>
+            }
+        </div>
+        <div class="prop-doc">
+            <p>
+                Each player's face appears beside their name on the player lists. Turning
+                this on sends each player's XUID to GeyserMC, which looks up the skin that
+                player last used on a Geyser server.
+            </p>
+            <span class="prop-allowed">
+                Off, nothing is sent and every player gets a face made up from their XUID.
+                A face is fetched once and kept for a week. A player GeyserMC has never seen
+                keeps the made-up face. Any player's face can also be set by hand on their
+                profile, from a skin file or a Java username, whether this is on or off.
+            </span>
+        </div>
+    </div>
+</div>
+
+@code {
+    private bool enabled;
+    private bool saving;
+    private string? error;
+
+    protected override void OnInitialized() => enabled = Options.CurrentValue.Enabled;
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        error = null;
+
+        try
+        {
+            await Store.SetEnabledAsync(enabled);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            error = ex.Message;
+            enabled = Options.CurrentValue.Enabled;
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

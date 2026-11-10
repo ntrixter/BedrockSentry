@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using BedrockSentry.Core.Instances;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32.SafeHandles;
 
 namespace BedrockSentry.Services.Instances;
 
@@ -24,6 +26,21 @@ public sealed class ProcessOrphanInspector : IOrphanInspector
 
     public ProcessOrphanInspector(ILogger<ProcessOrphanInspector> log) => _log = log;
 
+    public Task<IReadOnlyList<OrphanedServer>> FindAsync(
+        string instanceId,
+        string workingDirectory,
+        IReadOnlyCollection<int> ours,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Find(workingDirectory, ours));
+
+    public Task<OrphanTermination> TerminateAsync(
+        string instanceId,
+        int processId,
+        string workingDirectory,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Terminate(processId, workingDirectory));
+
+    /// <summary>The process-table walk behind <see cref="FindAsync"/>.</summary>
     public IReadOnlyList<OrphanedServer> Find(string workingDirectory, IReadOnlyCollection<int> ours)
     {
         if (string.IsNullOrWhiteSpace(workingDirectory))
@@ -69,6 +86,7 @@ public sealed class ProcessOrphanInspector : IOrphanInspector
         return found;
     }
 
+    /// <summary>The guarded kill behind <see cref="TerminateAsync"/>.</summary>
     public OrphanTermination Terminate(int processId, string workingDirectory)
     {
         Process process;
@@ -88,10 +106,24 @@ public sealed class ProcessOrphanInspector : IOrphanInspector
 
         using (process)
         {
+            // Pinned before anything is read. Process opens a fresh handle by id for
+            // each call until its SafeHandle is taken, so without this the check
+            // and the kill could reach two different processes that held the id in
+            // turn. Taken, the check reads and Kill ends the process this handle names.
+            try
+            {
+                _ = process.SafeHandle;
+            }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+            {
+                return new OrphanTermination(
+                    false, $"PID {processId} could not be opened, so it was left alone: {ex.Message}");
+            }
+
             // Re-checked here, against this process, now — see the interface. A
             // recycled id is the whole reason, and it is the difference between
             // ending an orphan and ending whatever inherited its number.
-            if (ExecutablePathOf(process) is not { } path)
+            if (PinnedExecutablePathOf(process) is not { } path)
             {
                 return new OrphanTermination(
                     false,
@@ -99,12 +131,16 @@ public sealed class ProcessOrphanInspector : IOrphanInspector
                     + "bedrock_server running from this server's own folder is ever ended.");
             }
 
-            if (!string.Equals(process.ProcessName, BedrockProcessName, StringComparison.OrdinalIgnoreCase)
+            // The name from the path the handle answered with, not ProcessName,
+            // which is read by id from the process table.
+            var name = Path.GetFileNameWithoutExtension(path);
+
+            if (!string.Equals(name, BedrockProcessName, StringComparison.OrdinalIgnoreCase)
                 || !IsUnder(path, workingDirectory))
             {
                 return new OrphanTermination(
                     false,
-                    $"PID {processId} is {process.ProcessName} running from {path}, which is not "
+                    $"PID {processId} is {name} running from {path}, which is not "
                     + "this server's own folder. It was left alone.");
             }
 
@@ -148,6 +184,29 @@ public sealed class ProcessOrphanInspector : IOrphanInspector
             return null;
         }
     }
+
+    /// <summary>
+    /// The executable behind a process whose handle is pinned, read through that
+    /// handle on Windows; null when it cannot be read.
+    /// </summary>
+    private static string? PinnedExecutablePathOf(Process process)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return ExecutablePathOf(process);
+        }
+
+        var buffer = new char[32_768];
+        var length = buffer.Length;
+
+        return QueryFullProcessImageName(process.SafeHandle, 0, buffer, ref length)
+            ? new string(buffer, 0, length)
+            : null;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "QueryFullProcessImageNameW")]
+    private static extern bool QueryFullProcessImageName(
+        SafeProcessHandle process, int flags, [Out] char[] buffer, ref int size);
 
     private static DateTimeOffset? StartTimeOf(Process process)
     {

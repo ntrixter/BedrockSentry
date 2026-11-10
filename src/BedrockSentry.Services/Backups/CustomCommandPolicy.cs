@@ -1,6 +1,6 @@
 using BedrockSentry.Core.Backups;
 using BedrockSentry.Core.Configuration;
-using Microsoft.Extensions.Options;
+using BedrockSentry.Services.Configuration;
 
 namespace BedrockSentry.Services.Backups;
 
@@ -15,16 +15,12 @@ namespace BedrockSentry.Services.Backups;
 /// recurring defect — and here it would mean a panel that says blocked over a
 /// command that runs, or the reverse.</para>
 ///
-/// <para><strong>The direction that must be live is the opposite of
-/// <c>DestructiveConfirmPolicy</c>'s, and that is worth noticing rather than
-/// copying past.</strong> There the dangerous state is <em>off</em>, so turning
-/// the check back on must not need a restart. Here the dangerous state is
-/// <em>on</em>, so turning it off is the direction that matters: an administrator
-/// who decides the command box was a mistake must be able to close it without
-/// waiting for a restart window. <see cref="IOptionsMonitor{T}"/> gives both, and
-/// the config file is registered with <c>reloadOnChange</c>.</para>
+/// <para>Read from <see cref="IInstallPolicy"/>, never from the data root's config:
+/// the service's own account can write that file, and a leftover <c>true</c> there
+/// would keep the gate open. <see cref="InstallPolicyFile"/> reads on every call, so
+/// turning it off takes effect at once.</para>
 /// </remarks>
-public sealed class CustomCommandPolicy(IOptionsMonitor<BackupPolicyOptions> options)
+public sealed class CustomCommandPolicy(IInstallPolicy policy)
 {
     /// <summary>Why it is off, in the words the operator reads.</summary>
     public const string Reason =
@@ -38,16 +34,15 @@ public sealed class CustomCommandPolicy(IOptionsMonitor<BackupPolicyOptions> opt
     /// drift from the setting it describes.
     /// </summary>
     public static readonly string HowToEnable =
-        "Re-run install.ps1 with -AllowCustomBackupCommand (it still takes -ZipPath), or set "
-        + $"{BackupPolicyOptions.SectionName}:{nameof(BackupPolicyOptions.AllowCustomCommand)} "
-        + "to true in the data root's config\\bedrocksentry.json, which only an administrator "
-        + "can write.";
+        "Re-run install.ps1 with -AllowCustomBackupCommand (it still takes -ZipPath). It writes "
+        + $"{InstallPolicyFile.AllowCustomBackupCommandKey} into {InstallPolicyFile.FileName} in the "
+        + "install folder, which only an administrator can write.";
 
     /// <summary>The banner the Backups tab shows in place of a working control.</summary>
     public static readonly string Waiver = $"{Reason} {HowToEnable}";
 
     /// <summary>Whether a custom command may run. Read live, never captured.</summary>
-    public bool Allowed => options.CurrentValue.AllowCustomCommand;
+    public bool Allowed => policy.AllowCustomBackupCommand;
 
     /// <summary>
     /// The block for <paramref name="strategyName"/>, or null when it may run.

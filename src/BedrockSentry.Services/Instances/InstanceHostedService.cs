@@ -17,6 +17,15 @@ namespace BedrockSentry.Services.Instances;
 /// stop timeout exceeds the host's shutdown timeout, which exceeds the total
 /// instance drain. Inverting any pair force-kills a server that is legitimately
 /// mid-save.
+/// <para>
+/// The drain runs in <see cref="StoppingAsync"/>, which the host calls before any
+/// hosted service's <c>StopAsync</c>, and not in its turn among them (<c>T112</c>).
+/// Services stop in reverse registration order and the web server is registered
+/// last, so it stops first, and it waits for its open connections until
+/// <c>HostOptions.ShutdownTimeout</c>. A panel tab that reconnects as the stop begins
+/// holds it that long, and a drain queued behind it began at the moment Windows was
+/// told the service had stopped.
+/// </para>
 /// </summary>
 public sealed class InstanceHostedService(
     InstanceRegistry registry,
@@ -25,7 +34,9 @@ public sealed class InstanceHostedService(
     IPlayerStore? players = null,
     IStartPreflight? startPreflight = null,
     IOrphanInspector? orphans = null,
-    TimeProvider? time = null) : IHostedService
+    TimeProvider? time = null,
+    IBeforeLaunch? beforeLaunch = null,
+    ServersToStartAgain? startAgain = null) : IHostedLifecycleService
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
 
@@ -37,6 +48,24 @@ public sealed class InstanceHostedService(
     private CancellationTokenSource? _recheck;
 
     private Task? _recheckLoop;
+
+    /// <summary>
+    /// The re-check loop, once one has been started, so a caller can wait for it
+    /// to finish rather than for a length of time (<c>T211</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para><strong>Exposed for the test that asserts the loop STOPS.</strong> A
+    /// negative assertion — nothing more was asked — cannot poll for an absence,
+    /// so it has to settle against a positive event, and the only honest one here
+    /// is the loop completing. What it replaced was a fixed <c>Task.Delay(60)</c>,
+    /// which is the `T194` shape: a wall-clock sleep that happens not to have
+    /// failed yet is not evidence, and it went red on a loaded CI runner where the
+    /// same test took fifteen times as long as it does locally.</para>
+    ///
+    /// <para>Null until something refuses to start, and it never faults: every
+    /// exit from the loop is a return.</para>
+    /// </remarks>
+    internal Task? RecheckLoop => _recheckLoop;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -73,6 +102,10 @@ public sealed class InstanceHostedService(
                 + "wrapper will not be detected before a launch");
         }
 
+        // Wired the same way, before any auto-start: a launch on boot is a launch
+        // after a sync too, and must take its structures pack off (D103).
+        registry.BeforeLaunch = beforeLaunch;
+
         if (playerDatabase is not null)
         {
             // Before anything starts: a server coming up and writing sessions
@@ -106,13 +139,27 @@ public sealed class InstanceHostedService(
 
         var refused = new List<InstanceSupervisor>();
 
+        // Milestone 13.5: the servers the wrapper's update stopped come back whether or
+        // not they auto-start, and each launch moves its companion to this build's.
+        var again = startAgain?.Take().ToHashSet(StringComparer.Ordinal) ?? [];
+
         foreach (var supervisor in registry.All)
         {
-            if (!supervisor.Definition.AutoStart)
+            var startingAgain = again.Contains(supervisor.InstanceId);
+
+            if (!supervisor.Definition.AutoStart && !startingAgain)
             {
                 logger.LogInformation(
                     "Instance {InstanceId} is configured not to auto-start", supervisor.InstanceId);
                 continue;
+            }
+
+            if (startingAgain && !supervisor.Definition.AutoStart)
+            {
+                logger.LogInformation(
+                    "Instance {InstanceId} was running when BedrockSentry updated itself; starting it again",
+                    supervisor.InstanceId);
+                Notice(supervisor, "Starting again: it was running when BedrockSentry updated itself.");
             }
 
             try
@@ -280,7 +327,27 @@ public sealed class InstanceHostedService(
         RefusedStartRetry.StillWorthRetrying(
             supervisor.Status, supervisor.Definition.AutoStart, supervisor.Definition.Retired);
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>
+    /// The drain, before anything else in the host stops (<c>T112</c>).
+    /// </summary>
+    public Task StoppingAsync(CancellationToken cancellationToken) => DrainAsync();
+
+    /// <summary>
+    /// A second pass, which finds nothing running unless something started a server
+    /// after <see cref="StoppingAsync"/> drained them.
+    /// </summary>
+    public Task StopAsync(CancellationToken cancellationToken) => DrainAsync();
+
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>
+    /// Stops the refused-start re-check, then every running instance in parallel.
+    /// </summary>
+    private async Task DrainAsync()
     {
         // First, and before the list below is taken. A re-check that fired during
         // the drain would start a server the host is shutting down, and it would

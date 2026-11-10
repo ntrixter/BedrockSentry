@@ -19,6 +19,11 @@ namespace BedrockSentry.Services.Instances;
 /// none. An effective tier rather than a blank, because "no override" and the
 /// default look identical from inside the game.
 /// </param>
+/// <param name="Deaths">
+/// From the player's summary on this server; null for a row nobody has played
+/// from, and when the companion pack has never reported here (<c>T293</c>).
+/// </param>
+/// <param name="LastKnownPosition">Where their latest session here ended, when the pack said.</param>
 public sealed record InstanceAccessRow(
     string Gamertag,
     string? Nickname,
@@ -30,7 +35,9 @@ public sealed record InstanceAccessRow(
     bool IsOnline,
     TimeSpan Playtime,
     TimeSpan? Session,
-    DateTimeOffset? LastSeenUtc)
+    DateTimeOffset? LastSeenUtc,
+    DeathTally? Deaths = null,
+    BlockPosition? LastKnownPosition = null)
 {
     /// <summary>What to put in the Player column.</summary>
     public string Display => Nickname ?? (NameKnown ? Gamertag : "Unknown player");
@@ -66,6 +73,55 @@ public sealed record InstanceAccessRow(
 /// </remarks>
 public static class InstanceAccessView
 {
+    /// <summary>
+    /// The tier a player gets on this server when <c>permissions.json</c> does not name
+    /// them: <c>default-player-permission-level</c>, or member when that is unset or blank.
+    /// </summary>
+    public static string DefaultTier(IReadOnlyDictionary<string, string> properties) =>
+        properties.GetValueOrDefault("default-player-permission-level") is { Length: > 0 } configured
+            ? configured
+            : PermissionTier.Member;
+
+    /// <summary>
+    /// Each player's tier on this server: their <c>permissions.json</c> entry, else
+    /// <paramref name="defaultTier"/>. The first entry for an XUID wins, the answer
+    /// <see cref="PermissionsFile.TierOf"/> gives.
+    /// </summary>
+    /// <remarks>
+    /// One lookup for the Players tab's Role column (<see cref="Build"/>) and the Status
+    /// tab's operator count (<see cref="OperatorsAmong"/>), so the two cannot disagree
+    /// about who is an operator.
+    /// </remarks>
+    public static Func<string, string> TierLookup(IReadOnlyList<PermissionEntry> permissions, string defaultTier)
+    {
+        var tiers = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var entry in permissions)
+        {
+            tiers.TryAdd(entry.Xuid, entry.Permission);
+        }
+
+        return xuid => tiers.GetValueOrDefault(xuid, defaultTier);
+    }
+
+    /// <summary>How many of <paramref name="xuids"/> are operators on this server.</summary>
+    /// <remarks>
+    /// Spelled exactly as Bedrock writes the tier, the same match the Role column's
+    /// picker makes: a value it does not recognise is not counted as an operator.
+    /// </remarks>
+    public static int OperatorsAmong(
+        IEnumerable<string> xuids,
+        IReadOnlyList<PermissionEntry> permissions,
+        string defaultTier)
+    {
+        var tierOf = TierLookup(permissions, defaultTier);
+        return xuids.Count(xuid => IsOperator(tierOf(xuid)));
+    }
+
+    /// <summary>Whether a tier, as <see cref="TierLookup"/> answers it, is an operator's.</summary>
+    public static bool IsOperator(string tier) =>
+        string.Equals(tier, PermissionTier.Operator, StringComparison.Ordinal);
+
     public static IReadOnlyList<InstanceAccessRow> Build(
         IReadOnlyList<PlayerSummary> players,
         IReadOnlyList<AllowlistEntry> allowlist,
@@ -89,14 +145,7 @@ public static class InstanceAccessView
             byName.TryAdd(entry.Name, entry);
         }
 
-        var tiers = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        foreach (var entry in permissions)
-        {
-            tiers.TryAdd(entry.Xuid, entry.Permission);
-        }
-
-        string TierOf(string xuid) => tiers.GetValueOrDefault(xuid, defaultTier);
+        var tierOf = TierLookup(permissions, defaultTier);
 
         // Two passes, and the order is load-bearing. An entry belongs to at most
         // one person, and XUID is the identifier that cannot be changed out from
@@ -143,11 +192,13 @@ public static class InstanceAccessView
                 NameKnown: true,
                 Allowed: entry is not null,
                 IgnoresPlayerLimit: entry?.IgnoresPlayerLimit ?? false,
-                TierOf(player.Xuid),
+                tierOf(player.Xuid),
                 player.IsOnline,
                 player.Playtime,
                 player.CurrentSession(asOfUtc),
-                player.LastSeenUtc));
+                player.LastSeenUtc,
+                player.Deaths,
+                player.LastKnownPosition));
         }
 
         // An allow-list entry nothing matched is a row of its own — naming
@@ -166,7 +217,7 @@ public static class InstanceAccessView
                 NameKnown: true,
                 Allowed: true,
                 entry.IgnoresPlayerLimit,
-                entry.Xuid is { Length: > 0 } xuid ? TierOf(xuid) : defaultTier,
+                entry.Xuid is { Length: > 0 } xuid ? tierOf(xuid) : defaultTier,
                 IsOnline: false,
                 TimeSpan.Zero,
                 null,

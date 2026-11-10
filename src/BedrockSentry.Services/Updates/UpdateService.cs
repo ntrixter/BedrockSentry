@@ -91,9 +91,9 @@ public sealed class UpdateService : BackgroundService
     private static readonly TimeSpan ManualCheckCooldown = TimeSpan.FromSeconds(60);
 
     private readonly UpdateClient _client;
+    private readonly IWrapperUpdateInstaller _installer;
     private readonly UpdateLedgerStore _ledger;
     private readonly InstallLayout _layout;
-    private readonly ISentryPaths _paths;
     private readonly IOptionsMonitor<UpdateOptions> _options;
     private readonly ILogger<UpdateService> _logger;
     private readonly TimeProvider _time;
@@ -118,6 +118,13 @@ public sealed class UpdateService : BackgroundService
     /// So an update in progress can tell the host is going down and stand down.
     /// </summary>
     private readonly IHostApplicationLifetime? _lifetime;
+
+    /// <summary>
+    /// Consulted so the drain never stops a server part-way through a claimed job,
+    /// such as a sync (<see cref="InstanceClaim"/>). Optional for the same
+    /// reason the shutdown is.
+    /// </summary>
+    private readonly InstanceRegistry? _registry;
 
     /// <summary>The apply in flight, so a second request does not start another.</summary>
     private Task? _applying;
@@ -166,15 +173,18 @@ public sealed class UpdateService : BackgroundService
         IManagedServerShutdown? shutdown = null,
         Packages.BdsAutoUpdater? bdsUpdates = null,
         IHostApplicationLifetime? lifetime = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        InstanceRegistry? registry = null,
+        IWrapperUpdateInstaller? installer = null)
     {
+        _installer = installer ?? new LocalWrapperUpdateInstaller(client, layout, paths, logger);
         _shutdown = shutdown;
         _bdsUpdates = bdsUpdates;
         _lifetime = lifetime;
+        _registry = registry;
         _client = client;
         _ledger = ledger;
         _layout = layout;
-        _paths = paths;
         _options = options;
         _logger = logger;
         _time = time ?? TimeProvider.System;
@@ -204,6 +214,19 @@ public sealed class UpdateService : BackgroundService
     public DateTimeOffset? LastCheckedUtc { get; private set; }
 
     /// <summary>
+    /// The last check that could not read the channel, or null once a check has
+    /// read it since (<c>T196</c>).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="LastCheckedUtc"/> alone has two states and a feed has three:
+    /// never asked, asked and unreadable, and read. Without this a feed that has
+    /// failed every six hours since install reads exactly like one nobody has
+    /// asked, because the banner a manual press shows does not survive a reload
+    /// and the scheduled check shows nothing at all.
+    /// </remarks>
+    public UpdateCheckFailure? LastFailedCheck { get; private set; }
+
+    /// <summary>
     /// Whether this install can self-update at all.
     /// </summary>
     /// <remarks>
@@ -213,10 +236,28 @@ public sealed class UpdateService : BackgroundService
     /// Bedrock button. A non-versioned install has nowhere to put a new build, so
     /// there is nothing a check could lead to.
     /// </remarks>
-    public bool SelfUpdateIsActive => _layout.IsVersionedInstall;
+    public bool SelfUpdateIsActive => _layout.IsVersionedInstall && _installer.Unavailable is null;
+
+    /// <summary>Why <see cref="SelfUpdateIsActive"/> is false, in the words the page shows; null when it is true.</summary>
+    public string? InactiveReason =>
+        !_layout.IsVersionedInstall
+            ? "Self-update is inactive on this install, because it is not running from a "
+              + "versioned install directory. There is nowhere to put a new build, so "
+              + "there is nothing a check could lead to."
+            : _installer.Unavailable;
 
     /// <summary>Why the last update attempt failed, for the settings page.</summary>
     public string? LastFailureReason => _ledger.Load().LastFailureReason;
+
+    /// <summary>The update ledger as it stands, for the pages that say whether updates are paused.</summary>
+    public UpdateLedger Ledger => _ledger.Load();
+
+    /// <summary>Resumes automatic updates that repeated failures paused (<c>D101</c>).</summary>
+    public void ResumeAutomaticUpdates()
+    {
+        _ledger.ResumeAutomaticUpdates();
+        RaiseChecked();
+    }
 
     /// <summary>
     /// Raised after the channel has been read, from either path.
@@ -239,6 +280,9 @@ public sealed class UpdateService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Whatever the helper did while this process was not running.
+        _ledger.ConsumeResult(_options.CurrentValue, _installer.ResultPath);
+
+        // An in-process update's result from before the broker was switched on.
         _ledger.ConsumeResult(_options.CurrentValue);
 
         if (!_layout.IsVersionedInstall)
@@ -250,7 +294,13 @@ public sealed class UpdateService : BackgroundService
             return;
         }
 
-        StageHelper();
+        if (_installer.Unavailable is { } unavailable)
+        {
+            _logger.LogWarning("Self-update is inactive: {Reason}", unavailable);
+            return;
+        }
+
+        _installer.PrepareHelper();
 
         // Let the service finish coming up before reaching for the network.
         await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
@@ -300,7 +350,7 @@ public sealed class UpdateService : BackgroundService
         }
     }
 
-    private async Task CheckAsync(CancellationToken ct)
+    internal async Task CheckAsync(CancellationToken ct)
     {
         var options = _options.CurrentValue;
 
@@ -316,6 +366,15 @@ public sealed class UpdateService : BackgroundService
 
         if (options.Mode == UpdateMode.Notify)
         {
+            return;
+        }
+
+        if (manifest.NeedsReinstall())
+        {
+            // Not a failure: recording one would count towards the three that
+            // pause automatic updates, for a build that was never going to apply.
+            _logger.LogInformation(
+                "Not applying {Identity}: it needs a reinstall rather than an update.", manifest.Identity);
             return;
         }
 
@@ -353,7 +412,7 @@ public sealed class UpdateService : BackgroundService
             return false;
         }
 
-        var fetch = await _client.FetchManifestAsync(options, ct);
+        var fetch = await _client.FetchManifestAsync(options, ct, _installer.FeedUrlTemplate);
 
         if (fetch.RetryAfter is { } wait)
         {
@@ -366,7 +425,11 @@ public sealed class UpdateService : BackgroundService
             // deliberately left alone here. It used to be cleared, which meant a
             // single network blip took the Install now button off the page until
             // the next successful check — up to six hours later. LastCheckedUtc
-            // only moves on a read that worked, for the same reason.
+            // only moves on a read that worked, for the same reason. What does
+            // move is the record that this check failed, so the page can tell it
+            // from one that never happened (`T196`).
+            LastFailedCheck = new UpdateCheckFailure(
+                _time.GetUtcNow(), fetch.Failure ?? "it gave nothing usable");
             RaiseChecked();
             return false;
         }
@@ -374,6 +437,7 @@ public sealed class UpdateService : BackgroundService
         // Read, so the page can say so even when the answer was "nothing newer" —
         // which is otherwise indistinguishable from the check not having happened.
         LastCheckedUtc = _time.GetUtcNow();
+        LastFailedCheck = null;
 
         if (!manifest.IsNewerThanRunning())
         {
@@ -431,11 +495,7 @@ public sealed class UpdateService : BackgroundService
             if (!SelfUpdateIsActive)
             {
                 return Task.FromResult(new ManualCheckResult(
-                    ManualCheckOutcome.Inactive,
-                    TimeSpan.Zero,
-                    "Self-update is inactive on this install, because it is not running from a "
-                    + "versioned install directory. There is nowhere to put a new build, so "
-                    + "there is nothing a check could lead to."));
+                    ManualCheckOutcome.Inactive, TimeSpan.Zero, InactiveReason!));
             }
 
             if (Throttled(out var standoff))
@@ -490,11 +550,17 @@ public sealed class UpdateService : BackgroundService
                     $"The update server asked not to be contacted again for {Describe(standoff)}.");
             }
 
+            // The reason LookAsync recorded, so the banner says what the Last checked
+            // row under it says (`T196`). The log stays the fallback for a record a
+            // concurrent read has already cleared.
+            var channel = options.Channel.ToString().ToLowerInvariant();
+
             return new ManualCheckResult(
                 ManualCheckOutcome.Failed,
                 TimeSpan.Zero,
-                $"Could not read the {options.Channel.ToString().ToLowerInvariant()} channel. "
-                + "The service log has the reason.");
+                LastFailedCheck is { } failure
+                    ? $"Could not read the {channel} channel: {failure.Reason}."
+                    : $"Could not read the {channel} channel. The service log has the reason.");
         }
         catch (Exception ex)
         {
@@ -604,61 +670,63 @@ public sealed class UpdateService : BackgroundService
         }
     }
 
+    /// <summary>Why the drain has to wait, or null when nothing is part-way through a server.</summary>
+    /// <remarks>
+    /// <para>A Bedrock update in flight: stopping a server mid-update is read as a
+    /// build that will not start, rolling back one that was fine.</para>
+    ///
+    /// <para>A claim (<see cref="InstanceClaim"/>), such as a sync: the drain's stop
+    /// is the wrapper's own and goes through any claim, so the claims are asked about
+    /// here. A sync stopped between its world being replaced and its Sync Areas being
+    /// put back leaves the world replaced and the areas unplaced.</para>
+    /// </remarks>
+    internal string? DrainMustWait()
+    {
+        if (_bdsUpdates?.IsApplyingAnywhere == true)
+        {
+            return $"{string.Join(", ", _bdsUpdates.Applying)} is taking a Bedrock build.";
+        }
+
+        var claimed = _registry?.All
+            .Select(s => s.Status)
+            .Where(s => s.ClaimedFor is not null)
+            .Select(s => ClaimText.Refusal(s.Name, s.ClaimedFor!))
+            .ToList();
+
+        return claimed is { Count: > 0 } ? string.Join(" ", claimed) : null;
+    }
+
     /// <summary>Stages the build and hands off to the helper.</summary>
     public async Task<bool> ApplyAsync(UpdateManifest manifest, UpdateOptions options, CancellationToken ct = default)
     {
-        var target = await _client.StageAsync(manifest, ct);
-
-        if (target is null)
+        // First, before the download: every caller arrives here, the Install now
+        // POST included, and a build that needs a reinstall must stop no server
+        // and stage nothing (`D114`).
+        if (manifest.NeedsReinstall())
         {
-            _ledger.RecordFailure(manifest.Identity, "The build could not be downloaded or verified.", options);
+            _logger.LogWarning(
+                "Not applying {Identity}: it needs a reinstall rather than an update.", manifest.Identity);
             return false;
         }
 
-        var previous = _layout.ResolveCurrentVersionDirectory();
+        var staging = await _installer.StageAsync(manifest, options, ct);
 
-        if (previous is null)
+        if (staging.State == UpdateStagingState.NotDownloaded)
         {
-            _logger.LogError("Could not resolve which version directory 'current' points at; not updating.");
+            _ledger.RecordFailure(manifest.Identity, staging.Reason, options);
             return false;
         }
 
-        var helper = FindStagedHelper();
-
-        if (helper is null)
+        if (staging.State != UpdateStagingState.Staged)
         {
-            _logger.LogError("The updater helper is not staged; not updating.");
             return false;
         }
-
-        var plan = new UpdatePlan
-        {
-            ServiceName = "BedrockSentry",
-            InstallRoot = _layout.InstallRoot,
-            PreviousVersionDirectory = previous,
-            TargetVersionDirectory = target,
-            TargetIdentity = manifest.Identity,
-            PreviousIdentity = BuildInfo.Identity,
-            HealthUrl = options.BuildHealthUrl(),
-            HealthTimeoutSeconds = (int)options.HealthTimeout.TotalSeconds,
-            StopTimeoutSeconds = (int)options.StopTimeout.TotalSeconds,
-            LogPath = Path.Combine(_paths.Logs, "update.log"),
-            ResultPath = Path.Combine(_paths.Update, "result.json"),
-        };
-
-        var planPath = Path.Combine(_paths.Update, "plan.json");
-
-        Directory.CreateDirectory(_paths.Update);
-        await File.WriteAllTextAsync(
-            planPath,
-            JsonSerializer.Serialize(plan, new JsonSerializerOptions { WriteIndented = true }),
-            ct);
 
         _logger.LogWarning(
             "Applying update {Identity}. The service will stop and restart; if the new build does not " +
             "report healthy within {Timeout}s it will be rolled back automatically.",
             manifest.Identity,
-            plan.HealthTimeoutSeconds);
+            staging.HealthTimeoutSeconds);
 
         // Here, and not a line earlier. Everything above can decide not to
         // update — a download that would not verify, a 'current' link that does
@@ -672,15 +740,10 @@ public sealed class UpdateService : BackgroundService
         // waiting on it and gets the short countdown of docs/design.md § 5.2. This one
         // has nothing waiting on it at all.
         // Checked here, immediately before the drain, rather than at the top:
-        // staging takes a while and a Bedrock update can start during it.
-        if (_bdsUpdates?.IsApplyingAnywhere == true)
+        // staging takes a while and a Bedrock update or a sync can start during it.
+        if (DrainMustWait() is { } why)
         {
-            _logger.LogInformation(
-                "Deferring the wrapper update: {Instances} is taking a Bedrock build. Stopping a "
-                + "server mid-update would be read as a build that will not start, rolling back one "
-                + "that was fine.",
-                string.Join(", ", _bdsUpdates.Applying));
-
+            _logger.LogInformation("Deferring the wrapper update: {Why}", why);
             return false;
         }
 
@@ -730,14 +793,15 @@ public sealed class UpdateService : BackgroundService
 
         try
         {
-            pid = DetachedProcess.Start(helper, $"\"{planPath}\"", Path.GetDirectoryName(helper)!);
+            pid = await _installer.LaunchAsync(manifest.Identity, CancellationToken.None);
         }
         catch (Exception ex)
         {
             // The one moment this can strand a machine. Every server is down by
             // now, and the helper — which is what restarts the service and
-            // therefore the servers — never ran. FindStagedHelper only asks
-            // whether the file exists, so a copy that is quarantined, truncated
+            // therefore the servers — never ran. Staging only asks
+            // whether the file exists, and the broker copies its helper only
+            // now, so a copy that is quarantined, truncated
             // by an interrupted staging, or denied execute by policy passes the
             // pre-flight check and fails here.
             //
@@ -762,52 +826,4 @@ public sealed class UpdateService : BackgroundService
         return true;
     }
 
-    /// <summary>
-    /// Copies the helper out of the install tree so it can replace that tree.
-    /// </summary>
-    /// <remarks>
-    /// A running executable holds a lock on its own image, so a helper running from
-    /// inside <c>current\</c> would block the rename it exists to perform. It refuses
-    /// to run from there at all; this is what makes sure a usable copy exists
-    /// elsewhere before it is needed.
-    /// </remarks>
-    private void StageHelper()
-    {
-        try
-        {
-            var source = Path.Combine(_layout.CurrentLink, "updater");
-
-            if (!Directory.Exists(source))
-            {
-                _logger.LogWarning("No updater helper found at {Source}; self-update will not run.", source);
-                return;
-            }
-
-            var destination = Path.Combine(_paths.Update, "helper");
-
-            if (Directory.Exists(destination))
-            {
-                Directory.Delete(destination, recursive: true);
-            }
-
-            Directory.CreateDirectory(destination);
-
-            foreach (var file in Directory.GetFiles(source))
-            {
-                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
-            }
-
-            _logger.LogInformation("Updater helper staged at {Destination}.", destination);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _logger.LogError(ex, "Could not stage the updater helper.");
-        }
-    }
-
-    private string? FindStagedHelper()
-    {
-        var path = Path.Combine(_paths.Update, "helper", "BedrockSentry.Updater.exe");
-        return File.Exists(path) ? path : null;
-    }
 }

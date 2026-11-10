@@ -70,6 +70,37 @@ public interface ISentryPaths
     string ServerPackages { get; }
 
     /// <summary>
+    /// The shared add-on library, one folder per pack uuid with a folder per
+    /// version under it (<c>D77</c>, <c>D79</c>).
+    /// </summary>
+    /// <remarks>
+    /// Shared by every instance, so it is under the data root rather than
+    /// inside any one server: a pack reaches an instance by being copied into
+    /// that instance's own folders, and the copy is what survives a re-home or
+    /// a move to another machine.
+    /// </remarks>
+    string AddonLibrary { get; }
+
+    /// <summary>
+    /// Console completion's data: the commands each Bedrock version listed, Mojang's
+    /// vanilla data, each instance's add-on commands, and the folders of throwaway runs
+    /// while they last (<c>D105</c>).
+    /// </summary>
+    /// <remarks>
+    /// Everything here can be rebuilt by running the server again or fetching again, so
+    /// nothing in it needs backing up; deleting the folder costs one run per version in
+    /// use.
+    /// </remarks>
+    string Completion { get; }
+
+    /// <summary>Players' faces fetched by XUID, one small PNG each (<c>D47</c>).</summary>
+    /// <remarks>
+    /// A cache: deleting the folder costs one request per player the next time a
+    /// list shows them, and only while faces are switched on.
+    /// </remarks>
+    string PlayerFaces { get; }
+
+    /// <summary>
     /// Creates any missing directories. Safe to call repeatedly.
     /// </summary>
     void EnsureCreated();

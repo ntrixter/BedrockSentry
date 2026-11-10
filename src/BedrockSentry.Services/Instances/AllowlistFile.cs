@@ -43,23 +43,14 @@ public sealed class AllowlistFile
         Path.Combine(instanceDirectory, FileName);
 
     /// <summary>
-    /// Loads the file. Missing means an empty list — a server that has never
-    /// had an allowlist edit may not have written one yet. Malformed throws:
-    /// guessing at a broken access-control file is worse than saying so.
+    /// Loads the file. Missing, <c>[]</c> and the JSON literal <c>null</c> all
+    /// mean an empty list; anything else throws, because guessing at a broken
+    /// access-control file is worse than saying so. The three spellings and why
+    /// the third one is not damage are in <see cref="BdsAccessList"/>
+    /// (<c>T203</c>), shared with <see cref="PermissionsFile"/> so the two
+    /// readers cannot drift.
     /// </summary>
-    public static AllowlistFile Load(string path)
-    {
-        if (!File.Exists(path))
-        {
-            return new AllowlistFile([]);
-        }
-
-        var parsed = JsonNode.Parse(File.ReadAllText(path));
-
-        return parsed is JsonArray entries
-            ? new AllowlistFile(entries)
-            : throw new JsonException($"{Path.GetFileName(path)} does not contain a JSON array.");
-    }
+    public static AllowlistFile Load(string path) => new(BdsAccessList.ReadOrEmpty(path));
 
     public IReadOnlyList<AllowlistEntry> Entries =>
         _entries

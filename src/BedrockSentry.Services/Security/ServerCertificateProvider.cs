@@ -20,8 +20,6 @@ namespace BedrockSentry.Services.Security;
 [SupportedOSPlatform("windows")]
 public sealed class ServerCertificateProvider
 {
-    private const string PfxFileName = "bedrocksentry.pfx";
-    private const string PasswordFileName = "bedrocksentry.pfx.pwd";
     private const string ServerAuthOid = "1.3.6.1.5.5.7.3.1";
 
     private readonly ISentryPaths _paths;
@@ -92,6 +90,19 @@ public sealed class ServerCertificateProvider
         return certificate;
     }
 
+    /// <summary>
+    /// Where a certificate file's private key is imported: the service account's own
+    /// key store, persisted.
+    /// </summary>
+    /// <remarks>
+    /// Persisted because Schannel completes a handshake only with a key in a container,
+    /// never an ephemeral one. The account's own store because the machine's refused
+    /// the import with "Access denied" under <c>NT SERVICE\&lt;ServiceName&gt;</c>, and
+    /// the service never started (<c>T104</c> clause 1); a service account's profile is
+    /// loaded for it, and LocalSystem's is its own.
+    /// </remarks>
+    internal const X509KeyStorageFlags KeyStorage = X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.PersistKeySet;
+
     private X509Certificate2 LoadFromPfxFile(TlsOptions options)
     {
         if (string.IsNullOrWhiteSpace(options.PfxPath))
@@ -114,7 +125,7 @@ public sealed class ServerCertificateProvider
             return X509CertificateLoader.LoadPkcs12FromFile(
                 options.PfxPath,
                 options.PfxPassword,
-                X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet);
+                KeyStorage);
         }
         catch (CryptographicException ex)
         {
@@ -170,13 +181,13 @@ public sealed class ServerCertificateProvider
 
         throw new InvalidOperationException(
             $"No certificate with thumbprint '{thumbprint}' was found in the LocalMachine or CurrentUser personal store. " +
-            "A service running as LocalSystem reads LocalMachine; a certificate imported into a user's store is not visible to it.");
+            "The service reads LocalMachine; a certificate imported into a user's store is not visible to it.");
     }
 
     private X509Certificate2 LoadOrCreateSelfSigned(TlsOptions options)
     {
-        var pfxPath = Path.Combine(_paths.Certificates, PfxFileName);
-        var passwordPath = Path.Combine(_paths.Certificates, PasswordFileName);
+        var pfxPath = SecretFiles.Certificate(_paths);
+        var passwordPath = SecretFiles.CertificatePassword(_paths);
 
         if (File.Exists(pfxPath) && File.Exists(passwordPath))
         {
@@ -185,18 +196,31 @@ public sealed class ServerCertificateProvider
                 var existing = X509CertificateLoader.LoadPkcs12FromFile(
                     pfxPath,
                     ReadProtectedPassword(passwordPath),
-                    X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet);
+                    KeyStorage);
 
                 var remaining = existing.NotAfter - DateTime.Now;
+                var missing = CertificateNames.Missing(existing, options.AdditionalSubjectAltNames);
 
-                if (remaining > TimeSpan.FromDays(options.RenewWithinDays))
+                if (missing.Count > 0)
+                {
+                    // T324: the names are written only when a certificate is made, so one
+                    // added to the configuration since was never applied.
+                    _logger.LogWarning(
+                        "The self-signed certificate does not name {Missing}, which "
+                        + "{Section}:AdditionalSubjectAltNames asks for; generating a replacement.",
+                        string.Join(", ", missing),
+                        TlsOptions.SectionName);
+                }
+                else if (remaining > TimeSpan.FromDays(options.RenewWithinDays))
                 {
                     return existing;
                 }
-
-                _logger.LogInformation(
-                    "The self-signed certificate expires in {Days} days; generating a replacement.",
-                    (int)remaining.TotalDays);
+                else
+                {
+                    _logger.LogInformation(
+                        "The self-signed certificate expires in {Days} days; generating a replacement.",
+                        (int)remaining.TotalDays);
+                }
 
                 existing.Dispose();
             }
@@ -245,21 +269,16 @@ public sealed class ServerCertificateProvider
         // Loopback entries are load-bearing rather than cosmetic: the server binds to
         // localhost only until first-run setup completes, so without these the very
         // first connection an admin makes fails its name check.
-        foreach (var extra in options.AdditionalSubjectAltNames)
-        {
-            if (string.IsNullOrWhiteSpace(extra))
-            {
-                continue;
-            }
+        var (addresses, names) = CertificateNames.Split(options.AdditionalSubjectAltNames);
 
-            if (IPAddress.TryParse(extra, out var ip))
-            {
-                san.AddIpAddress(ip);
-            }
-            else
-            {
-                san.AddDnsName(extra.Trim());
-            }
+        foreach (var address in addresses)
+        {
+            san.AddIpAddress(address);
+        }
+
+        foreach (var name in names)
+        {
+            san.AddDnsName(name);
         }
 
         request.CertificateExtensions.Add(san.Build());
@@ -277,8 +296,8 @@ public sealed class ServerCertificateProvider
         File.WriteAllBytes(pfxPath, generated.ExportPkcs12(Pkcs12ExportPbeParameters.Pbes2Aes256Sha256, password));
         WriteProtectedPassword(passwordPath, password);
 
-        WindowsAcl.RestrictToSystemAndAdministrators(new FileInfo(pfxPath));
-        WindowsAcl.RestrictToSystemAndAdministrators(new FileInfo(passwordPath));
+        WindowsAcl.SecureSecretFile(pfxPath);
+        WindowsAcl.SecureSecretFile(passwordPath);
 
         _logger.LogWarning(
             "Generated a self-signed TLS certificate for {HostName}, valid until {NotAfter:u}. " +
@@ -287,12 +306,12 @@ public sealed class ServerCertificateProvider
             generated.NotAfter);
 
         // Reload from disk rather than returning the in-memory instance. The generated
-        // certificate's key is ephemeral; the reloaded one is bound to a machine key
-        // container, which is what Schannel needs to complete a handshake.
+        // certificate's key is ephemeral; the reloaded one is bound to a key container,
+        // which is what Schannel needs to complete a handshake (KeyStorage).
         return X509CertificateLoader.LoadPkcs12FromFile(
             pfxPath,
             password,
-            X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet);
+            KeyStorage);
     }
 
     /// <summary>

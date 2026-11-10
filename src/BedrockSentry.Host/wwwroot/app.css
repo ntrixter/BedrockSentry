@@ -52,6 +52,13 @@
     --console-leave: #8fa9c9;
     --console-save: #b49ae2;
     --console-noise: #59636f;
+    --console-death: #ee82b1;
+    --console-opcommand: #e3b45f;
+
+    /* The console's completion list floats over the output, so it needs a shadow
+       the output does not; the mark is the word the caret is in on the usage line. */
+    --sentry-list-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45);
+    --sentry-mark-bg: rgba(87, 173, 108, 0.28);
 }
 
 :root[data-theme="light"] {
@@ -86,6 +93,11 @@
     --console-leave: #3f5f85;
     --console-save: #5b3da4;
     --console-noise: #9aa3ad;
+    --console-death: #a4285f;
+    --console-opcommand: #8a5a00;
+
+    --sentry-list-shadow: 0 -4px 14px rgba(0, 0, 0, 0.12);
+    --sentry-mark-bg: rgba(47, 122, 65, 0.18);
 }
 
 html, body {
@@ -181,6 +193,15 @@ h1:focus {
 .theme-toggle:hover {
     color: var(--sentry-text);
     border-color: var(--sentry-text-muted);
+}
+
+/* The running build, left of the theme toggle. */
+
+.top-build {
+    margin-right: 0.75rem;
+    color: var(--sentry-text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
 }
 
 /* Show the icon of the theme you would switch *to*, not the one you are in. */
@@ -384,6 +405,25 @@ h1:focus {
     color: var(--sentry-text-muted);
 }
 
+/* The one prominent line in a card: the value somebody opened the tab to read, with a
+   `.check-detail` under it for whatever qualifies it. It exists because there was no class
+   for a card's value and `.check-state` was reached for by name — that is a 0.6rem round
+   state dot for an empty span, so three paragraphs of prose collapsed to 0.6rem and the
+   sentence under each was laid out on top of the overflow (`T262`).
+   `PanelMarkupTests` pins that this rule is declared and that the dot is still a box. */
+.card-headline {
+    margin: 0 0 0.25rem;
+    font-size: 1.3125rem;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+/* The same line when the state needs acting on. Colour only: `.console-fault` is a bordered,
+   filled block, and one of those inside a card draws a box inside a box. */
+.card-headline-fault {
+    color: var(--sentry-danger-text);
+}
+
 .status-card dl {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -401,6 +441,36 @@ h1:focus {
     margin: 0;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     overflow-wrap: anywhere;
+}
+
+/* The Status tab's Operators line: the count, then one online operator per line. */
+.status-card .operators-online {
+    list-style: none;
+    margin: 0.125rem 0 0;
+    padding: 0;
+    font-family: inherit;
+}
+
+/* The Status tab's growth row (`D48`): size change between walks as bars about a zero
+   line, growth above it and shrinkage below. The shrink bars are muted rather than red:
+   compaction shrinks a world, and that is not a fault. */
+.status-card .growth-spark {
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 0.5rem;
+}
+
+.growth-spark .spark-up {
+    fill: var(--sentry-accent);
+}
+
+.growth-spark .spark-down {
+    fill: var(--sentry-text-muted);
+}
+
+.growth-spark .spark-zero {
+    stroke: var(--sentry-border);
+    stroke-width: 1;
 }
 
 /* Instance cards reuse the status card, so h3 has to match the h2 above it. */
@@ -611,11 +681,64 @@ h1:focus {
 .state-dot.state-backoff { background: var(--sentry-warn-text); }
 .state-dot.state-faulted { background: var(--sentry-danger-text); }
 
-.console-toolbar {
+/* The row above every instance tab (InstanceControls): state, pid, players and
+   Start / Stop / Restart. It wraps rather than squeezes, so the buttons drop to a
+   line of their own before anything shrinks. */
+.instance-bar {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.instance-bar-separator {
+    color: var(--sentry-text-muted);
+}
+
+.instance-bar-players {
+    display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    margin-bottom: 0.75rem;
+}
+
+.instance-bar-label {
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+/* The Status card's meter, narrowed to sit in a line of text. */
+.instance-bar .meter {
+    display: inline-block;
+    width: 7.5rem;
+}
+
+.instance-bar .meter-label {
+    margin-top: 0;
+}
+
+.instance-bar-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* A phone: the players take a line of their own, so nothing needs setting apart,
+   and the three buttons share the last line at a size a thumb can hit. */
+@media (max-width: 575.98px) {
+    .instance-bar-separator,
+    .instance-bar .console-spacer {
+        display: none;
+    }
+
+    .instance-bar-players,
+    .instance-bar-buttons {
+        flex-basis: 100%;
+    }
+
+    .instance-bar-buttons .btn {
+        flex: 1;
+        min-height: 2.5rem;
+    }
 }
 
 .console-spacer {
@@ -685,6 +808,11 @@ h1:focus {
     /* Tabular figures so the timestamp column does not shimmer as it updates. */
     font-variant-numeric: tabular-nums;
     user-select: none;
+    /* The twelve-hour clock (`T304`) is 10 or 11 characters, 9:05:09 AM or
+       12:05:09 PM, so the column is as wide as the longer and right-aligned, and
+       every message still starts in one column. The console font is monospaced. */
+    min-width: 11ch;
+    text-align: right;
 }
 
 .console-text {
@@ -699,7 +827,8 @@ h1:focus {
 }
 
 /* A filled bar for a count against a ceiling — players online against
-   max-players on the instance Status tab.
+   max-players, in the row above every instance tab and on the Status tab's
+   Players card.
 
    The fill clamps at 100% and the number beside it does not. Bedrock's allow
    list has a "join if full" flag whose whole purpose is to let somebody past the
@@ -768,9 +897,41 @@ h1:focus {
     color: var(--console-leave);
 }
 
+.console-death .console-text,
+.console-death .console-glyph {
+    color: var(--console-death);
+}
+
+.console-opcommand .console-text,
+.console-opcommand .console-glyph {
+    color: var(--console-opcommand);
+}
+
 .console-save .console-text,
 .console-save .console-glyph {
     color: var(--console-save);
+}
+
+/* ON5: the toggle on "Data saved" that shows the save query's file list folded
+   under it. Small and muted, so the line still reads as the server's. */
+.console-fold {
+    margin-left: 0.75rem;
+    padding: 0 0.4rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.25rem;
+    background: transparent;
+    color: var(--sentry-text-muted);
+    font: inherit;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    cursor: pointer;
+    user-select: none;
+}
+
+.console-fold:hover,
+.console-fold:focus-visible {
+    color: var(--sentry-link);
+    border-color: var(--sentry-link);
 }
 
 /* Dimmed, not filtered. The moment AutoCompaction matters is the moment it
@@ -806,10 +967,333 @@ h1:focus {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* ---------------------------------------------------------------------------
+   Console completion (D105)
+
+   console-completion.js draws the list, the grey preview and the usage line into
+   these. The list opens upward from the input, over the output, because the input sits
+   at the bottom of the console and a list below it would be off the page.
+   --------------------------------------------------------------------------- */
+
+.console-input { position: relative; }
+
+.cc-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+/* The typed text again, transparent, then the rest of the first match in grey, laid
+   exactly over the input: same font, size, padding and border width. */
+.cc-ghost {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    white-space: pre;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1rem;
+    line-height: 1.5;
+    padding: 0.375rem 0.75rem;
+    border: 1px solid transparent;
+    color: transparent;
+}
+
+.cc-ghost-rest {
+    color: var(--sentry-text-muted);
+    opacity: 0.8;
+}
+
+.cc-list {
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: calc(100% - 0.25rem);
+    z-index: 5;
+    max-height: min(15rem, 40vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--sentry-surface-raised);
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    box-shadow: var(--sentry-list-shadow);
+    font-size: 0.8125rem;
+}
+
+.cc-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: baseline;
+    padding: 0.3rem 0.75rem;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+}
+
+.cc-item:hover { background: var(--sentry-accent-wash); }
+
+.cc-item.is-active {
+    background: var(--sentry-accent-wash);
+    border-left-color: var(--sentry-accent);
+}
+
+.cc-val {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--sentry-text);
+    white-space: nowrap;
+}
+
+.cc-val b {
+    color: var(--sentry-accent);
+    font-weight: 700;
+}
+
+.cc-desc {
+    color: var(--sentry-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.cc-kind {
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+    white-space: nowrap;
+}
+
+.cc-foot {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.25rem 1rem;
+    padding: 0.35rem 0.75rem;
+    border-top: 1px solid var(--sentry-border);
+    background: var(--sentry-surface);
+    color: var(--sentry-text-muted);
+    font-size: 0.75rem;
+}
+
+.cc-foot kbd {
+    padding: 0 0.25rem;
+    font-size: 0.6875rem;
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text);
+    border: 1px solid var(--sentry-border);
+}
+
+/* At phone width the description goes; the value and its kind stay. */
+@media (max-width: 520px) {
+    .cc-item { grid-template-columns: minmax(0, 1fr) auto; }
+    .cc-desc { display: none; }
+    .cc-val { overflow: hidden; text-overflow: ellipsis; }
+}
+
+.cc-usage {
+    min-height: 1.5rem;
+    margin-top: 0.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+}
+
+.cc-form {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--sentry-text-muted);
+}
+
+.cc-form .cc-name { color: var(--sentry-text); }
+
+.cc-form mark {
+    background: var(--sentry-mark-bg);
+    color: var(--sentry-text);
+    border-radius: 0.2rem;
+    padding: 0 0.15rem;
+}
+
+.cc-more,
+.cc-warn,
+.cc-ok,
+.cc-desc-line {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+.cc-more {
+    color: var(--sentry-text-muted);
+    font-size: 0.75rem;
+}
+
+.cc-warn { color: var(--sentry-warn-text); }
+
+.cc-ok { color: var(--sentry-ok-text); }
+
+.cc-desc-line {
+    color: var(--sentry-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cc-desc-line .cc-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--sentry-text);
+}
+
+/* The Commands view: where each kind of word comes from, then every command. */
+.data-box {
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.5rem;
+    background: var(--sentry-surface);
+    margin-bottom: 1.25rem;
+}
+
+.data-row {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    gap: 0.75rem;
+    align-items: baseline;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.data-row:last-of-type { border-bottom: none; }
+
+.data-row .state-badge {
+    justify-self: start;
+    white-space: nowrap;
+}
+
+.data-row strong {
+    display: block;
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.data-row .data-what {
+    display: block;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.data-note {
+    margin: 0;
+    padding: 0.6rem 0.9rem;
+    border-top: 1px solid var(--sentry-border);
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+@media (max-width: 520px) {
+    .data-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.35rem;
+    }
+}
+
+.ref-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.ref-tools .form-control {
+    max-width: 22rem;
+    font-size: 0.875rem;
+}
+
+.ref-count {
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.ref {
+    display: grid;
+    gap: 0.35rem;
+    align-items: start;
+}
+
+@media (min-width: 1100px) {
+    .ref { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.ref details {
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface);
+    min-width: 0;
+}
+
+.ref summary {
+    cursor: pointer;
+    padding: 0.45rem 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.75rem;
+    align-items: baseline;
+    border-radius: 0.375rem;
+}
+
+.ref summary code {
+    color: var(--sentry-text);
+    font-size: 0.875rem;
+}
+
+.ref-aliases {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+    color: var(--sentry-text-muted);
+}
+
+.ref-desc {
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.ref pre {
+    margin: 0;
+    padding: 0.5rem 0.75rem 0.65rem;
+    border-top: 1px solid var(--sentry-border);
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    color: var(--sentry-text-muted);
+}
+
+.addon-badge {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.05rem 0.45rem;
+    border-radius: 1rem;
+    background: var(--sentry-info-bg);
+    color: var(--sentry-info-text);
+}
+
 .console-hint {
     margin-top: 0.5rem;
     font-size: 0.8125rem;
     color: var(--sentry-text-muted);
+}
+
+/* A short list of conditions inside a .console-hint — what choosing NetherNet
+   costs, on the new-instance form. Its own class rather than .milestone-list,
+   which is muted the same way and would have done: that class is named for what
+   it lists, so a second unrelated caller is how a name stops describing its
+   content. Deliberately not next to .milestone-list either — the block down
+   there opts OUT of a base style and its ordering is pinned by
+   RemovalNoticeStyleTests. */
+.cost-list {
+    margin: 0.35rem 0 0.5rem 1.1rem;
+    padding: 0;
 }
 
 /* Shown when an instance is configured but has no server unpacked into it. A
@@ -834,6 +1318,13 @@ h1:focus {
     max-width: 32rem;
 }
 
+/* A row holding a file picker wraps, and the picker never grows past the row. Its
+   native width is fixed, so beside Export to JSON it pushed the Players and
+   Settings pages wider than a phone's screen (`T317`). */
+.provision-controls:has(input[type="file"]) { flex-wrap: wrap; }
+
+.provision-controls input[type="file"] { max-width: 100%; }
+
 .provision-panel label {
     display: block;
     max-width: 32rem;
@@ -846,6 +1337,25 @@ h1:focus {
     font-size: 0.875rem;
     color: var(--sentry-text-muted);
 }
+
+/* T334. Where a new server's world comes from, above the fields it decides. */
+.provision-panel .world-source { margin-bottom: 0.75rem; }
+
+/* Stands where the settings a world file supplies would be, apart from the box above it. */
+.world-file-settings { margin-top: 0.75rem; }
+
+/* An upload in flight: the bar, how much has gone, and the way to stop it. */
+.world-upload {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 32rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.875rem;
+}
+
+.world-upload progress { flex: 1 1 10rem; }
 
 /* Second-level tabs, inside the instance tab box.
 
@@ -881,6 +1391,1231 @@ h1:focus {
     border-bottom-color: var(--sentry-accent);
 }
 
+/* ---------------------------------------------------------------------------
+   The Add-ons tab
+
+   Four views of one server's add-ons under the same segmented control the
+   Backups tab uses: the list, each pack's settings, the load order and the
+   issues. Pack icons are square tiles; a pack without one gets its initials.
+   --------------------------------------------------------------------------- */
+
+.addons-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    margin: 1rem 0 0.875rem;
+}
+
+.addons-head h3 {
+    margin: 0;
+    font-size: 1.25rem;
+}
+
+.addons-head-spacer { flex-grow: 1; }
+
+/* A note behind a small circled letter. Focusable, so the note is reachable
+   without a mouse and read out through its label. */
+.addons-info {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.05rem;
+    height: 1.05rem;
+    border: 1px solid var(--sentry-text-muted);
+    border-radius: 50%;
+    color: var(--sentry-text-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    font-style: normal;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+/* Why nothing on the tab can be changed right now. Amber rather than red: the
+   server is doing what it should, and stopping it is the way out. */
+.addons-locked {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.625rem 0.875rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--sentry-warn-text);
+    border-radius: 0.375rem;
+    background: var(--sentry-warn-bg);
+    font-size: 0.875rem;
+}
+
+.addons-locked svg { color: var(--sentry-warn-text); flex: 0 0 auto; }
+.addons-locked strong { color: var(--sentry-warn-text); }
+
+/* Four views wrap onto a second line on a narrow screen rather than squeezing
+   each label onto two. */
+.addons-views { flex-wrap: wrap; }
+.addons-views button { white-space: nowrap; }
+
+/* A count that wants somebody, beside the view it belongs to. Two classes, so
+   it wins over the muted count rule declared further down whatever the order. */
+.view-count.view-count-warn {
+    color: var(--sentry-warn-text);
+    font-weight: 600;
+}
+
+.addons-table td {
+    vertical-align: middle;
+}
+
+.addons-table .state-badge { white-space: nowrap; }
+
+/* From 36rem up the Actions column stays at the frame's right edge whenever the
+   table is wider than its frame, as on the Backups timeline (`T325`). The width
+   comes from the content rather than a floor, so there is no upper bound, and where
+   nothing scrolls the pin changes nothing on the page. Separate borders for the same
+   reason as there: a collapsed border stays behind while a pinned cell moves over it.
+
+   The rule down its edge asks the frame whether it can scroll, which a width cannot
+   say for a table sized by its content. A browser without scroll-state queries drops
+   the second container-type and pins the column without the rule. */
+.addons-table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.table-wrap:has(> .addons-table) {
+    container-type: inline-size;
+    container-type: inline-size scroll-state;
+}
+
+@container (min-width: 36rem) {
+    .addons-table th.actions,
+    .addons-table td.actions {
+        position: sticky;
+        right: 0;
+        z-index: 1;
+    }
+
+    .addons-table td.actions { background: var(--sentry-bg); }
+
+    @container scroll-state(scrollable: inline) {
+        .addons-table th.actions,
+        .addons-table td.actions { box-shadow: inset 1px 0 0 var(--sentry-border); }
+    }
+}
+
+.addons-table .addons-col-icon { width: 3.5rem; }
+.addons-table .addons-col-type { width: 7.5rem; }
+.addons-table .addons-col-version { width: 7rem; }
+.addons-table .addons-col-status { width: 10rem; }
+.addons-table .addons-col-issues { width: 7rem; }
+
+/* The two groups the list is in. A label rather than a header row, so it reads
+   as belonging to the rows under it. */
+.addons-group td {
+    padding-top: 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--sentry-text-muted);
+    background: var(--sentry-surface);
+}
+
+.addons-row.is-open td { border-bottom-color: transparent; }
+
+.addons-name {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.addons-companion { margin-top: 0.25rem; }
+
+.addons-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 0.5rem;
+    object-fit: cover;
+    flex: 0 0 auto;
+    vertical-align: middle;
+}
+
+.addons-icon-companion {
+    background: var(--sentry-accent);
+    color: #ffffff;
+}
+
+.addons-icon-initials {
+    border: 1px solid var(--sentry-border);
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text-muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+.addons-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.addons-switch { min-width: 5.75rem; }
+
+.addons-gear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.3rem;
+}
+
+.addons-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: 0.375rem;
+    background: none;
+    color: var(--sentry-text-muted);
+}
+
+.addons-chevron:hover { color: var(--sentry-text); background: var(--sentry-surface-raised); }
+.addons-chevron svg { transition: transform 0.15s ease; }
+.addons-chevron[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+/* "2 issues" on a row, and "Listed twice" in the order: a way to the Issues
+   view, so it looks like a small amber pill rather than a sentence. */
+.addons-issue-link {
+    padding: 0.125rem 0.5rem;
+    border: none;
+    border-radius: 1rem;
+    background: var(--sentry-warn-bg);
+    color: var(--sentry-warn-text);
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.addons-details-row td {
+    padding-top: 0;
+    background: none;
+}
+
+/* The details under a row: five fields, then who wrote it and what it says it
+   does across the width. */
+.addons-details {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.75rem 1.5rem;
+    margin: 0 0 0.5rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface-raised);
+    font-size: 0.8125rem;
+}
+
+.addons-details dt {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-bottom: 0.1875rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+}
+
+.addons-details dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.addons-details-rule {
+    grid-column: 1 / -1;
+    height: 1px;
+    background: var(--sentry-border);
+}
+
+.addons-details-wide { grid-column: 2 / -1; }
+
+.addons-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+}
+
+.addons-muted { color: var(--sentry-text-muted); }
+
+/* The packs a Bedrock package ships, left out of the list until asked for. */
+.addons-hidden-note {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 0.625rem 0.875rem;
+    border-top: 1px solid var(--sentry-border);
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+}
+
+.addons-table-hidden { border-top: 1px solid var(--sentry-border); }
+
+@media (max-width: 900px) {
+    .addons-details { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .addons-details-wide { grid-column: 1 / -1; }
+}
+
+/* On a phone each row becomes a card: its icon beside its name and status, and
+   its buttons under them. Its type, version and issue count are in the details
+   and on the Issues view. */
+@media (max-width: 700px) {
+    .addons-table thead,
+    .addons-table .addons-col-type,
+    .addons-table .addons-col-version,
+    .addons-table .addons-col-issues { display: none; }
+    .addons-table,
+    .addons-table tbody,
+    .addons-table tr,
+    .addons-table td { display: block; }
+    .addons-table tr.addons-row {
+        display: grid;
+        grid-template-columns: 2.75rem minmax(0, 1fr);
+        column-gap: 0.75rem;
+        row-gap: 0.375rem;
+        padding: 0.625rem 0.875rem;
+        border-bottom: 1px solid var(--sentry-border);
+    }
+    .addons-table tr.addons-row td { padding: 0; border-bottom: none; }
+    .addons-table tr.addons-row td.addons-col-icon { grid-row: span 3; width: auto; }
+    .addons-table tr.addons-row .addons-actions { justify-content: flex-start; flex-wrap: wrap; }
+    .addons-table tr.addons-group td { border-bottom: 1px solid var(--sentry-border); }
+    .addons-details-row td:first-child { display: none; }
+    .addons-details-row td { padding: 0 0.875rem 0.625rem; }
+    .addons-details { grid-template-columns: minmax(0, 1fr); }
+    .addon-gear-row { grid-template-columns: minmax(0, 1fr) minmax(0, 9rem); }
+}
+
+/* Settings: a list of the packs that have any on the left, the chosen pack's
+   on the right. One column when there is no room for two. */
+.addons-settings {
+    display: grid;
+    grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .addons-settings { grid-template-columns: minmax(0, 1fr); }
+}
+
+.addons-settings-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+.addons-settings-pick {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--sentry-border);
+    border-left: 3px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: none;
+    color: var(--sentry-text);
+    text-align: left;
+    font: inherit;
+}
+
+.addons-settings-pick:hover { background: var(--sentry-surface-raised); }
+
+.addons-settings-pick.active {
+    border-left-color: var(--sentry-accent);
+    background: var(--sentry-surface-raised);
+}
+
+.addons-settings-pick-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex-grow: 1;
+}
+
+.addons-settings-pick-name { font-weight: 600; }
+
+.addons-settings-panel {
+    padding: 1rem 1.125rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface);
+}
+
+.addons-settings-pack-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.addons-settings-pack-head h4 {
+    margin: 0;
+    font-size: 1.0625rem;
+}
+
+.addons-settings-group {
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.addons-settings-group-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    margin: 0.5rem 0;
+}
+
+.addons-settings-group-head h5 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+}
+
+.addons-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.375rem 0;
+}
+
+.addons-check > span {
+    display: flex;
+    flex-direction: column;
+}
+
+.addons-fault { color: var(--sentry-danger-text); }
+
+/* D112. The auto-update switch sits above the list; the picker fills the Version column. */
+.addons-auto-update { margin-bottom: 0.5rem; }
+
+.addons-version-pick {
+    width: auto;
+    min-width: 6.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* One pack's own controls. The author's short labels head a group, long ones
+   explain the control above them. */
+.addon-gear-section {
+    margin: 0.875rem 0 0.25rem;
+    padding-top: 0.625rem;
+    border-top: 1px solid var(--sentry-border);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+}
+
+.addon-gear-help {
+    margin: 0 0 0.375rem;
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+}
+
+.addon-gear-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 16rem);
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.375rem 0;
+}
+
+.addon-gear-row > label { min-width: 0; }
+.addon-gear-row input[type="number"],
+.addon-gear-row select { width: 100%; }
+.addon-gear-row input[type="checkbox"] { justify-self: start; }
+
+.addon-gear-fixed {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+
+.addon-gear-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.875rem;
+}
+
+.addon-gear-note {
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+}
+
+.addon-gear-saved { color: var(--sentry-ok-text); }
+.addon-gear-queued { color: var(--sentry-info-text); }
+
+/* D85. The changes waiting for a server to stop, each with a Discard. */
+.addons-queue {
+    padding: 0.625rem 0.875rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-info-bg);
+    font-size: 0.875rem;
+}
+
+.addons-queue-head { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
+.addons-queue-head strong { color: var(--sentry-info-text); }
+.addons-queue ul { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+
+.addons-queue li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.25rem 0;
+    border-top: 1px solid var(--sentry-border);
+}
+
+.addons-queue li > span { display: flex; flex-direction: column; }
+
+/* Load order: one list per kind, side by side when there is room. The numbers
+   are the content: the top one wins. */
+.addons-order {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+    gap: 1rem;
+    align-items: start;
+    margin-top: 0.75rem;
+}
+
+.addons-order-list {
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface);
+}
+
+.addons-order-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.75rem 0.875rem;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.addons-order-head h4 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+}
+
+.addons-order-list ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.addons-order-empty { margin: 0; padding: 0.75rem 0.875rem; }
+
+.addons-order-item {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    padding: 0.5rem 0.875rem;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.addons-order-item:last-child { border-bottom: none; }
+.addons-order-item.is-twice { background: var(--sentry-warn-bg); }
+
+.addons-order-item .btn { white-space: nowrap; }
+
+.addons-order-rank {
+    width: 1.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+    text-align: right;
+}
+
+/* At least a short name's width, so a narrow list moves the buttons under the
+   name rather than squeezing the name to a letter per line. */
+.addons-order-name {
+    flex: 1 1 9rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.addons-order-moves {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: auto;
+}
+
+/* Issues: one card each, the add-on it is about first, and a way to put it
+   out of sight until what it says changes. */
+.addons-issues-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 0.875rem;
+}
+
+.addon-issue {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 0.875rem;
+    padding: 0.75rem 0.875rem;
+    margin-bottom: 0.625rem;
+    border: 1px solid var(--sentry-border);
+    border-left: 3px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface);
+}
+
+.addon-issue.is-hidden { opacity: 0.7; }
+
+.addon-issue-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+}
+
+.addon-issue-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.addon-issue-subject {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--sentry-link);
+    font: inherit;
+    font-weight: 600;
+    text-align: left;
+}
+
+.addon-issue-subject:hover { text-decoration: underline; }
+
+.addon-issue-subject-plain { font-weight: 600; }
+
+.addon-issue-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--sentry-link);
+    font-size: 0.8125rem;
+}
+
+.addon-issue-link:hover { text-decoration: underline; }
+
+.addon-issue-label {
+    padding: 0.125rem 0.5rem;
+    border-radius: 1rem;
+    background: var(--sentry-border);
+    color: var(--sentry-text-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.addon-issue-headline { font-size: 0.9375rem; }
+
+.addon-issue-action {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    margin-top: 0.375rem;
+}
+
+.addon-issue-problem { border-left-color: var(--sentry-danger-text); }
+.addon-issue-warning { border-left-color: var(--sentry-warn-text); }
+.addon-issue-unknown { border-left-color: var(--sentry-text-muted); }
+.addon-issue-info { border-left-color: var(--sentry-info-text); }
+
+.addon-issue-problem .addon-issue-label { background: var(--sentry-danger-bg); color: var(--sentry-danger-text); }
+.addon-issue-warning .addon-issue-label { background: var(--sentry-warn-bg); color: var(--sentry-warn-text); }
+.addon-issue-info .addon-issue-label { background: var(--sentry-info-bg); color: var(--sentry-info-text); }
+
+/* ---------------------------------------------------------------------------
+   The Backups tab
+
+   Its own block rather than more `.prop` rows, because the shape is different:
+   a row of summary cards, one action row, a segmented switch between two views
+   of the same tab, then either a table or a two-column settings sheet.
+
+   `.status-card` is reused for the summary row on purpose — an instance card, a
+   Status page check block and a Backups summary are the same object, and a
+   fourth copy of `padding + border + radius + surface` is how they drift.
+   --------------------------------------------------------------------------- */
+
+/* The value line and whatever qualifies it, on one baseline. A badge beside a
+   21px number has to sit on the text's baseline rather than on its own element's
+   edge, or it rides high against a line whose height it does not share. */
+.card-value {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.card-value .card-headline { margin: 0; }
+
+/* Take one now: the control, its field and the one sentence that qualifies it,
+   on a line. A heading and a paragraph above a button is the arrangement this
+   replaced, and it pushed everything an administrator opens the tab for below
+   the fold. */
+.backup-action {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    margin: 0 0 1.25rem;
+}
+
+.backup-action .form-control { flex: 1 1 16rem; max-width: 24rem; }
+
+/* The switch row: the two views on the left, context or filters on the right,
+   and a rule under the lot so what follows reads as belonging to the chosen
+   view rather than floating after it. */
+.view-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.125rem;
+    padding-bottom: 0.875rem;
+    border-bottom: 1px solid var(--sentry-border);
+}
+
+.view-bar-spacer { flex-grow: 1; }
+
+/* A switch between two views of ONE tab, rather than between tabs — so it is a
+   segmented control rather than a second tab strip. Two identical strips stacked
+   leaves it ambiguous which one a click is changing, which is the same reasoning
+   `.sub-tabs` carries, arriving at a different control. */
+.view-switch {
+    display: inline-flex;
+    gap: 0.1875rem;
+    padding: 0.1875rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.5rem;
+    background: var(--sentry-surface);
+}
+
+.view-switch button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4375rem;
+    padding: 0.375rem 0.9375rem;
+    border: none;
+    border-radius: 0.375rem;
+    background: none;
+    color: var(--sentry-text-muted);
+    font: inherit;
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.view-switch button:hover { color: var(--sentry-text); }
+
+.view-switch button.active {
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text);
+    font-weight: 600;
+}
+
+/* How many rows a view or a chip holds. Muted even inside the selected item:
+   it is a count, not the label. Unscoped because both controls carry one, and
+   scoping it to the switch left the chips' counts at body size. */
+.view-count {
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--sentry-text-muted);
+}
+
+/* Unsaved work on the view you are not looking at. A dot rather than a word,
+   because the word would be the third thing in a control that is two words
+   wide — and it is announced to a screen reader through aria-label instead. */
+.view-switch .view-dot {
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 50%;
+    background: var(--sentry-accent);
+    flex: 0 0 auto;
+}
+
+/* Which rows of the timeline to show. Not tabs: they filter one list rather
+   than switching between lists, so they read as toggles and not as places. */
+.filter-chip {
+    padding: 0.25rem 0.6875rem;
+    border: 1px solid transparent;
+    border-radius: 1rem;
+    background: none;
+    color: var(--sentry-text-muted);
+    font: inherit;
+    font-size: 0.8125rem;
+    cursor: pointer;
+}
+
+.filter-chip:hover { color: var(--sentry-text); }
+
+.filter-chip.active {
+    border-color: var(--sentry-border);
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text);
+}
+
+/* Which format wrote a row's file. A square tag rather than a rounded badge, so
+   it does not read as an outcome — the outcome pill is in the column beside it
+   and the two must not look like one another. */
+.format-chip {
+    display: inline-block;
+    padding: 0.125rem 0.4375rem;
+    border-radius: 0.25rem;
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* The backup's name in the backups folder, at the foot of the What started it cell.
+   Small and quiet, and broken at its hyphens where the column is narrower than the
+   name. */
+.backup-disk-name {
+    margin-top: 0.25rem;
+    color: var(--sentry-text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.6875rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+/* The settings sheet. Two columns at panel width and one when there is no room,
+   because a 15rem column of radio rows with descriptions is unreadable. */
+.backup-settings {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(26rem, 1fr));
+    gap: 1rem;
+    align-items: start;
+    margin-bottom: 1rem;
+}
+
+.backup-settings-column {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.backup-card {
+    padding: 0.875rem 1.125rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.5rem;
+    background: var(--sentry-surface);
+}
+
+.backup-card > h2 {
+    margin: 0 0 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+}
+
+.backup-card > .backup-card-lead {
+    margin: 0 0 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+/* One choice inside a card: the control, then everything it decides. The rule is
+   on the TOP of each row rather than the bottom, so the last row in a card does
+   not draw a line above the card's own border. */
+.backup-setting {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.75rem 0 0;
+    border-top: 1px solid var(--sentry-border);
+}
+
+.backup-setting + .backup-setting { padding-top: 0.75rem; }
+
+/* A heading over a choice, rather than beside its control. The rule moves up
+   here so the checkbox below aligns with its own label and not with the
+   heading. */
+.backup-setting-group {
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--sentry-border);
+}
+
+.backup-setting-group > .backup-group-label { margin-bottom: 0.375rem; }
+
+/* One tickable event. Not `.field-row`, which has no base rule at all and
+   leaves these flowing together as a paragraph. */
+.backup-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin: 0 0 0.5rem;
+    font-size: 0.875rem;
+}
+
+.backup-check > input[type="checkbox"] {
+    width: 0.9375rem;
+    height: 0.9375rem;
+    margin: 0.1875rem 0 0;
+    flex: 0 0 auto;
+}
+
+/* The buttons for one backup, kept on one line: a wrapped "Restore as new" reads
+   as a second row. */
+.backup-row-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
+}
+
+/* Against the right edge at rest, and against the left edge while the row asks
+   Delete or which Restore (`T282`). The move is what says the row has changed, and
+   it takes the answers out from under the second press of a double-click.
+
+   An auto margin rather than justify-content: flex-end, because flex-end spills a
+   too-narrow cell's buttons out of its START edge, over the Size column, where the
+   table's horizontal scroll cannot reach them. An auto margin collapses to zero
+   instead, and the overflow goes right, into the scroll. */
+.backup-row-actions > :first-child { margin-inline-start: auto; }
+
+.backup-row-actions.asking > :first-child { margin-inline-start: 0; }
+
+/* Restore's four answers (`D108` added An area…) need 335px, past the column at the
+   table's 60rem floor, so a row that is asking wraps between buttons and never inside
+   one. At rest the buttons stay on one line. */
+.backup-row-actions.asking {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+}
+
+/* While the frame is narrower than the table's 60rem floor it scrolls sideways, and
+   at an ordinary laptop width that put every row's buttons out of view (`T325`). So
+   the Actions column stays at the frame's right edge and the rest scrolls under it,
+   with a rule down its left edge. Not below 36rem: there the pinned column would
+   leave the other five a strip too narrow to read, and the whole table scrolls.
+
+   Separate borders, because a collapsed border belongs to the table rather than the
+   cell and stays behind while a pinned cell moves over it. The header's z-index puts
+   it above the column grips it covers. */
+#backup-timeline {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.table-wrap:has(> #backup-timeline) { container-type: inline-size; }
+
+@container (min-width: 36rem) and (max-width: 59.99rem) {
+    #backup-timeline th:last-child,
+    #backup-timeline td:last-child {
+        position: sticky;
+        right: 0;
+        z-index: 1;
+        box-shadow: inset 1px 0 0 var(--sentry-border);
+    }
+
+    #backup-timeline td:last-child { background: var(--sentry-bg); }
+}
+
+/* A row button: a bordered surface rather than a filled block. Bootstrap's
+   .btn-secondary is solid grey, and four of those per row across five rows reads
+   as a page full of things demanding attention, when every one of them is an
+   option offered about a row nobody has to touch.
+
+   Its own class rather than a restyled .btn-secondary, which the dialogs, the
+   console and the instance forms all use: a stylesheet is a shared namespace and
+   a diff of this file cannot see who else a name belongs to (`T263`). */
+.btn-quiet {
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.3125rem;
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.btn-quiet:hover:not(:disabled) {
+    border-color: var(--sentry-text-muted);
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text);
+}
+
+/* The background is named rather than left to Bootstrap. Its .btn:disabled sets
+   background-color from --bs-btn-disabled-bg, which these classes never define, so
+   an unstated disabled button falls through to transparent and dissolves into
+   whatever row it sits on. Same surface, faded, so the control keeps its shape. */
+.btn-quiet:disabled {
+    opacity: 0.55;
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text-muted);
+}
+
+/* The acting half of an in-row confirmation. The same box as the buttons it
+   replaced, so the row does not change height when the question appears, and red
+   because it is the one of the two that does something. */
+.btn-quiet-danger {
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--sentry-danger-border);
+    border-radius: 0.3125rem;
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.btn-quiet-danger:hover:not(:disabled) {
+    border-color: var(--sentry-danger-text);
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+}
+
+.btn-quiet-danger:disabled {
+    opacity: 0.55;
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+}
+
+/* The one control on a backup row that destroys something. It sits last, after
+   the options, so the pointer never crosses it on the way to one of them, and
+   carries a margin on top of the group's gap so it reads as separated from them
+   rather than as a fifth option.
+
+   Quiet at rest and red only under the pointer: a row of red bins reads as five
+   backups in trouble rather than one button per row that would end one. The icon
+   is inline SVG and the button is icon-only, so the label lives in aria-label —
+   there is no text node here for a screen reader to fall back on.
+
+   NOT display:flex, and the height is why. A flex container takes its height from
+   its tallest item, so an icon-only button is as tall as the icon — 24px against
+   the 29.5px of the text buttons beside it, which renders as one short button in a
+   row of taller ones. As an inline-block its line box comes from the same
+   font-size and line-height as .btn-quiet, so the two agree by construction rather
+   than by a pixel height somebody keeps in step by hand. */
+.btn-delete {
+    padding: 0.25rem 0.5rem;
+    margin-left: 0.25rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.3125rem;
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.btn-delete:hover:not(:disabled) {
+    border-color: var(--sentry-danger-border);
+    background: var(--sentry-danger-bg);
+    color: var(--sentry-danger-text);
+}
+
+.btn-delete:disabled {
+    opacity: 0.55;
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text-muted);
+}
+
+/* Sized in the button's own font so it scales with the row rather than pinning a
+   pixel height the text can outgrow. Nudged off the baseline so the bin sits on
+   the optical centre of the line box the text buttons share. */
+.btn-delete svg {
+    width: 0.875rem;
+    height: 0.875rem;
+    vertical-align: -0.1875em;
+}
+
+/* D110. The download icon: the bin's shape without its danger, since saving a copy
+   destroys nothing. */
+.btn-download {
+    padding: 0.25rem 0.5rem;
+    margin-left: 0.25rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.3125rem;
+    background: var(--sentry-surface-raised);
+    color: var(--sentry-text-muted);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.btn-download:hover:not(:disabled) {
+    color: var(--sentry-text);
+}
+
+.btn-download svg {
+    width: 0.875rem;
+    height: 0.875rem;
+    vertical-align: -0.1875em;
+}
+
+/* D110. What a backup offered for import holds: a label column and its answer. */
+.import-summary {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.25rem 1rem;
+    margin: 0.75rem 0;
+    font-size: 0.875rem;
+}
+
+.import-summary dt { color: var(--sentry-text-muted); font-weight: 500; }
+.import-summary dd { margin: 0; overflow-wrap: anywhere; }
+
+.backup-import .world-source { margin-bottom: 0.75rem; }
+
+/* A card holding a single row has nothing above it to be separated from. */
+.backup-setting-flush {
+    padding-top: 0;
+    border-top: none;
+}
+
+/* The one card that is not in the two-column grid. */
+.backup-card-wide { margin-bottom: 1rem; }
+
+/* A settings card whose controls cannot take effect. The controls are disabled
+   as well as dimmed — a card that only LOOKS gated while its inputs still bind
+   is the shape T172 warns about, where the UI and the handler disagree about
+   whether something is allowed.
+
+   Opacity rather than a colour per element: these cards hold selects, inputs,
+   checkboxes and labels, and naming a muted colour for each is the same rule
+   written six times. The heading and the explanatory notice are lifted back to
+   full strength, because the one thing a dimmed card must not dim is the
+   sentence saying why it is dimmed. */
+.backup-card-inert > .backup-setting,
+.backup-card-inert > .backup-card-lead {
+    opacity: 0.45;
+}
+
+.backup-card-inert > .backup-setting select,
+.backup-card-inert > .backup-setting input,
+.backup-card-inert > .backup-setting label {
+    cursor: not-allowed;
+}
+
+.backup-setting > input[type="checkbox"],
+.backup-setting > input[type="radio"] {
+    width: 0.9375rem;
+    height: 0.9375rem;
+    margin: 0.1875rem 0 0;
+    flex: 0 0 auto;
+}
+
+.backup-setting-body {
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.backup-setting-body > .backup-setting-label {
+    display: block;
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+}
+
+.backup-setting-body > p {
+    margin: 0.0625rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+/* A sub-heading inside a card, for a group that is not a choice of its own. */
+.backup-group-label {
+    display: block;
+    margin-bottom: 0.125rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sentry-text-muted);
+}
+
+/* The inline controls a choice reveals: a label, a select, a number, a unit. */
+.backup-inline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    margin-top: 0.5625rem;
+}
+
+.backup-inline > label {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+    white-space: nowrap;
+}
+
+.backup-inline .form-select { flex: 1 1 10rem; min-width: 0; }
+.backup-inline .form-control { width: 5rem; }
+
+/* The exception: a command line is prose, not a number, so it takes the row. */
+.backup-inline .form-control.command-line { flex: 1 1 20rem; width: auto; }
+
+/* What is unsaved, what it is, and the two buttons. The accent rule down the
+   leading edge rather than a filled panel: it is a state of the sheet above it,
+   not a warning about it. */
+.save-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--sentry-border);
+    border-left: 3px solid var(--sentry-accent);
+    border-radius: 0 0.5rem 0.5rem 0;
+    background: var(--sentry-accent-wash);
+}
+
+.save-bar-spacer { flex-grow: 1; }
+
+/* The same control driven by script rather than a link, so it is a button for
+   the keyboard's sake and has to be stripped of the chrome an <a> never had. */
+button.sub-tab {
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    font: inherit;
+    font-size: 0.9375rem;
+    cursor: pointer;
+}
+
 /* The instance strip gained a button, so it needs to look like the links. */
 /* The pair of strip actions, pushed to the end together. The `margin-left: auto`
    is here and not on the buttons: on each button, in a flex row, both absorb a
@@ -909,7 +2644,11 @@ h1:focus {
     margin-bottom: -1px;
 }
 
-/* Tables, for the status roll-up and the lists that arrive with milestones 5-10. */
+/* Tables: the status roll-up, the players list, the backup history, the package
+   store. A CSS comment is SERVED VERBATIM to every browser that loads the panel,
+   which is why the referent test applies harder here than in a .cs file: a roadmap
+   number described this project's plan rather than this stylesheet, and it shipped
+   to anyone who could reach the page. `ServedAssetRoadmap` polices the shape now. */
 
 .table-wrap {
     overflow-x: auto;
@@ -922,6 +2661,101 @@ h1:focus {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.9375rem;
+}
+
+/* Opt-in column resizing. A class of its own rather than a change to
+   `.table-wrap table`, which twelve components render: `table-layout: fixed`
+   changes how every column in a table is sized, so applying it to the shared rule
+   would resize eleven tables nobody asked about, in files no diff would touch.
+
+   Fixed layout is what makes a dragged width authoritative. Under the automatic
+   algorithm a <col> width is a hint the browser may overrule to fit content, so
+   dragging a column narrower than its longest cell does nothing and reads as a
+   broken control.
+
+   The floor is on the TABLE rather than on any column: with widths fixed, a
+   window narrower than the buttons need would otherwise clip them, and `.table-wrap`
+   already scrolls horizontally for exactly this. */
+.table-resizable {
+    table-layout: fixed;
+    min-width: 60rem;
+}
+
+/* Long values have nowhere to grow into once a column is fixed, so they break
+   rather than spilling under the next column. */
+.table-resizable th,
+.table-resizable td {
+    overflow-wrap: anywhere;
+}
+
+/* The grip sits ON the header's right border rather than beside the label, so the
+   thing being dragged is the line that moves. Two pixels wide with eight of
+   padding either side: a one-pixel target is a line nobody can hit, and a wide
+   one starts swallowing clicks meant for the header. */
+.table-resizable th {
+    position: relative;
+}
+
+.col-grip {
+    position: absolute;
+    top: 0;
+    right: -0.5rem;
+    width: 1rem;
+    height: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+    /* Above the neighbouring header, so the half that overhangs it is still the
+       grip and not that header's own text. */
+    z-index: 1;
+}
+
+/* THE CURSOR NEEDS ITS OWN RULE, and the :not() is what makes it win rather than
+   decoration. Bootstrap's reboot carries button:not(:disabled) { cursor: pointer }
+   at (0,1,1); a bare .col-grip is (0,1,0) and loses regardless of load order, so
+   the grip dragged correctly and never said "resize". Measured three ways in the
+   live page: a div.col-grip computes col-resize, a button.col-grip computes
+   pointer, and a DISABLED button.col-grip computes col-resize -- the last is
+   conclusive, because disabling it is what takes it out of :not(:disabled).
+
+   A stylesheet is a shared namespace and the vendor's rules are in it, which a
+   diff of this file cannot see. `A_cursor_other_than_pointer_outspecifies_the_
+   framework` pins every such declaration now, not just this one.
+
+   AND IT HAS TO WIN OUTRIGHT, NOT BY ORDER. The same reboot rule names
+   [type=button]:not(:disabled) too, and columns.js gives each grip
+   type="button", so .col-grip:not(:disabled) at (0,2,0) only TIED with it and
+   won because this file is linked after bootstrap.min.css. Scoped to the table
+   at (0,3,0), which no reordering of the two links can undo. */
+.table-resizable .col-grip:not(:disabled) {
+    cursor: col-resize;
+}
+
+.col-grip::after {
+    content: "";
+    position: absolute;
+    top: 25%;
+    left: calc(50% - 1px);
+    width: 2px;
+    height: 50%;
+    background: var(--sentry-border);
+}
+
+.col-grip:hover::after,
+.col-grip:focus-visible::after {
+    background: var(--sentry-text-muted);
+    top: 15%;
+    height: 70%;
+}
+
+/* While a drag is in flight the pointer is outside the grip more often than in
+   it, and every cell it crosses would otherwise start selecting text. */
+.table-resizable.is-resizing {
+    user-select: none;
+}
+
+.table-resizable.is-resizing .col-grip::after {
+    background: var(--sentry-accent);
 }
 
 .table-wrap th,
@@ -949,6 +2783,26 @@ h1:focus {
 
 /* Shown beside a nickname rather than replaced by it: the gamertag is the name
    the server's own console uses, and hiding it makes the two disagree. */
+/* D47. A face is 8 by 8 pixels drawn large, so it is scaled without smoothing. */
+.player-face {
+    flex: none;
+    border-radius: 3px;
+    image-rendering: pixelated;
+    background: var(--sentry-surface-raised);
+}
+
+.player-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.player-title {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
 .roster-gamertag {
     display: block;
     font-size: 0.8125rem;
@@ -995,6 +2849,47 @@ h1:focus {
 .check-detail {
     color: var(--sentry-text-muted);
     font-size: 0.8125rem;
+}
+
+/* D71. The play-port advisory under the Build card: what server-udp-ports says,
+   what has stopped being true about it, and the line to paste in. Separated from
+   the definition list above it by a rule rather than a box, because it is a
+   continuation of that card rather than a warning beside it — an administrator
+   whose ports are fine still sees the suggestion, and a bordered panel would read
+   as a fault. */
+/* A panel at the foot of a server's Status tab, not a block inside the Build
+   card: there it stretched every card in the row. After `.prop-panel` in
+   specificity, so its padding wins over the panel's row padding. */
+.prop-panel.play-ports-advice {
+    padding: 0.75rem 1rem;
+    margin-bottom: 1.5rem;
+}
+
+/* The foot of a server's Status tab: the Usage card above has no margin of
+   its own, so the sections below would sit against its border. */
+.status-foot {
+    margin-top: 2rem;
+}
+
+.play-ports-advice p {
+    margin: 0 0 0.5rem;
+}
+
+.play-ports-advice p:last-child {
+    margin-bottom: 0;
+}
+
+/* Selectable, wrapping and monospaced: this exists to be copied into a text
+   editor, so it must not truncate at the card's width and must not lose a
+   character to an ellipsis. */
+.suggested-line {
+    margin: 0 0 0.5rem;
+    padding: 0.4rem 0.55rem;
+    border-radius: 0.25rem;
+    background: var(--sentry-surface-raised);
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1054,6 +2949,12 @@ h1:focus {
     background: var(--sentry-surface);
     border-radius: 8px;
     padding: 0.25rem 1rem;
+}
+
+/* Reachability and scanning: one panel per server, each under its name. Headings
+   carry no top margin, so without this a server's name sat against the panel above. */
+.prop-panel + .check-group {
+    margin-top: 1.75rem;
 }
 
 .prop {
@@ -1308,6 +3209,7 @@ h1:focus {
 }
 
 .check-bad { color: var(--sentry-danger-text); }
+.check-warn { color: var(--sentry-warn-text); }
 
 /* In-game chat, and the switch that hides it. */
 
@@ -1321,7 +3223,8 @@ h1:focus {
 
 .console-filters .field-row { margin: 0; }
 
-/* Names the row without repeating "show" on every box in it. */
+
+/* Names the row without repeating "filter" on every box in it. */
 .console-filter-label {
     font-size: 0.8125rem;
     letter-spacing: 0.04em;
@@ -1478,6 +3381,17 @@ h1:focus {
     background: var(--sentry-ok-bg);
 }
 
+/* A build from Mojang's Preview channel (T333), which the file name does not say. */
+.pill-preview {
+    color: var(--sentry-warn-text);
+    background: var(--sentry-warn-bg);
+}
+
+/* The Minecraft EULA and the button that accepts it, shown until the first download
+   (D102). */
+.eula-prompt { margin-top: 0.75rem; }
+.eula-prompt p { margin: 0 0 0.75rem; }
+
 /* An update this server is counting down to. Framed rather than another
    paragraph, because it is the one thing on the page with a deadline on it. */
 .update-pending {
@@ -1537,4 +3451,272 @@ h1:focus {
     font-size: 0.8125rem;
     color: var(--sentry-text-muted);
     font-style: italic;
+}
+
+/* D103. A server's sync, under its controls on every tab that shows them. The
+   colours are the panel's own tokens, so both themes follow without a rule of
+   their own: info while it runs, ok when it finished, warn when it was called
+   off with nothing changed, danger when it stopped after the world was replaced. */
+.sync-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    padding: 0.875rem 1rem;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--sentry-border);
+    border-radius: 0.375rem;
+    background: var(--sentry-surface);
+    --sync-tone: var(--sentry-info-text);
+}
+
+.sync-strip.sync-finished { --sync-tone: var(--sentry-ok-text); }
+
+/* T414. Out-of-date firewall rules, under a server's controls: a warning, not a job. */
+.sync-strip.firewall-strip { --sync-tone: var(--sentry-warn-text); }
+.sync-strip.firewall-strip .sync-strip-line { margin-bottom: 0; }
+.sync-strip.sync-calledoff { --sync-tone: var(--sentry-warn-text); }
+.sync-strip.sync-incomplete { --sync-tone: var(--sentry-danger-text); border-color: var(--sentry-danger-border); }
+
+/* D111. A restore of the world or of an area, in the restore panel's red while it runs;
+   once it ends it takes the outcome's colour like a sync. */
+.sync-strip.restore-strip.sync-running {
+    --sync-tone: var(--sentry-danger-text);
+    background: var(--sentry-danger-bg);
+    border-color: var(--sentry-danger-border);
+}
+
+.sync-strip-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem 0.625rem;
+}
+
+.sync-strip-icon {
+    flex: none;
+    stroke: var(--sync-tone);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.sync-strip-when {
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.sync-strip-position {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--sync-tone);
+}
+
+.sync-strip-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--sentry-border);
+    overflow: hidden;
+}
+
+.sync-strip-bar > div {
+    height: 100%;
+    background: var(--sync-tone);
+}
+
+.sync-steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem 1.375rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+}
+
+.sync-step {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+/* The mark before each step says its state without colour alone. */
+.sync-step::before {
+    display: inline-block;
+    width: 1rem;
+    text-align: center;
+    font-weight: 700;
+}
+
+.sync-step.is-pending::before { content: "\25CB"; }
+.sync-step.is-current { color: var(--sync-tone); font-weight: 600; }
+.sync-step.is-current::before { content: "\25CF"; }
+.sync-step.is-done { color: var(--sentry-ok-text); }
+.sync-step.is-done::before { content: "\2713"; }
+.sync-step.is-endedhere { color: var(--sync-tone); font-weight: 600; }
+.sync-step.is-endedhere::before { content: "\2715"; }
+
+.sync-strip-line {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--sentry-text-muted);
+    overflow-wrap: anywhere;
+}
+
+/* D111. The Backups tab's restore panels open under its four cards, above Back up
+   now. The page scrolls to the panel, or to the server's controls once a restore
+   starts; the margin keeps either clear of the top bar, which stays in place on a
+   wide window. */
+.instance-bar,
+.backups-panels { scroll-margin-top: 4.5rem; }
+
+.backups-panels > .danger-panel,
+.backups-panels > .provision-panel,
+.backups-panels > .backup-card { margin-bottom: 1rem; }
+
+/* The Sync tab. */
+.sync-section { margin-bottom: 1.5rem; }
+
+.sync-section h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+
+.sync-source { display: block; max-width: 24rem; }
+
+.sync-source > span {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.875rem;
+    color: var(--sentry-text-muted);
+}
+
+.sync-areas td { vertical-align: middle; }
+
+.sync-areas input[aria-label="Name"] { min-width: 9rem; }
+
+/* Wide enough for "Overworld" and its arrow; the table scrolls inside its wrapper
+   at phone width rather than squeezing the name to three letters. */
+.sync-areas select[aria-label="Dimension"] { min-width: 8.5rem; }
+
+/* D106. The Show in game box and the outline's colour, side by side. */
+.sync-in-game {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sync-in-game .form-check-input {
+    margin-top: 0;
+}
+
+/* D107. The Ticking Areas view's add and edit form: its fields side by side, wrapping. */
+.tick-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem 1rem;
+}
+
+.tick-form .field input:not([type=number]),
+.tick-form .field select {
+    min-width: 9rem;
+}
+
+.tick-preload {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-bottom: 0.4rem;
+}
+
+.ticking-areas .provision-controls {
+    flex-wrap: nowrap;
+}
+
+.tick-areas td:nth-child(3) {
+    white-space: nowrap;
+}
+
+.sync-in-game .form-control-color {
+    width: 2.5rem;
+    flex: none;
+}
+
+.sync-corner {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.sync-corner + .sync-corner {
+    margin-top: 0.25rem;
+}
+
+.sync-corner-label {
+    width: 2.5rem;
+    flex: none;
+    font-size: 0.875rem;
+}
+
+/* Six corner inputs share a row, so they carry no spin buttons: without them an
+   input this wide shows a six-digit coordinate such as -123456 whole. */
+.sync-corner input {
+    width: 4.75rem;
+    padding-left: 0.5rem;
+    padding-right: 0.25rem;
+    appearance: textfield;
+}
+
+.sync-corner input::-webkit-inner-spin-button,
+.sync-corner input::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+}
+
+.sync-size {
+    font-size: 0.875rem;
+    min-width: 8rem;
+}
+
+/* The six corner numbers and the dimension of an area to restore from a backup
+   (`D108`), in a row that wraps on a narrow window. */
+.area-corners {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr));
+    gap: 0.5rem;
+}
+
+/* A restore's sentence can carry a path with no space in it; it breaks anywhere rather
+   than widening the page past a phone's width. */
+.area-restore-progress { overflow-wrap: anywhere; }
+
+/* D116. A profile's Face section: a skin file in a provision-controls row, a Java
+   username and its button in the next, each label above its field. */
+.face-set {
+    margin: 2rem 0;
+    max-width: 42rem;
+}
+
+.face-set .face-set-caption {
+    display: block;
+    margin: 0.75rem 0 0.25rem;
+}
+
+.face-set .face-set-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: flex-end;
+    margin-top: 0.75rem;
+}
+
+.face-set .face-set-row label {
+    display: flex;
+    flex: 1 1 16rem;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0;
+}
+
+.face-set .check-detail,
+.face-set .console-fault {
+    margin: 0.5rem 0 0;
 }

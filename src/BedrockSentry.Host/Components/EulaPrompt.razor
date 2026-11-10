@@ -1,0 +1,22 @@
+@* D102, answered by the operator: the first download waits for somebody to accept the
+   Minecraft EULA, since Mojang's own download page asks for it before its link works and
+   the wrapper's download passes no such page. A page shows this only until the
+   acceptance is recorded (BdsUpdateService.EulaAccepted). *@
+<div class="eula-prompt">
+    <p>
+        Running a Bedrock server means accepting the
+        <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noopener noreferrer">Minecraft EULA</a>.
+        The wrapper downloads the server from Mojang once you have, and does not ask again.
+    </p>
+    <button type="button" class="btn btn-primary" disabled="@Busy" @onclick="OnAccept">
+        @(Busy ? "Downloading…" : "I accept and download")
+    </button>
+</div>
+
+@code {
+    /// <summary>Records the acceptance and starts the download.</summary>
+    [Parameter] public EventCallback OnAccept { get; set; }
+
+    /// <summary>A download is under way.</summary>
+    [Parameter] public bool Busy { get; set; }
+}

@@ -122,6 +122,10 @@ public enum InstanceFault
 /// moment anyone updates the files by hand, and the running server is the one
 /// telling the truth.
 /// </param>
+/// <param name="ClaimedFor">
+/// The job that alone may start and stop the server now, such as a sync or an
+/// update, as <see cref="ClaimText"/> names it; null when nothing claims it.
+/// </param>
 public sealed record InstanceStatus(
     string InstanceId,
     string Name,
@@ -135,7 +139,8 @@ public sealed record InstanceStatus(
     DateTimeOffset? NextRetryUtc,
     string? FaultReason,
     string? ServerVersion = null,
-    InstanceFault FaultKind = InstanceFault.None)
+    InstanceFault FaultKind = InstanceFault.None,
+    string? ClaimedFor = null)
 {
     /// <summary>
     /// How long the process has been up, or null if it is not. Derived rather

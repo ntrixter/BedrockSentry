@@ -38,7 +38,10 @@ public sealed class UpdateLedger
     [JsonPropertyName("consecutiveFailures")]
     public int ConsecutiveFailures { get; set; }
 
-    /// <summary>Set once too many updates have failed in a row; requires a human.</summary>
+    /// <summary>
+    /// Set once too many updates have failed in a row. A successful update clears it, and so
+    /// does <b>Resume automatic updates</b> on the Settings page (<c>D101</c>).
+    /// </summary>
     [JsonPropertyName("autoUpdateDisabled")]
     public bool AutoUpdateDisabled { get; set; }
 
@@ -64,6 +67,17 @@ public sealed class UpdateLedger
 
     [JsonPropertyName("lastSuccessUtc")]
     public DateTimeOffset? LastSuccessUtc { get; set; }
+
+    /// <summary>
+    /// When the last helper result this ledger folded in was written, so a result the
+    /// service cannot delete is not counted again at every start.
+    /// </summary>
+    /// <remarks>
+    /// The broker's helper writes its result in the install tree, which the service's
+    /// account may read and not change.
+    /// </remarks>
+    [JsonPropertyName("lastConsumedResultUtc")]
+    public DateTimeOffset? LastConsumedResultUtc { get; set; }
 
     /// <summary>Whether an update to <paramref name="identity"/> may be attempted now.</summary>
     public bool CanAttempt(string identity, int maxConsecutiveFailures, DateTimeOffset now, out string? reason)

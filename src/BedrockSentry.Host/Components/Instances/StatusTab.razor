@@ -4,26 +4,104 @@
 @using BedrockSentry.Core.Instances
 @using BedrockSentry.Core.Packages
 @using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Diagnostics
 @using BedrockSentry.Services.Packages
 @using BedrockSentry.Core.Players
+@using BedrockSentry.Host.Components.Diagnostics
 
 @inject ServerPackageStore Packages
+@inject PublicAddressService PublicAddress
+@inject PortInspector Ports
 @inject InstanceSizeSampler Sizes
 @inject IPlayerStore Players
+@inject ProcessSampler Processes
+@inject BedrockSentry.Services.Backups.BackupHistory Backups
 @implements IDisposable
 
-<InstanceControls Supervisor="Supervisor" />
+@if (Supervisor.Definition.RestoredFrom is { } origin)
+{
+    @* D40. Above everything, including the files-unreadable panel, because it
+       changes what every other number on this page means: a copy's playtime, its
+       backups and its world size are all about a server somebody made to look at
+       something, not about the one people play on. The sentence comes from Core so
+       the suite can reach it. *@
+    <p class="console-hint">@origin.Sentence()</p>
+}
 
-@if (!Supervisor.IsProvisioned)
+@{
+    // Read once: it is a disk probe, and the arms below all ask about the same
+    // answer rather than about the same question.
+    var presence = Supervisor.Presence;
+}
+
+@if (presence.CouldNotBeRead)
+{
+    @* T246. This used to render the panel below — "no Bedrock server installed
+       here", over an Install button — for a server that IS here and that this
+       service is not allowed to read. A false sentence, and the button under it
+       would have unpacked a second copy over the first. No Install is offered on
+       either arm: one would overwrite a server that exists, and the other cannot
+       even see into the folder to know. *@
+    <div class="provision-panel">
+        <h3>This server's files could not be read</h3>
+
+        @if (presence.State is ServerPresenceState.Unreadable)
+        {
+            <p>
+                <code>@Supervisor.Definition.Executable</code> is in
+                <code>@Supervisor.WorkingDirectory</code>, and the account this service
+                runs as is not allowed to read it. The server is installed — this is a
+                permissions problem rather than a missing server.
+            </p>
+        }
+        else
+        {
+            <p>
+                <code>@Supervisor.WorkingDirectory</code> could not be read, so nothing here
+                can say whether a Bedrock server is in it.
+            </p>
+
+            @if (presence.Reason is { Length: > 0 } refusal)
+            {
+                @* Windows's own sentence, which names the cause far better than
+                   anything composed here could (`T231`). *@
+                <p class="check-detail">@refusal</p>
+            }
+        }
+
+        <p class="check-detail">
+            Give that account read access to the folder and this page will say so on its
+            next refresh. Nothing has been changed, and this server has not been started.
+        </p>
+    </div>
+}
+else if (presence.OffersInstall)
 {
     @* An instance with no server in it is a setup step, not a failure — and the
-       fix is a button rather than a folder to go and find. *@
+       fix is a button rather than a folder to go and find.
+
+       `T252`. A folder that is not there shares this panel and not its sentence.
+       The panel is right for both because ExtractAsync creates the target
+       directory, so Install works either way; the sentence is not, because "has no
+       bedrock_server.exe in it" describes a folder that was read and found empty.
+       Sharing a panel is not sharing a claim (`T188`). *@
     <div class="provision-panel">
         <h3>No Bedrock server installed here</h3>
-        <p>
-            This instance runs from <code>@Supervisor.WorkingDirectory</code>, which has
-            no <code>@Supervisor.Definition.Executable</code> in it.
-        </p>
+
+        @if (presence.State is ServerPresenceState.NoDirectory)
+        {
+            <p>
+                This instance runs from <code>@Supervisor.WorkingDirectory</code>, which does
+                not exist yet. Installing a server below creates it.
+            </p>
+        }
+        else
+        {
+            <p>
+                This instance runs from <code>@Supervisor.WorkingDirectory</code>, which has
+                no <code>@Supervisor.Definition.Executable</code> in it.
+            </p>
+        }
 
         @if (packages.Count == 0)
         {
@@ -38,7 +116,7 @@
                 <select class="form-select" @bind="selectedPackage" disabled="@installing">
                     @foreach (var package in packages)
                     {
-                        <option value="@package.FileName">@package.Display</option>
+                        <option value="@package.FileName">@package.Label</option>
                     }
                 </select>
                 <button class="btn btn-primary" @onclick="InstallAsync" disabled="@installing">
@@ -76,7 +154,7 @@
             </dd>
 
             <dt>Started</dt>
-            <dd>@(Status.StartedUtc is { } started ? started.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "—")</dd>
+            <dd>@(Status.StartedUtc is { } started ? ClockText.DateAndTimeWithSeconds(started.ToLocalTime()) : "—")</dd>
 
             @if (Status.State is InstanceState.Backoff && Status.NextRetryUtc is { } retry)
             {
@@ -98,60 +176,105 @@
             <dt>Version</dt>
             <dd>@(Status.ServerVersion ?? "—")</dd>
 
-            <dt>Port</dt>
-            <dd>@(port?.ToString() ?? "—")</dd>
+            @* D70. Rendered from the port model rather than from two properties,
+               because which of these rows EXIST depends on the transport. A
+               NetherNet server binds server-port as TCP and does not read
+               server-portv6 at all, and this card used to state both numbers as
+               fact for such a server — one of them a port it ignores. *@
+            <dt>Transport</dt>
+            <dd>@TransportName</dd>
 
-            <dt>IPv6 port</dt>
-            <dd>@(portV6?.ToString() ?? "—")</dd>
+            @foreach (var socket in network.Ports)
+            {
+                <dt>@(socket.Key == ServerPorts.PortV6Key ? "IPv6 port" : "Port")</dt>
+                <dd>@socket.Port @(socket.Protocol == PortProtocol.Tcp ? "TCP" : "UDP")</dd>
+            }
 
-            <dt>Level</dt>
-            <dd>@(levelName ?? "—")</dd>
+            @* D71. The sentence lives on PlayPorts in Core, where a test can read
+               the words. NetherNet has two port cases -- play on the server
+               port's UDP side with server-udp-ports unset, and the configured
+               window with it set -- and this card rendered one sentence for both
+               while the second case's ports are knowable and nameable. *@
+            @if (network.Play.Kind != PlayPortKind.SameAsServerPort)
+            {
+                <dt>Play ports</dt>
+                <dd title="@network.Play.Explanation">@network.Play.Sentence</dd>
+            }
         </dl>
+
+        @* The advice itself is at the foot of the tab, beside this server's
+           firewall rows: written out here it was the longest thing on the
+           card and stretched every card in the row to match. *@
+        @if (advice.AsksForChange)
+        {
+            <p class="check-detail play-ports-pointer">Play ports need a change; see below.</p>
+        }
+
+        @* T413. ServerTransports.Warning holds the sentence, where a test reads it. *@
+        @if (ServerTransports.Warning(network.Transport) is { } transportWarning)
+        {
+            <p class="console-hint transport-warning">@transportWarning</p>
+        }
     </div>
 
     <div class="status-card">
         <h2>World</h2>
         <dl>
             <dt>Name</dt>
-            <dd>@(levelName ?? "—")</dd>
+            <dd>@(propertiesKnown ? (levelName ?? "—") : Unknown)</dd>
 
             <dt>Difficulty</dt>
-            <dd>@Titled(difficulty)</dd>
+            <dd>@(propertiesKnown ? Titled(difficulty) : Unknown)</dd>
 
             <dt>Game mode</dt>
-            <dd>@Titled(gameMode)</dd>
+            <dd>@(propertiesKnown ? Titled(gameMode) : Unknown)</dd>
 
             @* Through ServerProperties, not TryGetValue: an absent key means off,
-               and a page that decided that for itself is what T136 was. *@
+               and a page that decided that for itself is what T136 was.
+
+               And every row in this card goes through worldFact, because an
+               unreadable file made all five of them render BDS's defaults as if
+               they had been read (T231). The Transport row above was already
+               honest -- it asks PortInspector, which has had a four-state reader
+               since D71 -- and that is exactly what made this card look honest
+               while five of its rows were guessing. *@
             <dt>Allow list</dt>
-            <dd>@(allowlist ? "enforced" : "off")</dd>
+            <dd>@(propertiesKnown ? (allowlist ? "enforced" : "off") : Unknown)</dd>
 
             <dt>Cheats</dt>
-            <dd>@(cheats ? "allowed" : "off")</dd>
+            <dd>@(propertiesKnown ? (cheats ? "allowed" : "off") : Unknown)</dd>
         </dl>
+
+        @if (!propertiesKnown)
+        {
+            <p class="check-detail">
+                @ServerProperties.FileName could not be read, so the rows above
+                describe nothing. @propertiesWhy
+            </p>
+        }
     </div>
 
     <div class="status-card">
         <h2>Players</h2>
         <dl>
+            @* The same meter, from the same reading, as the row above the tabs:
+               the count is on this page twice and must not disagree with itself. *@
             <dt>Online</dt>
+            <dd><PlayersOnlineMeter Online="@players.Online" MaxPlayers="@players.MaxPlayers" /></dd>
+
+            @* Who is an operator is the Players tab's own rule; the names are the
+               ones the player lists show. *@
+            <dt>Operators</dt>
             <dd>
-                @if (maxPlayers is { } ceiling and > 0)
+                @OnlineMeter.OperatorsLabel(players.Operators?.Count)
+                @if (players.Operators is { Count: > 0 } operators)
                 {
-                    @* Full at the maximum and no further. Over it is a real state
-                       rather than an error — the allow list's "join if full" flag
-                       exists to produce it — so the bar clamps and the number does
-                       not: 13 / 10 is the truth and a 130% bar is not. *@
-                    <div class="meter" role="img"
-                         aria-label="@online of @ceiling players online">
-                        <i style="width:@(Math.Min(100, online * 100.0 / ceiling).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"
-                           class="@(online >= ceiling ? "meter-full" : null)"></i>
-                    </div>
-                    <span class="meter-label">@online / @ceiling</span>
-                }
-                else
-                {
-                    <text>@online</text>
+                    <ul class="operators-online">
+                        @foreach (var name in operators)
+                        {
+                            <li>@name</li>
+                        }
+                    </ul>
                 }
             </dd>
         </dl>
@@ -176,7 +299,7 @@
 </div>
 
 <div class="status-card">
-    <h2>Directory</h2>
+    <h2>Usage</h2>
     <dl>
         <dt>Runs from</dt>
         <dd>@Supervisor.WorkingDirectory</dd>
@@ -192,12 +315,111 @@
         <dt>Folder</dt>
         <dd>@(size is { } f ? f.Folder : "—")</dd>
 
+        @* The volume the world is on, which is not the system drive's once an
+           instance has a volume of its own (`D48`). *@
+        <dt>Disk</dt>
+        <dd>@(size is { } d ? d.Free : "—")</dd>
+
+        @* Size deltas between walks, negatives drawn below the line: compaction
+           shrinks a world and a backup's flush adds a burst, and clipping either
+           would draw a graph that lies in the tidy direction (`D48`). The
+           geometry and the words come from Core. *@
+        <dt>Growth</dt>
+        <dd>
+            @if (size is { } g && WorldGrowthText.Describe(g.History) is { } grew)
+            {
+                var spark = Sparkline.Of([.. g.History.Steps.Select(st => st.Bytes)], 96, 20);
+                <svg class="growth-spark" viewBox="0 0 @spark.Width @spark.Height" width="96" height="20"
+                     role="img" aria-label="World size change between walks over the last day">
+                    @foreach (var bar in spark.Bars)
+                    {
+                        <rect class="@(bar.Below ? "spark-down" : "spark-up")"
+                              x="@Svg(bar.X)" y="@Svg(bar.Y)" width="@Svg(bar.Width)" height="@Svg(bar.Height)"></rect>
+                    }
+                    <line class="spark-zero" x1="0" x2="@Svg(spark.Width)" y1="@Svg(spark.Baseline)" y2="@Svg(spark.Baseline)"></line>
+                </svg>
+                <span class="growth-text">@grew</span>
+            }
+            else
+            {
+                <span>—</span>
+            }
+        </dd>
+
+        @* Live on the page's own tick rather than on the walk's interval: a
+           reading of one process is cheap and `T73` proved it exact. *@
+        <dt>Memory</dt>
+        <dd>@(memory is { } used ? used.Memory : "—")</dd>
+
+        <dt>Last backup</dt>
+        <dd title="@(lastBackup is { } exact ? ClockText.Utc(exact) : null)">
+            @LastBackupText.Since(lastBackup, DateTimeOffset.UtcNow, lastBackupKnown)
+        </dd>
+
+        @* Retrying says what the watchdog is doing now; this says what it has
+           been doing, so a server that crash-looped this morning does not read
+           as one up since Tuesday (`D48`). *@
+        <dt>@ExitTallyText.Label</dt>
+        <dd>
+            @ExitTallyText.Describe(
+                Supervisor.UnexpectedExits.CountWithinWindow(DateTimeOffset.UtcNow),
+                Supervisor.UnexpectedExits.CountingSinceUtc,
+                DateTimeOffset.UtcNow,
+                ClockText.TimeOnDay(Supervisor.UnexpectedExits.CountingSinceUtc.ToLocalTime()))
+        </dd>
+
         @if (size is { } taken)
         {
             <dt>Measured</dt>
-            <dd class="check-detail">@taken.TakenUtc.ToLocalTime().ToString("HH:mm:ss")</dd>
+            <dd class="check-detail">@ClockText.TimeWithSeconds(taken.TakenUtc.ToLocalTime())</dd>
         }
     </dl>
+</div>
+
+<div class="status-foot">
+    @if (advice.Applies)
+    {
+        <h2>Play ports</h2>
+
+        <div class="prop-panel play-ports-advice">
+            @foreach (var notice in advice.Notices)
+            {
+                <p class="check-detail">@notice.Sentence</p>
+            }
+
+            @* T230. Both sentences here answer questions about the same key
+               and only the notices above had been taught that it can be set,
+               so applying the line this block composed left it saying "put
+               this in server.properties" about a line already in the file.
+               The lead comes from Core now -- one sentence per stance, chosen
+               where a test can read it, rather than markup that renders the
+               imperative whenever a line can be composed, which is always. *@
+            @if (advice.Lead is { } lead)
+            {
+                <p>@lead</p>
+            }
+
+            @if (advice.Suggested is { } line)
+            {
+                <pre class="suggested-line"><code>@(ServerUdpPorts.Key)=@line</code></pre>
+                <p class="check-detail">
+                    The wrapper does not write this for you: the published half
+                    is a fact about your router that nothing here can check,
+                    and a wrong one stops outside players connecting silently.
+                    Forward that range over UDP, and check it does not overlap
+                    another server's.
+                </p>
+            }
+            else if (advice.SuggestionBlockedBy is { } blocked)
+            {
+                <p class="check-detail">@blocked</p>
+            }
+        </div>
+    }
+
+    @* This server's firewall, identity and Defender rows, the same ones the Status
+       page groups under its name, so a fix is in reach where the server is. *@
+    <SystemChecks Only="Supervisor" />
 </div>
 
 @code {
@@ -211,41 +433,141 @@
     private bool installing;
     private string? installError;
 
-    private int? port;
-    private int? portV6;
+    /// Given an empty port list rather than left default, so a render that ever
+    /// reaches the card before Refresh has run shows no rows rather than throwing.
+    private InstancePorts network = new(null, null, []);
+
+    /// Null until the lookup answers, which is the same state as a machine with
+    /// no route out and is rendered the same way: every notice but the drift one
+    /// stands without it, and drift is deliberately not reported from an address
+    /// nobody knows (`D71`).
+    private string? publicAddress;
+
     private string? levelName;
     private string? difficulty;
     private string? gameMode;
     private bool allowlist;
     private bool cheats;
-    private int? maxPlayers;
-    private int online;
+
+    // T231. The justification first written here was FALSE and cost the operator
+    // the only actionable half of the card. It said Windows's own reason was
+    // deliberately not collected because the Transport row a few lines up renders
+    // it. It does not: `TransportLabel` MATCHES on `Unreadable` being non-empty and
+    // returns a fixed sentence, DISCARDING the reason. So the page carried five
+    // unknown rows, the phrase "could not be read" twice in two different rows, and
+    // the raw Windows reason zero times.
+    //
+    // A comment stating the opposite of the code beneath it, inside a fix for the
+    // class defined by exactly that (T145, T175). And the comment's own goal was
+    // not achieved either: the phrase is duplicated regardless.
+    //
+    // It is collected and rendered ONCE now, under the rows it explains.
+    //
+    // No forgiving default: `Refresh` runs in OnParametersSetAsync, so this is set
+    // before anything renders it and a `true` here would be unreachable. An
+    // unreachable default that claims knowledge is the wrong one to leave lying
+    // around for whoever moves the call.
+    private bool propertiesKnown;
+
+    /// <summary>
+    /// Windows's own reason, when the file could not be opened. Null otherwise.
+    /// </summary>
+    /// <remarks>
+    /// The half somebody can act on: it says whether this is a permission, a lock
+    /// or a missing drive, and the five rows above it cannot. Rendered once, below
+    /// the rows, rather than on each of them.
+    /// </remarks>
+    private string? propertiesWhy;
+
+    /// <summary>
+    /// What every row in the World card reads when the file could not be opened.
+    /// One constant rather than five literals, because five copies of a rendered
+    /// word is the class this project files most often.
+    /// </summary>
+    private const string Unknown = "unknown";
+    /// Nobody online until the first read lands, which is also what a stopped server reads.
+    private PlayersNow players = new(0, null, null);
     private InstanceSize? size;
+    private ProcessUsage? memory;
+    private DateTimeOffset? lastBackup;
+    private bool lastBackupKnown = true;
+    private DateTimeOffset lastBackupRead = DateTimeOffset.MinValue;
+
+    /// How often the last backup is read again. The page ticks every second and
+    /// the history is a file; a backup that lands shows within this.
+    private static readonly TimeSpan BackupReadInterval = TimeSpan.FromSeconds(30);
+
+    /// SVG wants invariant numbers whatever the culture the page renders in.
+    private static string Svg(double value) => value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// What to tell an administrator about this server's play ports (`D71`).
+    /// Recomputed per render rather than stored, so it cannot go stale against
+    /// the `network` and `publicAddress` it is derived from.
+    private UdpPortAdvice advice => network.AdviceGiven(publicAddress, claims);
+
+    /// What this server's play window could run into (`T415`), read only under
+    /// NetherNet and at most every few seconds: the page renders every second and
+    /// this reads the machine's socket tables.
+    private IReadOnlyList<PortClaim>? claims;
+    private RecentPortClaims? recentClaims;
 
     protected override async Task OnParametersSetAsync()
     {
         Refresh();
-        await ReadOnlineAsync();
+        players = await PlayersNow.ReadAsync(
+            Players, Supervisor.InstanceId, Supervisor.WorkingDirectory, countOperators: true);
+        memory = Status.ProcessId is { } pid ? Processes.Sample(pid) : null;
+        await ReadLastBackupAsync();
+        ReadPublicAddress();
+    }
+
+    private async Task ReadLastBackupAsync()
+    {
+        if (DateTimeOffset.UtcNow - lastBackupRead < BackupReadInterval)
+        {
+            return;
+        }
+
+        lastBackupRead = DateTimeOffset.UtcNow;
+
+        try
+        {
+            lastBackup = await Backups.LastSuccessfulUtcAsync(Supervisor.InstanceId);
+            lastBackupKnown = true;
+        }
+        catch (IOException)
+        {
+            // Not "never": a history that could not be read says nothing about
+            // whether a backup was taken (`T176`).
+            lastBackupKnown = false;
+        }
     }
 
     /// <remarks>
-    /// The roster rather than a counter: playtime and presence are both derived
-    /// from the session table and never stored as a number, so counting the rows
-    /// is the only answer that cannot drift from the Players tab beside it.
+    /// Deliberately not awaited. The lookup talks to a third party and waits up to
+    /// eight seconds, and this card is the one somebody opens to find out why a
+    /// server is down — holding its first render on somebody else's service is the
+    /// wrong trade. The advisory renders without an address and fills in when one
+    /// arrives. Cheap after the first: the service caches for half an hour and is
+    /// a singleton, which it had to be made (`T217`).
     /// </remarks>
-    private async Task ReadOnlineAsync()
-    {
-        try
+    private void ReadPublicAddress() =>
+        _ = InvokeAsync(async () =>
         {
-            online = (await Players.OnlineAsync(Supervisor.InstanceId)).Count;
-        }
-        catch (Exception)
-        {
-            // The store being unreachable is not a reason to fail the whole card;
-            // every other fact on it comes from somewhere else.
-            online = 0;
-        }
-    }
+            var (address, _) = await PublicAddress.GetAsync();
+
+            if (address == publicAddress)
+            {
+                return;
+            }
+
+            publicAddress = address;
+            StateHasChanged();
+        }).ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
 
     protected override void OnInitialized() => Sizes.Sampled += OnMeasured;
 
@@ -279,29 +601,50 @@
             ? "—"
             : string.Concat(char.ToUpperInvariant(value[0]), value[1..]);
 
+    /// What to call this server's transport. The rule lives in `InstancePorts`
+    /// (`T210`) rather than here, because this file is one the test project cannot
+    /// reference and there are four states to get right.
+    private string TransportName => network.TransportLabel;
+
     private void Refresh()
     {
         // Read from disk on each render rather than caching. server.properties is
         // editable by hand and by the next tab along, and a stale port on the
         // status page is exactly the kind of small lie that costs an hour.
-        var properties = ServerProperties.Read(ServerProperties.PathFor(Supervisor.WorkingDirectory));
+        var read = ServerProperties.ReadFile(ServerProperties.PathFor(Supervisor.WorkingDirectory));
+        var properties = read.Values;
+        propertiesKnown = read.Known;
+        propertiesWhy = read.Why;
 
-        port = properties.TryGetValue("server-port", out var p) && int.TryParse(p, out var parsed) ? parsed : null;
-        portV6 = properties.TryGetValue("server-portv6", out var p6) && int.TryParse(p6, out var parsed6) ? parsed6 : null;
+        // Through the inspector rather than off `properties`, so the card and the
+        // start pre-flight cannot come to disagree about what this server binds.
+        network = PortInspector.ModelOf(Supervisor.WorkingDirectory);
+
+        if (network.Transport is not ServerTransport.NetherNet)
+        {
+            claims = null;
+        }
+        else
+        {
+            // `T426`: the read walks every socket on the machine; a render a second
+            // cannot afford it each time.
+            recentClaims ??= new RecentPortClaims(() => Ports.ClaimsBesides(Supervisor.InstanceId));
+            claims = recentClaims.Get();
+        }
         levelName = properties.TryGetValue("level-name", out var level) ? level : null;
         difficulty = properties.TryGetValue("difficulty", out var diff) ? diff : null;
         gameMode = properties.TryGetValue("gamemode", out var mode) ? mode : null;
-        maxPlayers = properties.TryGetValue("max-players", out var max) && int.TryParse(max, out var cap)
-            ? cap
-            : null;
-
         allowlist = ServerProperties.AllowlistEnforced(properties);
         cheats = ServerProperties.CheatsAllowed(properties);
 
         // Last sample, instantly; the walk it may start happens off this thread.
         size = Sizes.Latest(Supervisor.InstanceId, Supervisor.WorkingDirectory);
 
-        if (!Supervisor.IsProvisioned)
+        // Only the arms that offer an Install need the list, and which those are
+        // is OffersInstall's to say rather than this line's — the markup above
+        // asks the same question, and a state added later would otherwise get a
+        // panel with an empty package list (`T252`).
+        if (Supervisor.Presence.OffersInstall)
         {
             packages = Packages.List();
             selectedPackage ??= packages.FirstOrDefault()?.FileName;

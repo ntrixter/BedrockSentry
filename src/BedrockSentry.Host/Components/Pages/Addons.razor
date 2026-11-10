@@ -1,0 +1,334 @@
+@page "/addons"
+@* The shared shelf of add-ons. Switching one on for a server is on that
+   server's own Add-ons tab (milestone 15, D77-D83). *@
+@rendermode InteractiveServer
+
+@using BedrockSentry.Core.Addons
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Services.Addons
+@using BedrockSentry.Services.Instances
+@using Microsoft.AspNetCore.Components.Forms
+
+@inject AddonLibrary Library
+@inject CompanionPackSeeder Seeder
+@inject LibraryPackRemover Remover
+@inject AddonIcons Icons
+
+<PageTitle>Add-ons · BedrockSentry</PageTitle>
+
+<h1>Add-on library</h1>
+
+<p class="lead">
+    One shelf of packs, shared by every server. Adding one here does not switch it
+    on anywhere — each server chooses from this list on its own Add-ons tab.
+</p>
+
+<div class="provision-panel">
+    <h3>Add a pack</h3>
+
+    <p class="check-detail">
+        A <code>.mcaddon</code>, <code>.mcpack</code> or <code>.zip</code>. It is
+        unpacked here, because Bedrock cannot read a packed one. An archive that
+        would write outside its own folder is refused whole.
+    </p>
+
+    <div class="provision-controls">
+        <InputFile OnChange="ImportAsync" disabled="@busy" accept=".mcaddon,.mcpack,.zip" />
+        @if (busy)
+        {
+            <span class="check-detail">Reading…</span>
+        }
+    </div>
+
+    @if (importError is { Length: > 0 })
+    {
+        <p class="console-fault">@importError</p>
+    }
+
+    @foreach (var result in imported)
+    {
+        <p class="@(result.Outcome == PackImportOutcome.Rejected ? "console-fault" : "check-detail")">
+            <strong>@result.Name</strong> —
+            @switch (result.Outcome)
+            {
+                case PackImportOutcome.Imported:
+                    <text>added at @result.Version.</text>
+                    break;
+
+                case PackImportOutcome.AlreadyPresent:
+                    <text>
+                        already on the shelf at @result.Version, so nothing was changed.
+                        The copy here is left exactly as it is.
+                    </text>
+                    break;
+
+                default:
+                    <text>@result.Reason</text>
+                    break;
+            }
+        </p>
+    }
+</div>
+
+<h3>On the shelf</h3>
+
+@if (CompanionPackSeeder.Describe(Seeder.Last) is { } seeding)
+{
+    <p class="console-fault">@seeding</p>
+}
+@if (CompanionPackSeeder.DescribeResources(Seeder.LastResources) is { } seedingResources)
+{
+    <p class="console-fault">@seedingResources</p>
+}
+
+@* T298: an unreadable library is said, not thrown past the page. *@
+@if (shelf.Sentence is { } unreadable)
+{
+    <p class="console-fault">@unreadable</p>
+}
+
+@if (shelf.EmptyState is { } empty)
+{
+    <p class="empty-state">@empty</p>
+}
+
+@* T310: no table without a row. Under "could not be read" its header row was
+   drawn over nothing. *@
+@if (packs.Count > 0)
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 3.5rem"><span class="visually-hidden">Icon</span></th>
+                    <th style="width: 34%">Add-on</th>
+                    <th style="width: 26%">Versions</th>
+                    <th style="width: 22%">In use</th>
+                    <th style="width: 18%"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var pack in packs)
+                {
+                    <tr>
+                        <td><AddonIcon Uuid="@pack.Uuid" Name="@pack.Name" Url="@icons.GetValueOrDefault(pack.Uuid)" /></td>
+                        <td>
+                            <strong>@pack.Name</strong>
+                            @if (pack.Newest.Manifest.Authors.Count > 0)
+                            {
+                                <div class="check-detail">by @string.Join(", ", pack.Newest.Manifest.Authors)</div>
+                            }
+                        </td>
+                        <td>
+                            @foreach (var version in pack.Versions)
+                            {
+                                <span class="@(version == pack.Newest ? "state-badge state-running" : "state-badge")">
+                                    @version.Version
+                                </span>
+                            }
+                        </td>
+                        <td class="check-detail">@InUse(pack.Uuid)</td>
+                        <td style="text-align: right">
+                            @if (LibraryRemoval.ShipsWithTheWrapper(pack.Uuid))
+                            {
+                                @* D93. Put back at every start, so there is no
+                                   Remove to offer. *@
+                                <span class="check-detail">Ships with BedrockSentry</span>
+                            }
+                            else
+                            {
+                                <button class="btn btn-secondary" disabled="@(busy || pending is not null)"
+                                        @onclick="() => BeginRemoveAsync(pack)">
+                                    Remove
+                                </button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@* D83, answered by the operator 2026-09-25: a pack a stopped server still has is
+   removed only once somebody has read which servers it comes off. The sentence and
+   the plan come from Core, so the page cannot say one thing and do another. *@
+@if (pending is { } asking)
+{
+    <div class="danger-panel">
+        <h3>Remove @asking.Pack.Name</h3>
+        @if (askedAgain)
+        {
+            <p class="prop-check warn">The servers changed since this was first shown; this is what it does now.</p>
+        }
+        <p>@asking.Plan.Sentence</p>
+        <div class="provision-controls">
+            <button class="btn btn-danger" disabled="@busy" @onclick="ConfirmRemoveAsync">
+                @(busy ? "Removing…" : "Remove anyway")
+            </button>
+            <button class="btn btn-secondary" disabled="@busy" @onclick="CancelRemove">Cancel</button>
+        </div>
+    </div>
+}
+
+@if (removeError is { Length: > 0 })
+{
+    <p class="console-fault">@removeError</p>
+}
+
+@if (removeSummary is { Length: > 0 })
+{
+    <p class="check-detail">@removeSummary</p>
+}
+
+@code {
+    private IReadOnlyList<LibraryPack> packs = [];
+    private LibraryListing shelf = new([], null);
+    private IReadOnlyDictionary<string, string> icons = new Dictionary<string, string>();
+    private IReadOnlyList<ImportedPack> imported = [];
+    private string? importError;
+    private string? removeError;
+    private string? removeSummary;
+    private bool busy;
+
+    // D83. The removal waiting on a confirmation, with the plan it was shown for.
+    private (LibraryPack Pack, LibraryRemovalPlan Plan)? pending;
+    private bool askedAgain;
+
+    // Which servers hold each pack, read once per page load rather than per row:
+    // it walks every server's world.
+    private LibrarySurvey survey = new(new Dictionary<string, IReadOnlyList<PackHolder>>(), []);
+
+    protected override void OnInitialized() => Reload();
+
+    private void Reload()
+    {
+        shelf = Library.Read();
+        packs = shelf.Packs;
+        icons = Icons.RememberLibrary(packs);
+        survey = Remover.Survey();
+    }
+
+    private string InUse(string uuid) => LibraryRemoval.InUse(survey.HoldersOf(uuid));
+
+    private async Task ImportAsync(InputFileChangeEventArgs args)
+    {
+        busy = true;
+        importError = null;
+        imported = [];
+
+        try
+        {
+            var file = args.File;
+
+            if (file.Size > AddonLibrary.MaxUploadBytes)
+            {
+                importError =
+                    $"That file is larger than {ByteSize.Format(AddonLibrary.MaxUploadBytes)}.";
+                return;
+            }
+
+            // Buffered because the archive's entries are read twice — the
+            // manifests before anything is written — and an upload stream is
+            // forward-only.
+            using var buffer = new MemoryStream();
+            await using (var upload = file.OpenReadStream(AddonLibrary.MaxUploadBytes))
+            {
+                await upload.CopyToAsync(buffer);
+            }
+
+            buffer.Position = 0;
+
+            // The uploaded file's own name, so a pack with no usable name of
+            // its own can still be named back — a rejection is exactly when
+            // somebody needs to know which of several files failed.
+            var result = await Library.ImportAsync(buffer, file.Name);
+
+            if (!result.Accepted)
+            {
+                importError = result.Reason;
+                return;
+            }
+
+            imported = result.Packs;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException)
+        {
+            importError = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            Reload();
+        }
+    }
+
+    private async Task BeginRemoveAsync(LibraryPack pack)
+    {
+        removeError = null;
+        removeSummary = null;
+        askedAgain = false;
+
+        // Asked of the servers as they are now, not as they were when the page
+        // loaded: one may have started since.
+        survey = Remover.Survey();
+        var plan = LibraryPackRemover.Plan(pack, survey);
+
+        switch (plan.Verdict)
+        {
+            case LibraryRemovalVerdict.Refuse:
+                removeError = plan.Sentence;
+                break;
+
+            case LibraryRemovalVerdict.Confirm:
+                pending = (pack, plan);
+                break;
+
+            default:
+                await RemoveAsync(pack, plan);
+                break;
+        }
+    }
+
+    private Task ConfirmRemoveAsync() =>
+        pending is { } asking ? RemoveAsync(asking.Pack, asking.Plan) : Task.CompletedTask;
+
+    private void CancelRemove()
+    {
+        pending = null;
+        askedAgain = false;
+    }
+
+    private async Task RemoveAsync(LibraryPack pack, LibraryRemovalPlan plan)
+    {
+        busy = true;
+
+        try
+        {
+            var outcome = await Remover.RemoveAsync(pack, plan);
+
+            switch (outcome.Kind)
+            {
+                case LibraryRemovalOutcomeKind.AskAgain when outcome.Plan is { } fresh:
+                    pending = (pack, fresh);
+                    askedAgain = true;
+                    break;
+
+                case LibraryRemovalOutcomeKind.Removed:
+                    pending = null;
+                    removeSummary = outcome.Sentence;
+                    break;
+
+                default:
+                    pending = null;
+                    removeError = outcome.Sentence;
+                    break;
+            }
+        }
+        finally
+        {
+            busy = false;
+            Reload();
+        }
+    }
+}

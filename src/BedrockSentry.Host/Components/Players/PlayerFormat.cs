@@ -1,3 +1,5 @@
+using BedrockSentry.Core.Diagnostics;
+
 namespace BedrockSentry.Host.Components.Players;
 
 /// <summary>
@@ -37,5 +39,16 @@ public static class PlayerFormat
 
     /// <summary>A local calendar date, or an em dash when there is nothing to show.</summary>
     public static string Date(DateTimeOffset? value) =>
-        value is { } at ? at.ToLocalTime().ToString("yyyy-MM-dd") : "—";
+        value is { } at ? ClockText.Date(at.ToLocalTime()) : "—";
+
+    /// <summary>
+    /// A local date and time on the twelve-hour clock, or an em dash when there is
+    /// nothing to show.
+    /// </summary>
+    /// <remarks>
+    /// For last seen, and everywhere a player's page gives a moment: "this morning" and
+    /// "an hour ago" are different answers, and a date alone gives the same one for both.
+    /// </remarks>
+    public static string DateAndTime(DateTimeOffset? value) =>
+        value is { } at ? ClockText.DateAndTime(at.ToLocalTime()) : "—";
 }

@@ -2,8 +2,10 @@
    which live on the Server properties tab. *@
 
 @using BedrockSentry.Core.Configuration
+@using BedrockSentry.Core.Diagnostics
 @using BedrockSentry.Core.Instances
 @using BedrockSentry.Core.Packages
+@using BedrockSentry.Core.Updates
 @using BedrockSentry.Services.Backups
 @using BedrockSentry.Services.Instances
 @using BedrockSentry.Services.Packages
@@ -13,6 +15,7 @@
 
 @inject InstanceRegistry Registry
 @inject NavigationManager Navigation
+@inject BackupArtifactStore Artifacts
 
 <p class="console-hint">
     BedrockSentry's settings for this server. Bedrock's own settings are on the
@@ -38,6 +41,14 @@
             else if (nameSaved)
             {
                 <div class="prop-check ok">Saved.</div>
+            }
+            @* T411. The rules carry the name, so a rename relabels them; a failure
+               here leaves the rename standing and says which half did not. *@
+            @if (nameRules is { } rules)
+            {
+                <div class="prop-check @(rules.Succeeded ? "ok" : "bad")">
+                    Firewall: @rules.Message
+                </div>
             }
         </div>
         <div class="prop-doc">
@@ -123,18 +134,25 @@
         <div>
             <dt>@(ServerIsRunning ? "Running" : "Installed")</dt>
             <dd>
-                @if (updateStatus?.Installed is { } current)
+                @* D53. The build it is, which for a Preview build comes from the package
+                   this wrapper installed, and beside it what the server calls itself. *@
+                @if (updateStatus?.Shown is { } shown)
                 {
-                    @current.ToString()
+                    @shown.Value
 
-                    @if (!ServerIsRunning && versionRecord is { Reported: false })
+                    @if (shown.Detail is { } detail)
                     {
-                        <span class="check-detail">installed here, not started yet</span>
+                        <span class="check-detail">@detail</span>
                     }
                 }
                 else
                 {
                     <span class="check-detail">not reported — start the server once</span>
+                }
+
+                @if (updateStatus?.Installed is not null && !ServerIsRunning && versionRecord is { Reported: false })
+                {
+                    <span class="check-detail">installed here, not started yet</span>
                 }
             </dd>
         </div>
@@ -144,7 +162,7 @@
             <dd>
                 @if (versionRecord is { IsAnUpdate: true } changed)
                 {
-                    @changed.FirstSeenUtc.ToLocalTime().ToString("g")
+                    @ClockText.DateAndTime(changed.FirstSeenUtc.ToLocalTime())
                     <span class="check-detail">from @changed.PreviousVersion</span>
                 }
                 else if (versionRecord is { } first)
@@ -154,7 +172,7 @@
                        whenever the wrapper happened to be installed. *@
                     <text>never, since this wrapper has been watching</text>
                     <span class="check-detail">
-                        first seen on @first.Version, @first.FirstSeenUtc.ToLocalTime().ToString("g")
+                        first seen on @first.Version, @ClockText.DateAndTime(first.FirstSeenUtc.ToLocalTime())
                     </span>
                 }
                 else
@@ -167,14 +185,9 @@
         <div>
             <dt>Last checked</dt>
             <dd>
-                @if (Updates.LastCheckedUtc is { } checkedAt)
-                {
-                    @checkedAt.ToLocalTime().ToString("g")
-                }
-                else
-                {
-                    <text>never</text>
-                }
+                @* T52: a check that could not read the feed is said, beside the last
+                   read if there was one, from the scheduled check as well as Check now. *@
+                @UpdateCheckText.LastChecked(Updates.LastCheckedUtc, Updates.LastFailedCheck, BdsUpdateService.FeedName)
                 <span class="check-detail">@CheckCadence</span>
             </dd>
         </div>
@@ -203,32 +216,36 @@
             else
             {
                 <p>
-                    <strong>Updating to Minecraft @scheduled.Version
-                    @(Remaining > TimeSpan.Zero
-                        ? $"in {Core.Instances.CountdownMessage.Describe(Remaining)}"
-                        : "now")</strong>
+                    <strong>@PendingUpdateText.Headline(scheduled.Version, Stage, Remaining)</strong>
                     @if (scheduled.PackageFileName is null)
                     {
                         <span class="check-detail"> — still downloading</span>
                     }
                 </p>
 
-                <p class="check-detail">
-                    Anyone online has been told, and is told again as the window closes.
-                    Cancelling leaves this server where it is and does not offer this build
-                    again until BedrockSentry restarts or a newer one appears.
-                </p>
+                <p class="check-detail">@PendingUpdateText.Detail(Stage)</p>
 
-                <div class="provision-controls">
-                    <button class="btn btn-primary" disabled="@updateBusy"
-                            @onclick="ApplyPendingNowAsync">
-                        Apply now
-                    </button>
-                    <button class="btn btn-secondary" disabled="@updateBusy"
-                            @onclick="CancelPendingAsync">
-                        Cancel this update
-                    </button>
-                </div>
+                @* T407: hidden rather than greyed once there is nothing left for them
+                   to do; the stage says why. *@
+                @if (PendingUpdateText.OffersApplyNow(Stage) || PendingUpdateText.OffersCancel(Stage))
+                {
+                    <div class="provision-controls">
+                        @if (PendingUpdateText.OffersApplyNow(Stage))
+                        {
+                            <button class="btn btn-primary" disabled="@updateBusy"
+                                    @onclick="ApplyPendingNowAsync">
+                                Apply now
+                            </button>
+                        }
+                        @if (PendingUpdateText.OffersCancel(Stage))
+                        {
+                            <button class="btn btn-secondary" disabled="@updateBusy"
+                                    @onclick="CancelPendingAsync">
+                                Cancel this update
+                            </button>
+                        }
+                    </div>
+                }
             }
         </div>
     }
@@ -320,9 +337,9 @@
     {
         <p class="check-detail">
             The Bedrock files from before
-            @(kept.Taken is { } taken ? $"the update on {taken.ToLocalTime():d MMM yyyy, h:mm tt}" : "the last update")
+            @(kept.Taken is { } taken ? $"the update on {ClockText.DayAndTime(taken.ToLocalTime())}" : "the last update")
             are still here, in <code>@System.IO.Path.GetFileName(kept.Path)</code> —
-            @($"{kept.Bytes / 1024.0 / 1024.0:0.0} MB"). They are the way back if this
+            @ByteSize.Format(kept.Bytes). They are the way back if this
             build turns out not to run. The next update replaces them, so only ever
             one is kept.
         </p>
@@ -345,7 +362,7 @@
 
         @* "Bedrock channel", not "Channel" (`T166`). This is a THIRD meaning of that
            word: BuildInfo.Channel is the wrapper's publish-time build stamp,
-           UpdateOptions.Channel is which branch the wrapper updates itself from, and
+           UpdateOptions.Channel is which channel the wrapper updates itself from, and
            this is Release-or-Preview for bedrock_server.exe. Three facts, one word,
            and this is the one an administrator edits. *@
         <label class="field">
@@ -461,16 +478,17 @@ else
                 @foreach (var package in packages)
                 {
                     <tr>
-                        <td>
+                        <td class="text-nowrap">
                             <strong>@package.Display</strong>
+                            <BuildChannelTag Channel="package.Channel" />
                             @if (IsRunning(package))
                             {
                                 <span class="pill pill-ok">@InstalledHere</span>
                             }
                         </td>
                         <td><code>@package.FileName</code></td>
-                        <td class="num">@($"{package.SizeBytes / 1024.0 / 1024.0:0.0} MB")</td>
-                        <td class="num">@package.ModifiedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                        <td class="num">@ByteSize.Format(package.SizeBytes)</td>
+                        <td class="num">@ClockText.DateAndTime(package.ModifiedUtc.ToLocalTime())</td>
                         <td>
                             <button class="btn btn-sm btn-secondary" disabled="@updateBusy"
                                     @onclick="() => BeginInstall(package)">
@@ -835,6 +853,19 @@ else
             </p>
 
             <div class="field-row">
+                <input type="checkbox" id="remove-firewall-rules" @bind="removeFirewallRules" disabled="@busy" />
+                <label for="remove-firewall-rules">
+                    Remove its firewall rules
+                </label>
+            </div>
+            <p class="check-detail">
+                @* `T400`. Ticked by default: a rule outliving its server keeps the port
+                   open for whatever binds it next. *@
+                The inbound rules named "BedrockSentry - @Supervisor.Definition.Name (…)" that
+                Apply fix added for this server. A rule you renamed is left alone.
+            </p>
+
+            <div class="field-row">
                 <input type="checkbox" id="delete-backups" @bind="deleteBackups" disabled="@busy" />
                 <label for="delete-backups">
                     Delete this instance's backups
@@ -848,11 +879,23 @@ else
                 {
                     <text>
                         @backupCount @(backupCount == 1 ? "backup" : "backups"),
-                        @FormatSize(backupBytes), under <code>@BackupFolder</code>.
+                        @ByteSize.Format(backupBytes), under <code>@BackupFolder</code>.
                         Leave it unticked and they stay there after the server is gone —
                         nothing else lists or prunes them. Ticking it is the one choice here
                         with no way back: it takes the safety backups too, which are what you
                         would restore from if this removal turns out to be a mistake.
+                        @* D69. A lock stops RETENTION, not an administrator who has asked for
+                           this and typed their password. A lock that could veto here would
+                           make removal uncompletable from the panel, which is D43's
+                           no-way-forward problem — so the dialog names the number instead. *@
+                        @if (lockedBackupCount > 0)
+                        {
+                            <strong>
+                                @lockedBackupCount of them
+                                @(lockedBackupCount == 1 ? "is" : "are") locked, and ticking
+                                this deletes @(lockedBackupCount == 1 ? "it" : "them") too.
+                            </strong>
+                        }
                     </text>
                 }
                 else
@@ -875,8 +918,8 @@ else
         @if (Confirm.PasswordRequired)
         {
             <label class="field">
-                <span>Confirm with your BedrockSentry password</span>
-                <input class="form-control" type="password" autocomplete="current-password"
+                <span>@Confirm.FieldLabel</span>
+                <input class="form-control" type="@Confirm.FieldType" autocomplete="@Confirm.FieldAutocomplete"
                        value="@password" @oninput="OnPasswordInput" disabled="@busy" />
             </label>
         }
@@ -1098,6 +1141,9 @@ else
 
     private TimeSpan Remaining => pending?.RemainingAt(Clock.GetUtcNow()) ?? TimeSpan.Zero;
 
+    private PendingUpdateStage Stage =>
+        PendingUpdateText.Stage(Remaining, AutoUpdates.IsApplying(Supervisor.InstanceId));
+
     /// <summary>
     /// The countdown this delay produces, described rather than listed.
     /// </summary>
@@ -1146,18 +1192,23 @@ else
 
     private async Task CancelPendingAsync()
     {
-        AutoUpdates.Cancel(Supervisor.InstanceId);
-        pending = null;
-        updateMessage = "The scheduled update was called off.";
+        // Refused once the install has begun (`T407`); the block then says so itself.
+        if (AutoUpdates.Cancel(Supervisor.InstanceId))
+        {
+            updateMessage = "The scheduled update was called off.";
+        }
+
+        pending = AutoUpdates.PendingFor(Supervisor.InstanceId);
         await Task.CompletedTask;
     }
 
     private async Task ApplyPendingNowAsync()
     {
+        // No sentence of its own: the pending block says what the update is doing
+        // from its state, and this only brings the moment forward (`T287`).
         AutoUpdates.ApplyNow(Supervisor.InstanceId);
         pending = AutoUpdates.PendingFor(Supervisor.InstanceId);
-        updateMessage =
-            "Applying now — the server will warn anyone online, stop and come back on the new build.";
+        updateMessage = null;
         await Task.CompletedTask;
     }
 
@@ -1453,6 +1504,7 @@ else
     private string instanceName = string.Empty;
     private bool nameSaved;
     private string? nameError;
+    private SystemCheckFix? nameRules;
 
     private string instanceFolder = string.Empty;
     private string? folderMessage;
@@ -1480,7 +1532,9 @@ else
     private bool deleteFiles;
     private bool forgetPlayers;
     private bool deleteBackups;
+    private bool removeFirewallRules = true;
     private int backupCount;
+    private int lockedBackupCount;
     private long backupBytes;
     private int playerRecords;
 
@@ -1502,6 +1556,7 @@ else
         instanceName = Supervisor.Definition.Name;
         nameSaved = false;
         nameError = null;
+        nameRules = null;
 
         instanceFolder = Supervisor.WorkingDirectory;
         folderMessage = null;
@@ -1653,10 +1708,11 @@ else
         busy = true;
         nameError = null;
         nameSaved = false;
+        nameRules = null;
 
         try
         {
-            await Registry.RenameAsync(Supervisor.InstanceId, wanted);
+            nameRules = await Registry.RenameAsync(Supervisor.InstanceId, wanted);
             instanceName = Supervisor.Definition.Name;
             nameSaved = true;
         }
@@ -1841,24 +1897,23 @@ else
         deleteFiles = false;
         forgetPlayers = false;
         deleteBackups = false;
+        removeFirewallRules = true;
 
         playerRecords = await PlayerData.CountAsync(Supervisor.InstanceId);
 
         var backups = Restorer.ListBackups(Supervisor.InstanceId);
         backupCount = backups.Count;
         backupBytes = backups.Sum(b => b.SizeBytes);
+
+        // Counted against what is actually on disk rather than against the state
+        // file, so an entry left behind for an artifact retention already removed
+        // cannot inflate this (`D68` keeps those deliberately).
+        var locked = await Artifacts.LockedAsync(Supervisor.InstanceId);
+        lockedBackupCount = backups.Count(b => locked.Contains(b.Name));
     }
 
     /// <summary>Where this instance's archives live, for the removal dialog to name.</summary>
     private string BackupFolder => Path.Combine(Paths.Backups, Supervisor.InstanceId);
-
-    private static string FormatSize(long bytes) => bytes switch
-    {
-        >= 1024L * 1024 * 1024 => $"{bytes / 1024d / 1024 / 1024:0.#} GB",
-        >= 1024L * 1024        => $"{bytes / 1024d / 1024:0.#} MB",
-        >= 1024                => $"{bytes / 1024d:0.#} KB",
-        _                      => $"{bytes} B",
-    };
 
     private void Cancel()
     {
@@ -1885,9 +1940,9 @@ else
 
         try
         {
-            if (!await PasswordIsRightAsync())
+            if (await RefusalAsync() is { } refusal)
             {
-                error = "That password is not right.";
+                error = refusal;
                 return;
             }
 
@@ -1905,7 +1960,7 @@ else
             }
 
             var done = await Registry.RemoveAsync(
-                Supervisor.InstanceId, new RemoveInstanceRequest(deleteFiles, forgetPlayers, deleteBackups));
+                Supervisor.InstanceId, new RemoveInstanceRequest(deleteFiles, forgetPlayers, deleteBackups, removeFirewallRules));
 
             // Status, because this page has just stopped describing anything — the
             // supervisor is out of the registry and the tab strip above is rendering a
@@ -1944,11 +1999,11 @@ else
     /// name is still the page's job, because only a component has the authentication
     /// state.
     /// </remarks>
-    private async Task<bool> PasswordIsRightAsync()
+    private async Task<string?> RefusalAsync()
     {
         var state = AuthenticationState is null ? null : await AuthenticationState;
 
-        return Confirm.Accepts(state?.User.Identity?.Name, password);
+        return await Confirm.RefusalAsync(state?.User.Identity?.Name, password);
     }
 
     /// <remarks>

@@ -3,11 +3,14 @@
    and where new instances land. Everything else the wrapper keeps is small and
    stays at the data root, whose location cannot be a setting inside itself. *@
 
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Core.Instances
 @using BedrockSentry.Services.Configuration
 @using BedrockSentry.Services.Instances
 
 @inject StorageLocations Storage
 @inject InstanceRegistry Registry
+@inject OrphanedStorage LeftBehind
 
 <h2>Storage</h2>
 
@@ -95,7 +98,160 @@
     </div>
 </div>
 
+@* D63, answered by the operator 2026-09-25. What removed servers left behind was
+   invisible: nothing listed it, the folders sit under a data root an ordinary account
+   cannot open, and no tab exists for a server that is gone. Listed here with a tickbox
+   each; nothing goes unless it is ticked and the deletion confirmed, and nothing is
+   pruned by age, which is what D39 keeps a removed server's backups for. *@
+<h3>Left behind by removed servers</h3>
+
+<p class="check-detail">
+    Folders and files a server left when it was removed: its backups when the box to delete
+    them was left unticked, its console logs, and its record of the Bedrock build it ran. No
+    server uses them. Copy out any backup you want before deleting it.
+</p>
+
+@if (orphans.Unreadable is { } unreadable)
+{
+    <p class="console-fault">@unreadable</p>
+}
+
+@if (orphans.Items.Count == 0)
+{
+    <p class="empty-state">Nothing is left behind.</p>
+}
+else
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 2.5rem">
+                        <input type="checkbox" aria-label="Select everything left behind"
+                               checked="@(selected.Count == orphans.Items.Count)"
+                               disabled="@deleting"
+                               @onchange="e => SelectAll((bool?)e.Value == true)" />
+                    </th>
+                    <th>What</th>
+                    <th>Server</th>
+                    <th class="num">Size</th>
+                    <th>Last changed</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in orphans.Items)
+                {
+                    var changed = item.LastChangedUtc.ToLocalTime();
+
+                    <tr>
+                        <td>
+                            <input type="checkbox" aria-label="@($"Select {OrphanedStorageRules.Describe(item.Kind)} of {item.Name}")"
+                                   checked="@selected.Contains(item.Key)"
+                                   disabled="@deleting"
+                                   @onchange="e => Toggle(item.Key, (bool?)e.Value == true)" />
+                        </td>
+                        <td>@OrphanedStorageRules.Describe(item.Kind)</td>
+                        <td>
+                            <code>@item.Name</code>
+                            <div class="check-detail">@item.Files file@(item.Files == 1 ? "" : "s")</div>
+                        </td>
+                        <td class="num">@ByteSize.Format(item.SizeBytes)</td>
+                        <td>
+                            @ClockText.Time(changed)
+                            <span class="check-detail" style="display:block">@ClockText.Day(changed)</span>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="provision-controls">
+        @if (confirmingDelete)
+        {
+            <span class="check-detail">
+                Delete @selected.Count item@(selected.Count == 1 ? "" : "s")? This cannot be undone.
+            </span>
+            <button class="btn btn-danger" disabled="@deleting" @onclick="DeleteSelected">
+                @(deleting ? "Deleting…" : "Delete")
+            </button>
+            <button class="btn btn-secondary" disabled="@deleting" @onclick="() => confirmingDelete = false">
+                Cancel
+            </button>
+        }
+        else
+        {
+            <button class="btn btn-secondary" disabled="@(selected.Count == 0)"
+                    @onclick="() => confirmingDelete = true">
+                Delete selected@(selected.Count > 0 ? $" ({selected.Count})" : "")
+            </button>
+        }
+    </div>
+}
+
+@if (deleteSummary is { } summary)
+{
+    <p class="@(deleteSummaryIsBad ? "prop-check bad" : "check-detail")">@summary</p>
+}
+
 @code {
+    private OrphanListing orphans = new([], null);
+    private readonly HashSet<string> selected = new(StringComparer.OrdinalIgnoreCase);
+    private bool confirmingDelete;
+    private bool deleting;
+    private string? deleteSummary;
+    private bool deleteSummaryIsBad;
+
+    private void Toggle(string key, bool on)
+    {
+        if (on)
+        {
+            selected.Add(key);
+        }
+        else
+        {
+            selected.Remove(key);
+        }
+
+        confirmingDelete = false;
+    }
+
+    private void SelectAll(bool on)
+    {
+        selected.Clear();
+
+        if (on)
+        {
+            selected.UnionWith(orphans.Items.Select(i => i.Key));
+        }
+
+        confirmingDelete = false;
+    }
+
+    /// <summary>
+    /// Deletes what is ticked. The service asks the list again first, so an item a
+    /// server has since taken back is left alone (<c>D63</c>).
+    /// </summary>
+    private void DeleteSelected()
+    {
+        deleting = true;
+
+        try
+        {
+            var results = LeftBehind.Delete(selected.ToList());
+
+            deleteSummary = OrphanedStorageRules.Summary(results);
+            deleteSummaryIsBad = results.Any(r => r.Outcome != OrphanDeletionOutcome.Deleted);
+        }
+        finally
+        {
+            deleting = false;
+            confirmingDelete = false;
+            selected.Clear();
+            orphans = LeftBehind.List();
+        }
+    }
+
     private string backupsRoot = string.Empty;
     private string packagesRoot = string.Empty;
     private string instancesRoot = string.Empty;
@@ -104,7 +260,11 @@
     private string? error;
     private string? savedFor;
 
-    protected override void OnInitialized() => SyncFromSource();
+    protected override void OnInitialized()
+    {
+        SyncFromSource();
+        orphans = LeftBehind.List();
+    }
 
     /// <summary>
     /// Overrides shown as themselves, the default shown as the placeholder — so

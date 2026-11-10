@@ -97,6 +97,13 @@ public sealed class BdsAutoUpdater : BackgroundService
     private readonly ConcurrentDictionary<string, TimeSpan> _lastSpoken =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// What each due update was last said to wait for (<see cref="InstanceClaim"/>),
+    /// so it is said once per claim.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _waitingFor =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public BdsAutoUpdater(
         InstanceRegistry registry,
         BdsUpdateService updates,
@@ -144,6 +151,12 @@ public sealed class BdsAutoUpdater : BackgroundService
     /// <summary>The instances currently taking a Bedrock build, for a log line.</summary>
     public IReadOnlyList<string> Applying => _applying.Keys.ToList();
 
+    /// <summary>
+    /// True while this instance is taking its pending build, which stays pending until
+    /// the install returns, health gate and all (`T407`).
+    /// </summary>
+    public bool IsApplying(string instanceId) => _applying.ContainsKey(instanceId);
+
     /// <summary>What this instance is counting down to, or null.</summary>
     public PendingBdsUpdate? PendingFor(string instanceId) =>
         _pending.TryGetValue(instanceId, out var pending) ? pending : null;
@@ -153,7 +166,12 @@ public sealed class BdsAutoUpdater : BackgroundService
     /// again until the wrapper restarts, a newer one appears, or this server's
     /// update settings are saved.
     /// </summary>
-    public bool Cancel(string instanceId) => Withdraw(instanceId, decline: true);
+    /// <remarks>
+    /// Refused once the install has begun (`T407`): the server is already being
+    /// stopped, and players would be told the update was called off as it happens.
+    /// </remarks>
+    public bool Cancel(string instanceId) =>
+        !IsApplying(instanceId) && Withdraw(instanceId, decline: true);
 
     /// <summary>
     /// Forgets the build this instance declined, so the next sweep offers it
@@ -190,6 +208,7 @@ public sealed class BdsAutoUpdater : BackgroundService
         }
 
         _lastSpoken.TryRemove(instanceId, out _);
+        _waitingFor.TryRemove(instanceId, out _);
 
         _log.LogInformation(
             "The automatic update of {InstanceId} to Bedrock {Version} was called off",
@@ -210,7 +229,7 @@ public sealed class BdsAutoUpdater : BackgroundService
     /// <summary>Brings a pending update forward to now.</summary>
     public bool ApplyNow(string instanceId)
     {
-        if (!_pending.TryGetValue(instanceId, out var pending))
+        if (IsApplying(instanceId) || !_pending.TryGetValue(instanceId, out var pending))
         {
             return false;
         }
@@ -418,6 +437,26 @@ public sealed class BdsAutoUpdater : BackgroundService
         await ApplyAsync(supervisor, pending, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Says once per claim that a due update waits for it.</summary>
+    private void Waiting(InstanceSupervisor supervisor, PendingBdsUpdate pending, string purpose)
+    {
+        var id = supervisor.InstanceId;
+
+        if (_waitingFor.TryGetValue(id, out var said) && said == purpose)
+        {
+            return;
+        }
+
+        _waitingFor[id] = purpose;
+
+        _log.LogInformation(
+            "The automatic update of {InstanceId} to Bedrock {Version} waits for {Purpose}",
+            id, pending.Version, purpose);
+
+        supervisor.Console.Append(
+            ConsoleOrigin.Notice, ClaimText.UpdateWaits(pending.Version, purpose), _time.GetUtcNow());
+    }
+
     /// <summary>
     /// Speaks the next countdown point that has fallen due.
     /// </summary>
@@ -514,6 +553,17 @@ public sealed class BdsAutoUpdater : BackgroundService
 
             _pending.TryRemove(id, out _);
             _lastSpoken.TryRemove(id, out _);
+            _waitingFor.TryRemove(id, out _);
+        }
+        catch (InstanceClaimedException claimed)
+        {
+            // Another job is part-way through this server, such as a sync. The
+            // installer's claim refused before it stopped or installed anything, and
+            // the build is not at fault, so it waits rather than being declined: the
+            // first tick after the claim ends applies it, with the short final
+            // countdown. Found by the installer asking, never by looking first, so
+            // there is no moment between a look and the claim for a sync to begin in.
+            Waiting(supervisor, pending, claimed.Purpose);
         }
         catch (Exception ex)
         {
@@ -523,6 +573,7 @@ public sealed class BdsAutoUpdater : BackgroundService
 
             _declined[id] = pending.Version;
             _pending[id] = pending with { Failure = ex.Message };
+            _waitingFor.TryRemove(id, out _);
         }
         finally
         {

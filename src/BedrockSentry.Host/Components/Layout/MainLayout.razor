@@ -13,6 +13,11 @@
                 </Authorized>
             </AuthorizeView>
 
+            @* The running build again, by the theme button, so it is visible without
+               scrolling to the footer, labelled so it reads as the version. Branch on
+               hover; the footer carries both. *@
+            <span class="top-build" title="@BuildInfo.Display">Version @BuildInfo.Identity</span>
+
             <ThemeToggle />
 
             <AuthorizeView>
@@ -39,8 +44,8 @@
                with no sibling value to be confused with, which is the whole of what
                went wrong on the Status page. A label here would be noise in a
                footer; what mattered was that the two values on one page stopped
-               sharing a word. *@
-            <span>BedrockSentry @BuildInfo.Identity</span>
+               sharing a word. The branch leads, as "dev \ 0.3.0-local+123245c". *@
+            <span>BedrockSentry @BuildInfo.Display</span>
             <span class="build-channel">@BuildInfo.Channel</span>
         </footer>
     </main>

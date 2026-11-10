@@ -112,6 +112,12 @@ public sealed class InstanceDefinition
     /// <summary>Executable name inside the working directory.</summary>
     public string Executable { get; set; } = "bedrock_server.exe";
 
+    /// <summary>
+    /// Where this instance came from, when it was made by restoring a backup into
+    /// a new server (<c>D40</c>). Null for every other instance.
+    /// </summary>
+    public RestoredFrom? RestoredFrom { get; set; }
+
     public WatchdogOptions Watchdog { get; set; } = new();
 
     public RestartSchedule RestartSchedule { get; set; } = new();
@@ -119,6 +125,102 @@ public sealed class InstanceDefinition
     public Backups.BackupSettings Backup { get; set; } = new();
 
     public BdsUpdateSettings ServerUpdate { get; set; } = new();
+
+    public CompanionSettings Companion { get; set; } = new();
+
+    public InstanceAddonSettings Addons { get; set; } = new();
+
+    /// <summary>The server this one takes its world from, and the areas it keeps (<c>D103</c>).</summary>
+    public Sync.SyncSettings Sync { get; set; } = new();
+
+    /// <summary>
+    /// Which of the world's ticking areas are outlined in game, and in what colour (<c>D107</c>).
+    /// The areas themselves live in the world; this only says how the panel shows them.
+    /// Written whole, as <see cref="Sync.SyncSettings.KeptAreas"/> is.
+    /// </summary>
+    public List<Structures.TickingAreaSettings> TickingAreas { get; set; } = [];
+}
+
+/// <summary>What the Add-ons tab keeps for one instance.</summary>
+public sealed class InstanceAddonSettings
+{
+    /// <summary>
+    /// The issues an administrator hid, by <c>AddonIssues.KeyOf</c> (<c>D96</c>).
+    /// </summary>
+    /// <remarks>
+    /// Written whole, never merged: the configuration binder appends to a list,
+    /// so a shorter list merged over a longer one would keep the keys it dropped.
+    /// Empty by default for the same reason, since binding appends to whatever the
+    /// default holds.
+    /// </remarks>
+    public List<string> HiddenIssues { get; set; } = [];
+
+    /// <summary>
+    /// Whether each start first moves switched-on add-ons to the newest version the
+    /// library holds (<c>D112</c>). Off by default: a pack that changes under a world
+    /// is the administrator's call.
+    /// </summary>
+    public bool AutoUpdate { get; set; }
+
+    /// <summary>
+    /// The add-ons held at a version the administrator chose, which auto-update leaves
+    /// alone (<c>D112</c>). Written whole, for the reason <see cref="HiddenIssues"/> gives.
+    /// </summary>
+    public List<AddonHold> Holds { get; set; } = [];
+
+    /// <summary>A copy, so a writer that changes one field keeps the others.</summary>
+    public InstanceAddonSettings Copy() => new()
+    {
+        HiddenIssues = [.. HiddenIssues],
+        AutoUpdate = AutoUpdate,
+        Holds = [.. Holds.Select(h => new AddonHold { Uuid = h.Uuid, Version = h.Version })],
+    };
+}
+
+/// <summary>One add-on held at a version (<c>D112</c>).</summary>
+public sealed class AddonHold
+{
+    /// <summary>The pack's header uuid, its identity (<c>D79</c>).</summary>
+    public string Uuid { get; set; } = "";
+
+    /// <summary>The version chosen, as text, so the panel can say what it is held at.</summary>
+    public string Version { get; set; } = "";
+}
+
+/// <summary>
+/// What the wrapper does with what the companion pack relays on one instance.
+/// </summary>
+/// <remarks>
+/// Each applies the moment it is saved, because each decides what the wrapper
+/// does with a line rather than what the pack prints. What a player is told in
+/// game is the pack's own setting, changed with its gear, because only the pack
+/// can act on it.
+/// </remarks>
+public sealed class CompanionSettings
+{
+    /// <summary>Count each relayed death against the player who died.</summary>
+    public bool RecordDeaths { get; set; } = true;
+
+    /// <summary>
+    /// Keep where each player was when their session ended, and before a planned
+    /// stop ask the pack for every online player's position (<c>D35</c>).
+    /// </summary>
+    public bool RecordLastLocation { get; set; } = true;
+
+    /// <summary>
+    /// Show the pack's join and leave position lines as arrivals and departures.
+    /// Off, the lines are still recorded and shown dimmed.
+    /// </summary>
+    public bool EchoPositions { get; set; } = true;
+
+    /// <summary>A copy with the named toggles changed and every other one kept.</summary>
+    public CompanionSettings With(
+        bool? recordDeaths = null, bool? recordLastLocation = null, bool? echoPositions = null) => new()
+    {
+        RecordDeaths = recordDeaths ?? RecordDeaths,
+        RecordLastLocation = recordLastLocation ?? RecordLastLocation,
+        EchoPositions = echoPositions ?? EchoPositions,
+    };
 }
 
 /// <summary>
@@ -182,6 +284,64 @@ public sealed class BdsUpdateSettings
     /// <summary>The delay as a <see cref="TimeSpan"/>, never negative.</summary>
     public TimeSpan AutoApplyDelay =>
         TimeSpan.FromMinutes(Math.Max(0, AutoApplyDelayMinutes));
+}
+
+/// <summary>
+/// The backup a restored-as-new server was made from (<c>D40</c>).
+/// </summary>
+/// <remarks>
+/// <para>Recorded because a copy stops looking like a copy quickly. Three weeks
+/// on, a second server with a similar name and a world full of familiar buildings
+/// is indistinguishable from the real one, and the mistake it invites is acting on
+/// it — changing settings, adding players, taking backups of a world nobody is
+/// playing in.</para>
+///
+/// <para>It holds the source instance's <em>id</em> as well as its name, because
+/// the name is what somebody reads and the id is what survives a rename. Neither
+/// is a live reference: the server this was copied from may have been removed
+/// since, and this is a note about history rather than a link.</para>
+/// </remarks>
+public sealed class RestoredFrom
+{
+    /// <summary>The backup's file or folder name.</summary>
+    public string BackupName { get; set; } = string.Empty;
+
+    /// <summary>The instance it was a backup of, as an id.</summary>
+    public string SourceInstanceId { get; set; } = string.Empty;
+
+    /// <summary>That instance's display name at the time.</summary>
+    public string SourceName { get; set; } = string.Empty;
+
+    /// <summary>When the copy was made.</summary>
+    public DateTimeOffset WhenUtc { get; set; }
+
+    /// <summary>
+    /// When the backup it was made from was taken — which is how old its world is,
+    /// and a different fact from <see cref="WhenUtc"/>.
+    /// </summary>
+    /// <remarks>
+    /// Both, because each answers a question the other cannot and they are easy to
+    /// conflate: <see cref="WhenUtc"/> says how long this copy has been sitting
+    /// around, and this says what state its world started in. A copy made this
+    /// morning from a backup taken in March is old in one sense and new in the
+    /// other, and one field would have had to pick which.
+    /// </remarks>
+    public DateTimeOffset BackupTakenUtc { get; set; }
+
+    /// <summary>
+    /// What the Status page says, here rather than in the page because the suite
+    /// cannot see a <c>.razor</c> file.
+    /// </summary>
+    /// <remarks>
+    /// It says the world is <em>as it was</em> rather than that it is old, because
+    /// those are different claims and only the first one is certain: somebody may
+    /// have been playing on this copy ever since.
+    /// </remarks>
+    public string Sentence() =>
+        $"This server is a copy. It was made on {WhenUtc.UtcDateTime:d MMMM yyyy} by "
+        + $"restoring {BackupName} — a backup of {SourceName} taken on "
+        + $"{BackupTakenUtc.UtcDateTime:d MMMM yyyy} — into a new server, so its world "
+        + "started out as that backup's rather than as one of its own.";
 }
 
 /// <summary>What an instance does about a newer Bedrock build.</summary>

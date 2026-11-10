@@ -116,33 +116,51 @@ public sealed class AdminCredentialService : IAdminCredentialService
         ArgumentException.ThrowIfNullOrWhiteSpace(username);
         ArgumentException.ThrowIfNullOrWhiteSpace(password);
 
+        await WriteWithNewStampAsync(
+            new Dictionary<string, JsonNode?>
+            {
+                [UsernameKey] = JsonValue.Create(username.Trim()),
+                [PasswordHashKey] = JsonValue.Create(HashPassword(password)),
+            },
+            ct).ConfigureAwait(false);
+
+        _logger.LogInformation("Administrator credential updated for {Username}.", username.Trim());
+    }
+
+    /// <summary>
+    /// Writes <paramref name="values"/> into <c>auth.json</c> with a fresh security
+    /// stamp, and reloads configuration so they take effect immediately.
+    /// </summary>
+    /// <remarks>
+    /// The one writer of the credential file, for the password and the authenticator
+    /// step alike (<c>D125</c>): every change to what signing in takes ends the
+    /// sessions that signed in under the old rule.
+    /// </remarks>
+    public async Task WriteWithNewStampAsync(
+        IReadOnlyDictionary<string, JsonNode?> values, CancellationToken ct = default)
+    {
         var file = AuthFilePath(_paths);
 
-        var values = new Dictionary<string, JsonNode?>
+        var merged = new Dictionary<string, JsonNode?>(values)
         {
-            [UsernameKey] = JsonValue.Create(username.Trim()),
-            [PasswordHashKey] = JsonValue.Create(HashPassword(password)),
-
             // A fresh stamp on every credential change is what signs existing sessions
             // out; the cookie carries the old value and stops validating.
             [SecurityStampKey] = JsonValue.Create(Guid.NewGuid().ToString("N")),
             [UpdatedUtcKey] = JsonValue.Create(DateTimeOffset.UtcNow.ToString("O")),
         };
 
-        await JsonConfigWriter.MergeAsync(file, values, ct).ConfigureAwait(false);
+        await JsonConfigWriter.MergeAsync(file, merged, ct).ConfigureAwait(false);
 
         if (OperatingSystem.IsWindows())
         {
-            WindowsAcl.RestrictToSystemAndAdministrators(new FileInfo(file));
+            WindowsAcl.SecureSecretFile(file);
         }
 
         // auth.json is deliberately loaded with change-watching off, so nothing picks
         // this up on its own — see AdminCredentialOptions for why. Reload explicitly.
         _configuration.Reload();
-
-        _logger.LogInformation("Administrator credential updated for {Username}.", username.Trim());
     }
 
     /// <summary>Path to the credential file. Separate from operational settings by design.</summary>
-    public static string AuthFilePath(ISentryPaths paths) => Path.Combine(paths.Config, "auth.json");
+    public static string AuthFilePath(ISentryPaths paths) => SecretFiles.Auth(paths);
 }

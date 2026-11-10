@@ -57,7 +57,15 @@ public interface IOrphanInspector
     /// process ids are not in <paramref name="ours"/>. Empty when there are
     /// none, and empty rather than throwing when the question cannot be asked.
     /// </summary>
-    IReadOnlyList<OrphanedServer> Find(string workingDirectory, IReadOnlyCollection<int> ours);
+    /// <param name="instanceId">
+    /// The server. The broker resolves the folder from this and never uses
+    /// <paramref name="workingDirectory"/>, which is for the in-process implementation.
+    /// </param>
+    Task<IReadOnlyList<OrphanedServer>> FindAsync(
+        string instanceId,
+        string workingDirectory,
+        IReadOnlyCollection<int> ours,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Ends one, after re-checking the guard against the live process.
@@ -70,7 +78,11 @@ public interface IOrphanInspector
     /// A guard that cannot be evaluated refuses: for an operation that ends a
     /// process, unknown is not permission.
     /// </remarks>
-    OrphanTermination Terminate(int processId, string workingDirectory);
+    Task<OrphanTermination> TerminateAsync(
+        string instanceId,
+        int processId,
+        string workingDirectory,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>

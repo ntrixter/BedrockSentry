@@ -11,7 +11,8 @@ namespace BedrockSentry.Services.Backups;
 public sealed record BackupRequest(BackupReason Reason, string? Note = null);
 
 /// <summary>
-/// Runs one backup: <c>save hold</c> → poll <c>save query</c> → every enabled
+/// Runs one backup: <c>save hold</c> → poll <c>save query</c> → wait for the write the
+/// hold sets off, and when one lands resume and hold again (<c>T356</c>) → every enabled
 /// strategy in parallel → <c>save resume</c>, unconditionally
 /// (<c>docs/design.md</c> § 8.1).
 /// </summary>
@@ -32,13 +33,17 @@ public sealed class BackupOrchestrator
 {
     private readonly IReadOnlyList<IBackupStrategy> _strategies;
     private readonly BackupHistory _history;
+    private readonly BackupArtifactStore _artifacts;
+    private readonly IShadowCopyService _shadows;
     private readonly IPlayerStore? _players;
     private readonly TimeProvider _time;
     private readonly ILogger<BackupOrchestrator> _log;
+    private readonly BackupRuns _runs;
 
     private readonly TimeSpan _queryTimeout;
     private readonly TimeSpan _resumeTimeout;
     private readonly TimeSpan _pollInterval;
+    private readonly TimeSpan _saveLandsWithin;
 
     /// <summary>One backup per instance at a time; a second ask is refused, not queued.</summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.OrdinalIgnoreCase);
@@ -46,22 +51,33 @@ public sealed class BackupOrchestrator
     public BackupOrchestrator(
         IEnumerable<IBackupStrategy> strategies,
         BackupHistory history,
+        BackupArtifactStore artifacts,
+        IShadowCopyService shadows,
         TimeProvider time,
         ILogger<BackupOrchestrator> log,
         IPlayerStore? players = null,
         TimeSpan? queryTimeout = null,
         TimeSpan? resumeTimeout = null,
-        TimeSpan? pollInterval = null)
+        TimeSpan? pollInterval = null,
+        BackupRuns? runs = null,
+        TimeSpan? saveLandsWithin = null)
     {
         _strategies = strategies.ToList();
         _history = history;
+        _artifacts = artifacts;
+        _shadows = shadows;
         _players = players;
         _time = time;
         _log = log;
         _queryTimeout = queryTimeout ?? TimeSpan.FromSeconds(60);
         _resumeTimeout = resumeTimeout ?? TimeSpan.FromSeconds(30);
         _pollInterval = pollInterval ?? TimeSpan.FromMilliseconds(250);
+        _saveLandsWithin = saveLandsWithin ?? TimeSpan.FromSeconds(10);
+        _runs = runs ?? new BackupRuns(time);
     }
+
+    /// <summary>Where each server's backup is, for the strip under its controls (<c>D113</c>).</summary>
+    public BackupRuns Runs => _runs;
 
     /// <summary>The reply that proves saves are running again (<c>docs/design.md</c> § 5.5).</summary>
     /// <remarks>
@@ -71,9 +87,42 @@ public sealed class BackupOrchestrator
     /// </remarks>
     internal const string ResumeReply = "Changes to the world are resumed";
 
+    /// <summary>The console notice when the resume follows the whole copy.</summary>
+    internal const string BackupFinishedNotice = "backup finished; world saves resumed";
+
+    /// <summary>
+    /// The console notice when the resume follows the snapshot, with the copy
+    /// still to come (<c>D66</c>).
+    /// </summary>
+    /// <remarks>
+    /// A separate sentence rather than the one above, because the one above would
+    /// be false: the backup has not finished, and somebody reading the console to
+    /// decide whether the server is busy would be told the wrong thing. This is the
+    /// label-states-something-the-code-does-not-do class that `D66` exists for,
+    /// arriving one line inside the fix for it.
+    /// </remarks>
+    internal const string SnapshotTakenNotice =
+        "snapshot taken; world saves resumed, backup still copying";
+
+    /// <summary>The console notice when the save landed past its own list and is paused again (<c>T356</c>).</summary>
+    internal const string SaveLandedNotice =
+        "the save wrote past its own list; pausing world saves again to list it whole";
+
+    /// <summary>How long a write must stay still before it counts as landed (<c>T356</c>).</summary>
+    private static readonly TimeSpan SaveSettle = TimeSpan.FromSeconds(1);
+
+    /// <exception cref="InstanceClaimedException">
+    /// The server is claimed by a job, such as a sync, and this backup is not one the
+    /// job takes itself (<see cref="BackupClaimRule"/>).
+    /// </exception>
     public async Task<BackupRecord> RunAsync(
         InstanceSupervisor supervisor, BackupRequest request, CancellationToken cancellationToken = default)
     {
+        if (BackupClaimRule.WaitsForAClaim(request.Reason) && supervisor.Status.ClaimedFor is { } purpose)
+        {
+            throw new InstanceClaimedException(supervisor.Definition.Name, purpose);
+        }
+
         var gate = _gates.GetOrAdd(supervisor.InstanceId, _ => new SemaphoreSlim(1, 1));
 
         if (!await gate.WaitAsync(TimeSpan.Zero, cancellationToken).ConfigureAwait(false))
@@ -101,7 +150,7 @@ public sealed class BackupOrchestrator
         if (request.Reason == BackupReason.Scheduled
             && await ShouldSkipAsync(supervisor.InstanceId, cancellationToken).ConfigureAwait(false))
         {
-            return await FinishAsync(supervisor.InstanceId, new BackupRecord(
+            return await FinishAsync(supervisor, new BackupRecord(
                 startedUtc, _time.GetUtcNow(), request.Reason, request.Note,
                 Skipped: true, SkipReason: "Nobody has played on this server since the last backup.",
                 Succeeded: false, Strategies: []), cancellationToken).ConfigureAwait(false);
@@ -121,7 +170,7 @@ public sealed class BackupOrchestrator
 
         if (enabled.Count == 0 && blocked.Count == 0)
         {
-            return await FinishAsync(supervisor.InstanceId, new BackupRecord(
+            return await FinishAsync(supervisor, new BackupRecord(
                 startedUtc, _time.GetUtcNow(), request.Reason, request.Note,
                 Skipped: true, SkipReason: "No backup strategy is enabled for this instance.",
                 Succeeded: false, Strategies: []), cancellationToken).ConfigureAwait(false);
@@ -140,7 +189,7 @@ public sealed class BackupOrchestrator
                 + "blocked. {Why}",
                 supervisor.InstanceId, string.Join(" ", blocked.Select(b => b.Detail)));
 
-            return await FinishAsync(supervisor.InstanceId, new BackupRecord(
+            return await FinishAsync(supervisor, new BackupRecord(
                 startedUtc, _time.GetUtcNow(), request.Reason, request.Note,
                 Skipped: false, SkipReason: null,
                 Succeeded: false, Strategies: [],
@@ -156,18 +205,57 @@ public sealed class BackupOrchestrator
                 string.Join(" ", blocked.Select(b => b.Detail)));
         }
 
-        var artifactDirectory = _history.DirectoryFor(supervisor.InstanceId);
-        Directory.CreateDirectory(artifactDirectory);
-
-        var worldsDirectory = Path.Combine(supervisor.WorkingDirectory, "worlds");
-
-        // A stopped server's files are static: there is nothing to hold and
-        // nobody mid-write, so the whole console exchange is skipped and the
-        // manifest is a walk of what is on disk (docs/design.md § 8.1). This is also
-        // what backup-on-shutdown uses, which is why the reason is not the test.
+        // Read once, before the strip is begun, so the steps it lists and the path taken
+        // below are one answer (`D113`). A stopped server's files are static: there is
+        // nothing to hold and nobody mid-write, so the whole console exchange is skipped
+        // and the manifest is a walk of what is on disk (docs/design.md § 8.1). This is
+        // also what backup-on-shutdown uses, which is why the reason is not the test.
         var live = supervisor.Status.State is InstanceState.Running;
+        var wantsShadowCopy = supervisor.Definition.Backup.Acquisition.UseShadowCopy;
 
-        IReadOnlyList<BackupStrategyResult> results;
+        // A backup inside a job that claims the server, such as a restore's safety
+        // backup, is a step of that job's strip and draws none of its own.
+        var run = supervisor.Status.ClaimedFor is null
+            ? _runs.Begin(supervisor.InstanceId, request.Reason, live, wantsShadowCopy)
+            : null;
+
+        try
+        {
+            var record = await TakeAsync(
+                supervisor, request, startedUtc, enabled, blocked, live, wantsShadowCopy, run,
+                cancellationToken).ConfigureAwait(false);
+
+            run?.End(record);
+            return record;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            run?.Cancelled();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            run?.Failed(ex.Message);
+            throw;
+        }
+    }
+
+    private async Task<BackupRecord> TakeAsync(
+        InstanceSupervisor supervisor,
+        BackupRequest request,
+        DateTimeOffset startedUtc,
+        IReadOnlyList<IBackupStrategy> enabled,
+        IReadOnlyList<BlockedStrategy> blocked,
+        bool live,
+        bool wantsShadowCopy,
+        BackupRuns.Run? run,
+        CancellationToken cancellationToken)
+    {
+        // Declared out here, before the try that records a run which never reached a
+        // strategy (`T267`), because both the success record and the failure record
+        // are built from them. Null results is what tells the two apart: it is only
+        // assigned once every strategy has come back.
+        IReadOnlyList<BackupStrategyResult>? results = null;
 
         // Declared out here on purpose (`T158`). The resume runs in the finally
         // below, so a variable inside the try cannot carry its outcome out — and
@@ -175,43 +263,247 @@ public sealed class BackupOrchestrator
         // than unset. Null means "there was no exchange to have an outcome".
         SaveResumeOutcome? resumed = null;
 
-        if (!live)
+        // Null until something has decided it. A run that stops before the shadow
+        // copy was attempted has no acquisition to report, and recording the
+        // NotRequested this used to start from would claim the toggle was off on an
+        // install where it is ticked (`D66`).
+        BackupAcquisition? acquisition = null;
+        string? acquisitionDetail = null;
+
+        try
         {
-            var context = new BackupContext(
-                supervisor.InstanceId, supervisor.Definition.Name,
-                supervisor.WorkingDirectory, worldsDirectory,
-                WalkStaticWorld(worldsDirectory), artifactDirectory,
-                supervisor.Definition.Backup,
-                request.Reason, request.Note, startedUtc);
+            var artifactDirectory = _history.DirectoryFor(supervisor.InstanceId);
+            Directory.CreateDirectory(artifactDirectory);
 
-            results = await RunStrategiesAsync(enabled, context, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            supervisor.Console.Append(
-                ConsoleOrigin.Notice, "backup starting; pausing world saves", _time.GetUtcNow());
+            var worldsDirectory = Path.Combine(supervisor.WorkingDirectory, "worlds");
 
-            await supervisor.SendCommandAsync("save hold", cancellationToken).ConfigureAwait(false);
+            // Once per run, not once per strategy (`D68`). Two formats enabled
+            // together have to prune against the same answer, and a second read could
+            // legitimately differ if somebody ticks a lock while this is running.
+            var locked = await _artifacts
+                .LockedAsync(supervisor.InstanceId, cancellationToken).ConfigureAwait(false);
 
-            try
+            if (!live)
             {
-                var manifest = await AwaitManifestAsync(supervisor, cancellationToken).ConfigureAwait(false);
+                // A stopped server is holding nothing, so a snapshot would buy
+                // nothing — the toggle's entire promise is that saves are held for
+                // less time. Recorded as NotApplicable rather than NotRequested,
+                // because the toggle IS on and a row saying otherwise is a small lie
+                // about a setting the reader can see is ticked (`D66`).
+                acquisition = wantsShadowCopy
+                    ? BackupAcquisition.NotApplicable
+                    : BackupAcquisition.NotRequested;
+
+                var walked = WalkStaticWorld(worldsDirectory);
+                run?.Copying(walked.Count, Copiers(enabled));
 
                 var context = new BackupContext(
                     supervisor.InstanceId, supervisor.Definition.Name,
-                    supervisor.WorkingDirectory, worldsDirectory,
-                    manifest, artifactDirectory,
+                    supervisor.WorkingDirectory, worldsDirectory, worldsDirectory,
+                    walked, artifactDirectory,
                     supervisor.Definition.Backup,
-                    request.Reason, request.Note, startedUtc);
+                    request.Reason, request.Note, startedUtc, locked,
+                    ServerVersion: supervisor.Status.ServerVersion,
+                    OnFileDone: run is null ? null : run.FileDone);
 
                 results = await RunStrategiesAsync(enabled, context, cancellationToken).ConfigureAwait(false);
             }
-            finally
+            else
             {
-                // The invariant. Not the caller's token: a cancelled backup is
-                // precisely a case where saves must still be resumed.
-                resumed = await ResumeSavesAsync(supervisor).ConfigureAwait(false);
+                if (!wantsShadowCopy)
+                {
+                    acquisition = BackupAcquisition.NotRequested;
+                }
+
+                supervisor.Console.Append(
+                    ConsoleOrigin.Notice, "backup starting; pausing world saves", _time.GetUtcNow());
+
+                // OUTSIDE the try below, and that is load-bearing rather than
+                // incidental: a hold that was never sent must not be followed by a
+                // resume, which BDS answers "A previous save has not been completed."
+                // and which would be recorded as a warning about a backup that had
+                // not started.
+                //
+                // It is sound only because a throw from SendAsync means the command
+                // was not sent -- three arms, all before any write, and pinned by
+                // A_send_that_throws_has_not_reached_the_server rather than asserted
+                // here. `D87` is whether to keep depending on that or record the hold
+                // pessimistically and pay for a resume nothing was holding.
+                await supervisor.SendCommandAsync("save hold", cancellationToken).ConfigureAwait(false);
+
+                ShadowCopy? shadow = null;
+
+                // Whether a hold is outstanding, so whether the finally owes a resume. Set
+                // false BEFORE each early resume is awaited, for `T226`'s reason: what it
+                // records is that a resume was sent, and a resume that threw partway has
+                // still been sent.
+                var holding = true;
+
+                try
+                {
+                    var manifest = await AwaitManifestAsync(supervisor, cancellationToken).ConfigureAwait(false);
+
+                    // `T356`. The manifest lists the database as it stood at the hold, and
+                    // BDS writes the changes the hold flushed past those lengths a second
+                    // or more later; the manifest does not move while the hold lasts. So a
+                    // copy at these lengths lacks whatever changed in the seconds before
+                    // the backup. When that write lands, resume and hold again: the
+                    // second list takes it in, and the copy still stops at lengths the
+                    // server named (`D97`). Quiet means the first list is the whole save.
+                    // A zero window watches nothing, for a caller whose world is not a save.
+                    var landing = _saveLandsWithin <= TimeSpan.Zero
+                        ? SaveLanding.Quiet
+                        : await SaveLandingWatch.WaitAsync(
+                            worldsDirectory, manifest, _saveLandsWithin, SaveSettle, _pollInterval, _time,
+                            cancellationToken).ConfigureAwait(false);
+
+                    if (landing is not SaveLanding.Quiet)
+                    {
+                        holding = false;
+                        var between = await ResumeSavesAsync(supervisor, SaveLandedNotice)
+                            .ConfigureAwait(false);
+
+                        if (between is not SaveResumeOutcome.Confirmed)
+                        {
+                            // Not held, or not known to be; a second hold on top of either
+                            // is a copy nobody can vouch for. The record carries this
+                            // resume's outcome, since the finally sends none.
+                            resumed = between;
+                            throw new InvalidOperationException(
+                                "The save wrote past its own list, and saves could not be "
+                                + "paused again to list it whole, so nothing was copied.");
+                        }
+
+                        // A throw here means the hold was not sent (`D87`), and nothing is
+                        // held, which is what holding already says.
+                        await supervisor.SendCommandAsync("save hold", cancellationToken).ConfigureAwait(false);
+                        holding = true;
+
+                        manifest = await AwaitManifestAsync(supervisor, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    var source = worldsDirectory;
+
+                    if (wantsShadowCopy)
+                    {
+                        run?.Step(BackupStep.Snapshot);
+
+                        (shadow, source, acquisition, acquisitionDetail) =
+                            await AcquireAsync(supervisor, worldsDirectory, cancellationToken)
+                                .ConfigureAwait(false);
+
+                        if (acquisition is not BackupAcquisition.ShadowCopy)
+                        {
+                            run?.FellBack();
+                        }
+                    }
+
+                    if (acquisition is BackupAcquisition.ShadowCopy)
+                    {
+                        // THE POINT OF THE TOGGLE, and the reason `D66` is a contract
+                        // change rather than a rename. The world is frozen in the
+                        // snapshot, so nothing the server does from here can reach
+                        // the bytes being copied — which means saves can run again
+                        // now rather than after the copy. Without this the toggle
+                        // costs a snapshot and buys nothing, and the label would
+                        // state something the code does not do for the second time.
+                        // BEFORE the await, and that ordering is the whole of `T226`.
+                        // ResumeSavesAsync catches every failure of the SEND and turns
+                        // it into an outcome -- but the console watch, the wait and
+                        // the append all sit outside that try, so the method can
+                        // still throw. Set afterwards, such a throw left the flag
+                        // false and the finally sent a SECOND save resume: the one
+                        // thing `T213` clause 2 exists to forbid, on the arm the
+                        // happy path never reaches.
+                        //
+                        // What the flag has to record is "a resume was attempted
+                        // early", not "an early resume returned" -- a first resume
+                        // that threw partway has still been sent, and sending another
+                        // is not a recovery.
+                        holding = false;
+                        run?.Step(BackupStep.Resuming);
+                        resumed = await ResumeSavesAsync(supervisor, SnapshotTakenNotice)
+                            .ConfigureAwait(false);
+                    }
+
+                    // Listed from wherever the bytes will be read, so the list and
+                    // the copy describe one folder (`D97`).
+                    var (others, unlisted) = ListBeyondTheSave(supervisor.InstanceId, source, manifest);
+
+                    run?.Copying(manifest.Count + (others?.Files.Count ?? 0), Copiers(enabled));
+
+                    var context = new BackupContext(
+                        supervisor.InstanceId, supervisor.Definition.Name,
+                        supervisor.WorkingDirectory, worldsDirectory, source,
+                        manifest, artifactDirectory,
+                        supervisor.Definition.Backup,
+                        request.Reason, request.Note, startedUtc, locked,
+                        others, unlisted, supervisor.Status.ServerVersion,
+                        OnFileDone: run is null ? null : run.FileDone);
+
+                    results = await RunStrategiesAsync(enabled, context, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // The invariant, and the guard is what already happened rather
+                    // than what was configured: asking the settings whether a
+                    // snapshot let saves resume early would be the same fact stated
+                    // twice.
+                    if (holding)
+                    {
+                        // Not the caller's token: a cancelled backup is precisely a
+                        // case where saves must still be resumed.
+                        run?.Step(BackupStep.Resuming);
+                        resumed = await ResumeSavesAsync(supervisor, BackupFinishedNotice)
+                            .ConfigureAwait(false);
+                    }
+
+                    if (shadow is not null)
+                    {
+                        // Unconditional, in the same spirit as the resume. A shadow
+                        // copy left behind holds volume space until somebody notices,
+                        // and on a schedule it is left behind every time.
+                        await _shadows.ReleaseAsync(shadow, CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
             }
+        }
+        catch (Exception ex) when (results is null
+            && !(ex is OperationCanceledException && cancellationToken.IsCancellationRequested))
+        {
+            // `T267`. Everything above the first strategy — the artifact directory,
+            // the locks file, the world walk, the save hold, the manifest wait — used
+            // to throw straight past the only call that appends to the history. So a
+            // run refused there left NOTHING: the standing card read "No backups
+            // yet" or "Backed up" over a server whose every backup was failing, and a
+            // scheduled run's only witness was a line in the Windows Application log.
+            // The record is where `D67` says such a sentence belongs; the log line
+            // stays, so that witness is not lost either.
+            //
+            // A caller's cancellation still propagates, for RunStrategiesAsync's
+            // reason: a backup somebody cancelled is not a failed one. And a throw
+            // after the strategies have come back is not this case — results is set
+            // by then, and the archives it names are real. On the live path the
+            // finally above has already run by the time this does, so the resume's
+            // outcome is known and goes on the record with the failure.
+            _log.LogError(
+                ex, "No backup of {InstanceId} was taken: the run stopped before anything was copied",
+                supervisor.InstanceId);
+
+            return await FinishAsync(supervisor, new BackupRecord(
+                startedUtc, _time.GetUtcNow(), request.Reason, request.Note,
+                Skipped: false, SkipReason: null,
+                Succeeded: false,
+                Strategies: [],
+                SavesResumed: resumed,
+                BlockedStrategies: blocked.Count == 0 ? null : blocked,
+                Acquisition: acquisition,
+                AcquisitionDetail: acquisitionDetail,
+
+                // Never blank: a failed row with no sentence is the case `D45`'s
+                // composing exists to prevent.
+                Failure: string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message),
+                cancellationToken).ConfigureAwait(false);
         }
 
         // Succeeded still means "every strategy succeeded" — the archive is either
@@ -219,7 +511,7 @@ public sealed class BackupOrchestrator
         // would also hide a perfectly good archive from LastSuccessfulUtcAsync,
         // blanking "last backup" and making the skip rule back up on every tick.
         // The resume outcome is its own field and its own sentence (`T158`).
-        return await FinishAsync(supervisor.InstanceId, new BackupRecord(
+        return await FinishAsync(supervisor, new BackupRecord(
             startedUtc, _time.GetUtcNow(), request.Reason, request.Note,
             Skipped: false, SkipReason: null,
             Succeeded: results.All(r => r.Succeeded),
@@ -228,9 +520,15 @@ public sealed class BackupOrchestrator
 
             // Null rather than an empty list, so the key stays out of history.json
             // altogether on every install that never trips the gate.
-            BlockedStrategies: blocked.Count == 0 ? null : blocked),
+            BlockedStrategies: blocked.Count == 0 ? null : blocked,
+
+            Acquisition: acquisition,
+            AcquisitionDetail: acquisitionDetail),
             cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>How many of <paramref name="enabled"/> pass each file themselves, which the strip's bar counts.</summary>
+    private static int Copiers(IReadOnlyList<IBackupStrategy> enabled) => enabled.Count(s => s.CountsFiles);
 
     private async Task<bool> ShouldSkipAsync(string instanceId, CancellationToken cancellationToken)
     {
@@ -294,9 +592,14 @@ public sealed class BackupOrchestrator
 
             if (_time.GetUtcNow() >= deadline)
             {
+                // No word here about the resume. This message is kept on the record
+                // (`T267`), which is written after the finally has sent it, so a
+                // promise that saves "will be resumed" would be stored beside an
+                // outcome that may say they were not — the record's own resume
+                // sentence says what actually happened.
                 throw new TimeoutException(
-                    $"The server did not produce a save manifest within {_queryTimeout.TotalSeconds:0}s. "
-                    + "Saves were being held and will be resumed.");
+                    $"The server did not answer 'save query' with a save manifest within "
+                    + $"{_queryTimeout.TotalSeconds:0}s.");
             }
         }
     }
@@ -335,6 +638,58 @@ public sealed class BackupOrchestrator
     }
 
     /// <summary>
+    /// Takes the shadow copy the acquisition toggle asked for, or falls back to
+    /// the live world and says why (<c>D66</c>, <c>D67</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para><strong>A failed acquisition is never a failed backup.</strong> It is
+    /// a slower one: saves are held for the whole copy instead of for a moment,
+    /// which is a cost an administrator can weigh rather than a loss. Reporting it
+    /// as a failure would blank <c>LastSuccessfulUtcAsync</c>, empty "last backup"
+    /// and make the skip rule back up on every tick — the `D45` and `T173`
+    /// precedent, and the reason this returns a state rather than throwing.</para>
+    ///
+    /// <para>Cancellation is the one exception that still propagates: a cancelled
+    /// backup is not a volume that cannot be snapshotted, and swallowing it here
+    /// would turn a cancelled run into a slow one.</para>
+    /// </remarks>
+    private async Task<(ShadowCopy? Shadow, string Source, BackupAcquisition State, string? Detail)>
+        AcquireAsync(
+            InstanceSupervisor supervisor, string worldsDirectory, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var volumeRoot = ShadowCopyPaths.VolumeRootOf(worldsDirectory);
+            var shadow = await _shadows.CreateAsync(supervisor.InstanceId, volumeRoot, cancellationToken)
+                .ConfigureAwait(false);
+
+            return (
+                shadow,
+                ShadowCopyPaths.Inside(shadow.DeviceObject, worldsDirectory),
+                BackupAcquisition.ShadowCopy,
+                null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(
+                ex, "Could not take a shadow copy for the backup of {InstanceId}. The backup will "
+                + "read the live world instead, so saves stay held for the whole copy.",
+                supervisor.InstanceId);
+
+            supervisor.Console.Append(
+                ConsoleOrigin.Notice,
+                "no shadow copy could be taken; saves stay held for the whole backup",
+                _time.GetUtcNow());
+
+            return (null, worldsDirectory, BackupAcquisition.LiveFallback, ex.Message);
+        }
+    }
+
+    /// <summary>
     /// Fires <c>save resume</c>, confirms the measured reply, and reports which of
     /// the four things happened. Never throws: this runs inside the finally that
     /// protects the invariant, and an exception here would mask whatever the
@@ -345,7 +700,13 @@ public sealed class BackupOrchestrator
     /// confirmed could be stored and displayed as a clean backup — the outcome had
     /// nowhere to go, and the only trace was a <c>LogCritical</c> nobody read.
     /// </remarks>
-    private async Task<SaveResumeOutcome> ResumeSavesAsync(InstanceSupervisor supervisor)
+    /// <param name="notice">
+    /// What the instance console says when the resume is confirmed. There are two,
+    /// because a resume that follows a snapshot has not finished a backup
+    /// (<c>D66</c>).
+    /// </param>
+    private async Task<SaveResumeOutcome> ResumeSavesAsync(
+        InstanceSupervisor supervisor, string notice)
     {
         // Before the send, so a confirmation that comes straight back cannot
         // arrive before anybody is listening for it.
@@ -375,13 +736,14 @@ public sealed class BackupOrchestrator
             return SaveResumeOutcome.NotSent;
         }
 
+        AfterResumeSent();
+
         var confirmation =
             await watch.WaitAsync(_resumeTimeout, _time, CancellationToken.None).ConfigureAwait(false);
 
         if (confirmation is not null)
         {
-            supervisor.Console.Append(
-                ConsoleOrigin.Notice, "backup finished; world saves resumed", _time.GetUtcNow());
+            supervisor.Console.Append(ConsoleOrigin.Notice, notice, _time.GetUtcNow());
             return SaveResumeOutcome.Confirmed;
         }
 
@@ -420,18 +782,74 @@ public sealed class BackupOrchestrator
     }
 
     /// <summary>
+    /// Runs between sending <c>save resume</c> and waiting for its confirmation, so a
+    /// test can make the resume throw after its command has gone (<c>T226</c>).
+    /// </summary>
+    /// <remarks>
+    /// No console subscriber can make that stretch throw: <see cref="ConsoleBuffer"/>
+    /// isolates handler exceptions, and the wait is given
+    /// <see cref="CancellationToken.None"/>. Without this the ordering of
+    /// <c>holding</c> rested on reading, and reversing it left the suite green.
+    /// </remarks>
+    internal Action AfterResumeSent { get; set; } = static () => { };
+
+    /// <summary>
+    /// How a stopped server's world is listed, so the refused arm can be exercised
+    /// (<c>T267</c>).
+    /// </summary>
+    /// <remarks>
+    /// The state an operator meets is a <c>worlds</c> directory this service may not
+    /// read, and a build running as root cannot arrange one — a rig that denies
+    /// itself a folder and then lists it succeeds (<c>T176</c>). Only this one call
+    /// is substituted; the existence check before it is the real one, so a test
+    /// drives the same shape a denied folder produces rather than a story about it
+    /// (<c>T174</c>).
+    /// </remarks>
+    internal Func<string, IEnumerable<string>> WorldLister { get; set; } =
+        worlds => Directory.EnumerateFiles(worlds, "*", SearchOption.AllDirectories);
+
+    /// <summary>
+    /// The files under <c>worlds</c> that a running server's backup copies whole
+    /// beside the save (<c>D97</c>).
+    /// </summary>
+    /// <remarks>
+    /// A folder that cannot be listed costs those files and not the backup: the
+    /// save's own files are copied either way, and the reason goes into each
+    /// strategy's result, which is stored, rather than only into the log (<c>D67</c>).
+    /// Through <see cref="WorldLister"/>, the seam the stopped walk uses, so a test
+    /// reaches the refused arm the same way.
+    /// </remarks>
+    private (BeyondTheSave? Others, string? Unlisted) ListBeyondTheSave(
+        string instanceId, string source, IReadOnlyList<SaveManifestEntry> manifest)
+    {
+        try
+        {
+            return (WorldFolder.BeyondTheSave(
+                WorldLister(source).Select(file => Path.GetRelativePath(source, file)),
+                manifest), null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogWarning(
+                ex, "Could not list the worlds folder of {InstanceId}; the backup holds the "
+                + "files the save named and nothing beside them", instanceId);
+
+            return (null, ex.Message);
+        }
+    }
+
+    /// <summary>
     /// The manifest for a stopped server: everything under <c>worlds</c>, full
     /// lengths, because nothing is mid-write and there is nobody to ask.
     /// </summary>
-    private static IReadOnlyList<SaveManifestEntry> WalkStaticWorld(string worldsDirectory)
+    private IReadOnlyList<SaveManifestEntry> WalkStaticWorld(string worldsDirectory)
     {
         if (!Directory.Exists(worldsDirectory))
         {
             return [];
         }
 
-        return Directory
-            .EnumerateFiles(worldsDirectory, "*", SearchOption.AllDirectories)
+        return WorldLister(worldsDirectory)
             .Select(file => new SaveManifestEntry(
                 Path.GetRelativePath(worldsDirectory, file).Replace('\\', '/'),
                 new FileInfo(file).Length))
@@ -439,11 +857,22 @@ public sealed class BackupOrchestrator
     }
 
     private async Task<BackupRecord> FinishAsync(
-        string instanceId, BackupRecord record, CancellationToken cancellationToken)
+        InstanceSupervisor supervisor, BackupRecord record, CancellationToken cancellationToken)
     {
+        var instanceId = supervisor.InstanceId;
+
         try
         {
             await _history.AppendAsync(instanceId, record, cancellationToken).ConfigureAwait(false);
+
+            // After the append, so the row just written is the newest success when
+            // it is one, and every run keeps the history to this server's limit
+            // rather than a job of its own having to (`D98`).
+            await _history
+                .TrimAsync(
+                    instanceId, supervisor.Definition.Backup.History.KeepDays, _time.GetUtcNow(),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception ex)
         {

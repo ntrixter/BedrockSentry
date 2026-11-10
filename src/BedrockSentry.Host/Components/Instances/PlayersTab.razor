@@ -27,8 +27,46 @@
     </p>
 }
 
+@* T231. Three arms, not two, and the bar does not render until the file has been
+   read at all. An unreadable server.properties used to fall through to the else
+   below and assert "Anyone can join" -- a claim about ACCESS CONTROL made from a
+   file the wrapper could not open. The Status tab one click away was already
+   honest about the same file, which is the tell this codebase keeps filing: two
+   surfaces, one fact, one of them guessing.
+
+   The bar is inside the `loaded` gate, and the reason first written here was an
+   OVER-CLAIM: it said every page load showed "Anyone can join" until the read
+   returned. On this path it never did. `ReloadAsync` has one await, `ListAsync`,
+   and Microsoft.Data.Sqlite overrides none of the async members, so the component
+   renders once with `loaded` already true and the unloaded frame does not exist.
+   Sampled on two instances and seen in zero renders.
+
+   The gate stays, and on the honest reason rather than the observed one: a bar
+   outside it would be a claim about access control that nothing had established,
+   and what makes that frame unreachable today is a detail of one provider's async
+   implementation rather than anything this file controls. A claim nobody can
+   currently see is still a claim nothing supports.
+
+   Worth keeping as the shape, since this comment is inside a fix for the class
+   defined by comments that state what the code does not do: an over-claim in a
+   `.razor` file cannot be failed by the suite, so it survives exactly as long as
+   nobody re-reads it. *@
+@if (loaded)
+{
 <div class="access-bar">
-    @if (allowlistEnforced)
+    @if (!propertiesKnown)
+    {
+        <span class="state-badge state-warning">Allowlist unknown</span>
+        <span class="counts">
+            This server's <code>server.properties</code> could not be read, so
+            whether the allow list is enforced is unknown.
+            @if (!string.IsNullOrWhiteSpace(propertiesWhy))
+            {
+                <text>Windows said: @propertiesWhy</text>
+            }
+        </span>
+    }
+    else if (allowlistEnforced)
     {
         <span class="state-badge state-running">Allowlist enabled</span>
         <span class="counts">
@@ -46,6 +84,7 @@
         </span>
     }
 </div>
+}
 
 @if (!loaded)
 {
@@ -81,6 +120,14 @@ else
                             Last seen @Caret("last")
                         </button>
                     </th>
+                    @if (DeathsSince is not null)
+                    {
+                        <th class="num" aria-sort="@AriaSort("deaths")">
+                            <button type="button" class="sort-head" @onclick='() => SortBy("deaths")'>
+                                Deaths @Caret("deaths")
+                            </button>
+                        </th>
+                    }
                     <th class="actions"></th>
                 </tr>
             </thead>
@@ -91,8 +138,13 @@ else
                         <td>
                             @if (row.Xuid is { Length: > 0 } xuid)
                             {
-                                <a href="@($"players/{xuid}")"><strong>@row.Display</strong></a>
-                                <span class="roster-gamertag">@xuid</span>
+                                <div class="player-cell">
+                                    <PlayerFaceImage Xuid="@xuid" />
+                                    <div>
+                                        <a href="@($"players/{xuid}")"><strong>@row.Display</strong></a>
+                                        <span class="roster-gamertag">@xuid</span>
+                                    </div>
+                                </div>
                             }
                             else
                             {
@@ -147,9 +199,21 @@ else
                             }
                             else
                             {
-                                @PlayerFormat.Date(row.LastSeenUtc)
+                                <span class="text-nowrap">@PlayerFormat.DateAndTime(row.LastSeenUtc)</span>
+
+                                @* T293: beside the last-seen time it belongs to, where that
+                                   session ended. *@
+                                @if (row.LastKnownPosition is { } where)
+                                {
+                                    <div class="check-detail">@DimensionNames.Describe(where)</div>
+                                }
                             }
                         </td>
+
+                        @if (DeathsSince is not null)
+                        {
+                            <td class="num">@DeathText.Count(row.Deaths)</td>
+                        }
 
                         <td>
                             @if (row.IsOnline && !ServerIsStopped)
@@ -167,6 +231,11 @@ else
             </tbody>
         </table>
     </div>
+
+    @if (DeathsSince is { } since)
+    {
+        <p class="check-detail">@DeathText.Coverage(PlayerFormat.Date(since))</p>
+    }
 }
 
 <div class="provision-controls">
@@ -201,6 +270,13 @@ else
     // started as `true`, which meant an unreadable or not-yet-loaded file
     // claimed the allowlist was being enforced (`T136`).
     private bool allowlistEnforced;
+
+    // T231. No forgiving default, because nothing renders this until `loaded` is
+    // true and the read has set it. A default of `true` here would be the same
+    // false clear one frame wide -- the page claiming to know before it had looked.
+    private bool propertiesKnown;
+
+    private string? propertiesWhy;
     private string defaultTier = PermissionTier.Member;
     private string? fileError;
 
@@ -286,15 +362,16 @@ else
             allowlist = AllowlistFile.Load(AllowlistPath).Entries;
             permissions = PermissionsFile.Load(PermissionsPath).Entries;
 
-            var properties = ServerProperties.Read(
+            var read = ServerProperties.ReadFile(
                 ServerProperties.PathFor(Supervisor.WorkingDirectory));
+
+            var properties = read.Values;
+            propertiesKnown = read.Known;
+            propertiesWhy = read.Why;
 
             allowlistEnforced = ServerProperties.AllowlistEnforced(properties);
 
-            defaultTier = properties.GetValueOrDefault("default-player-permission-level")
-                is { Length: > 0 } configured
-                ? configured
-                : PermissionTier.Member;
+            defaultTier = InstanceAccessView.DefaultTier(properties);
 
             now = Time.GetUtcNow();
 
@@ -319,10 +396,15 @@ else
         }
     }
 
+    /// When the companion pack first reported on this server, which every row's
+    /// tally shares; null when it never has, and then there is no Deaths column.
+    private DateTimeOffset? DeathsSince => DeathTally.CountedSince(rows.Select(r => r.Deaths));
+
     private IEnumerable<InstanceAccessRow> Visible() => sortKey switch
     {
         "player" => Order(rows, r => r.Display),
         "playtime" => Order(rows, r => r.Playtime),
+        "deaths" => Order(rows, r => r.Deaths?.Count ?? -1),
 
         _ => Order(rows, r => r.LastSeenUtc ?? DateTimeOffset.MinValue),
     };

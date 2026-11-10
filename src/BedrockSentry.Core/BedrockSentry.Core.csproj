@@ -13,4 +13,15 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
+  <!--
+    Test visibility, not a dependency: the comment above is about project
+    REFERENCES, and this adds none. It exists for the seams that let a test drive
+    an arm this repository cannot produce where it is written - the build runs as
+    root, so a rig that denies itself a file and then looks for it succeeds
+    (T176). Services has carried the same line for the same reason.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="BedrockSentry.Tests" />
+  </ItemGroup>
+
 </Project>

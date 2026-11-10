@@ -9,9 +9,10 @@ namespace BedrockSentry.Core.Instances;
 /// alone — for adopting a server that is already unpacked somewhere.
 /// </param>
 /// <param name="Port">
-/// The IPv4 port. Bedrock also takes the next number for IPv6, so instances are
-/// spaced two apart. Null leaves whatever the package shipped, which for a
-/// second instance on one box means colliding with the first.
+/// The IPv4 port; the next number is written as the IPv6 port, and
+/// <see cref="NewServerPorts"/> suggests one where both are free. Null leaves
+/// whatever the package shipped, which for a second instance on one machine
+/// means colliding with the first.
 /// </param>
 /// <param name="World">
 /// The handful of <c>server.properties</c> settings that are painful to change
@@ -23,6 +24,22 @@ namespace BedrockSentry.Core.Instances;
 /// other path (package or not) must refuse one, or a folder somebody else's
 /// server already lives in gets silently reconfigured out from under it.
 /// </param>
+/// <param name="Transport">
+/// Which transport the new server speaks (<c>D75</c>). Only written when a
+/// package was extracted, because that is the one file the wrapper made; an
+/// adopted folder keeps whatever it already said.
+/// </param>
+/// <param name="CompanionPack">
+/// Switch the companion pack on before the first start (<c>D93</c>): its world
+/// folder is made and seeded with the pack, which BDS generates the world into
+/// and keeps, and script output is turned on. Only with a package; adopting and
+/// restoring never set it, since a restored copy is a faithful one (<c>D42</c>).
+/// </param>
+/// <param name="UdpPorts">
+/// The <c>server-udp-ports</c> line for a NetherNet server, as the form showed it and the
+/// operator left it (<c>ON1</c>). Written only with a package and under NetherNet, the
+/// transport that reads it; null or blank writes nothing.
+/// </param>
 public sealed record NewInstanceRequest(
     string Name,
     string? PackageFileName = null,
@@ -31,7 +48,11 @@ public sealed record NewInstanceRequest(
     string? WorkingDirectory = null,
     bool StartNow = false,
     NewWorldSettings? World = null,
-    bool AllowExistingFiles = false);
+    bool AllowExistingFiles = false,
+    ServerTransport Transport = ServerTransports.Default,
+    RestoredFrom? RestoredFrom = null,
+    bool CompanionPack = false,
+    string? UdpPorts = null);
 
 /// <summary>
 /// World settings chosen when an instance is created.

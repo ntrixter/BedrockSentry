@@ -28,6 +28,17 @@
 
   <ItemGroup>
     <!--
+      The transcript of a completion run on BDS 1.26.52.3 (D105). Completion builds its
+      fallback commands from it, with the same code that reads a run on this machine,
+      until a run here has finished. The suite reads the same file. Beside it, the names
+      in Mojang's data that version refused (MeasuredRefusals).
+    -->
+    <EmbeddedResource Include="Commands\capture-1.26.52.3.txt" LogicalName="BedrockSentry.Commands.capture-1.26.52.3.txt" />
+    <EmbeddedResource Include="Commands\refused-1.26.52.3.txt" LogicalName="BedrockSentry.Commands.refused-1.26.52.3.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
       DPAPI. Not part of the shared framework, so it needs an explicit reference
       even though it is Windows-only. Used to protect the generated certificate's
       export password at rest (D12) rather than leaving it in a plaintext sidecar.
@@ -43,6 +54,13 @@
       self-contained publish, so it has an entry in THIRD-PARTY-NOTICES.txt.
     -->
     <PackageReference Include="System.Management" Version="10.0.10" />
+
+    <!--
+      The authenticator-app enrolment QR code (D125). Its PNG writer has no
+      System.Drawing dependency, so it runs on any host. MIT; redistributed in the
+      self-contained publish, so it has an entry in THIRD-PARTY-NOTICES.txt.
+    -->
+    <PackageReference Include="QRCoder" Version="1.6.0" />
   </ItemGroup>
 
 </Project>

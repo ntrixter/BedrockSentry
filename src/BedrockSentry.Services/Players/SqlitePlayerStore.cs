@@ -22,11 +22,71 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
 
     public SqlitePlayerStore(PlayerDatabase database) => _database = database;
 
-    private static string Stamp(DateTimeOffset value) =>
+    /// <summary>How every timestamp column is written, by this store and by an import.</summary>
+    internal static string Stamp(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 
     private static DateTimeOffset ReadStamp(string value) =>
         DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
+    /// <summary>A session's four exit columns, in the order <see cref="ReadExit"/> reads them.</summary>
+    private const string ExitColumns = "exit_x, exit_y, exit_z, exit_dimension";
+
+    /// <summary>The exit position starting at column <paramref name="first"/>, or null unless all four are set.</summary>
+    private static BlockPosition? ReadExit(SqliteDataReader reader, int first) =>
+        reader.IsDBNull(first) || reader.IsDBNull(first + 1)
+        || reader.IsDBNull(first + 2) || reader.IsDBNull(first + 3)
+            ? null
+            : new BlockPosition(
+                reader.GetInt32(first), reader.GetInt32(first + 1), reader.GetInt32(first + 2),
+                reader.GetString(first + 3));
+
+    /// <summary>The exit of the latest session, or null when that session has none.</summary>
+    /// <remarks>
+    /// The latest session's, not the latest one that has a position: an older
+    /// position beside a newer last-seen time would say where somebody was on a
+    /// day the page does not name.
+    /// </remarks>
+    private static BlockPosition? LatestExit(IEnumerable<(DateTimeOffset From, BlockPosition? Exit)> sessions) =>
+        sessions.OrderByDescending(s => s.From).Select(s => s.Exit).FirstOrDefault();
+
+    /// <summary>
+    /// When the companion pack first reported on one server, and every player's
+    /// recorded deaths there.
+    /// </summary>
+    private static async Task<(DateTimeOffset? Since, Dictionary<string, int> Deaths)> DeathsOnAsync(
+        SqliteConnection connection, string instanceId, CancellationToken cancellationToken)
+    {
+        DateTimeOffset? since;
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT MIN(reported_utc) FROM companion_reports WHERE instance_id = $instance;";
+            command.Parameters.AddWithValue("$instance", instanceId);
+
+            since = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string stamp
+                ? ReadStamp(stamp)
+                : null;
+        }
+
+        var deaths = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT xuid, COUNT(*) FROM player_deaths WHERE instance_id = $instance GROUP BY xuid;";
+            command.Parameters.AddWithValue("$instance", instanceId);
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                deaths[reader.GetString(0)] = reader.GetInt32(1);
+            }
+        }
+
+        return (since, deaths);
+    }
 
     public async Task RecordAsync(
         string instanceId,
@@ -92,17 +152,187 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
             ("$instance", instanceId))
             .ConfigureAwait(false);
 
+        // The name on this session's own connect line, which is what a relayed
+        // companion line is matched against (CompanionAttribution).
         await ExecuteAsync(
             connection, transaction,
             """
-            INSERT INTO player_sessions (xuid, instance_id, connected_utc)
-            VALUES ($xuid, $instance, $now);
+            INSERT INTO player_sessions (xuid, instance_id, connected_utc, gamertag)
+            VALUES ($xuid, $instance, $now, $gamertag);
             """,
             cancellationToken,
             ("$xuid", playerEvent.Xuid),
             ("$instance", instanceId),
-            ("$now", Stamp(atUtc)))
+            ("$now", Stamp(atUtc)),
+            ("$gamertag", playerEvent.Gamertag))
             .ConfigureAwait(false);
+    }
+
+    public async Task<RelayAttribution> RecordDeathAsync(
+        string instanceId,
+        DateTimeOffset runStartedUtc,
+        CompanionDeath death,
+        DateTimeOffset atUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(death);
+
+        await using var connection = await _database.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction =
+            await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var tx = (SqliteTransaction)transaction;
+
+        // A death needs only the XUID, so the question is how many PEOPLE match,
+        // not how many sessions: a fast rejoin is one person with two sessions.
+        var candidates = await CandidatesAsync(
+            connection, tx, instanceId, runStartedUtc, death.Gamertag, atUtc,
+            includeRecentlyClosed: true, cancellationToken).ConfigureAwait(false);
+
+        var people = candidates.Select(c => c.Xuid).Distinct(StringComparer.Ordinal).ToList();
+
+        if (people.Count != 1)
+        {
+            return people.Count == 0 ? RelayAttribution.NoSession : RelayAttribution.Ambiguous;
+        }
+
+        await ExecuteAsync(
+            connection, tx,
+            """
+            INSERT INTO player_deaths
+                (xuid, instance_id, died_utc, cause, killer_type, killer_name, x, y, z, dimension, message)
+            VALUES ($xuid, $instance, $at, $cause, $killerType, $killerName, $x, $y, $z, $dimension, $message);
+            """,
+            cancellationToken,
+            ("$xuid", people[0]),
+            ("$instance", instanceId),
+            ("$at", Stamp(atUtc)),
+            ("$cause", death.Cause),
+            ("$killerType", (object?)death.KillerType ?? DBNull.Value),
+            ("$killerName", (object?)death.KillerName ?? DBNull.Value),
+            ("$x", death.Position.X),
+            ("$y", death.Position.Y),
+            ("$z", death.Position.Z),
+            ("$dimension", death.Position.Dimension),
+            ("$message", death.Message))
+            .ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return RelayAttribution.Recorded;
+    }
+
+    public async Task<RelayAttribution> RecordExitAsync(
+        string instanceId,
+        DateTimeOffset runStartedUtc,
+        string gamertag,
+        BlockPosition position,
+        ExitPositionSource source,
+        DateTimeOffset atUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _database.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction =
+            await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var tx = (SqliteTransaction)transaction;
+
+        // A position belongs to one SESSION, so here two sessions of one person
+        // are two candidates: a leave arriving after a fast rejoin cannot say
+        // whether it ended the old session or is early for the new one.
+        var candidates = await CandidatesAsync(
+            connection, tx, instanceId, runStartedUtc, gamertag, atUtc,
+            includeRecentlyClosed: source == ExitPositionSource.Leave, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (candidates.Count != 1)
+        {
+            return candidates.Count == 0 ? RelayAttribution.NoSession : RelayAttribution.Ambiguous;
+        }
+
+        await ExecuteAsync(
+            connection, tx,
+            """
+            UPDATE player_sessions
+            SET exit_x = $x, exit_y = $y, exit_z = $z, exit_dimension = $dimension
+            WHERE id = $id;
+            """,
+            cancellationToken,
+            ("$x", position.X),
+            ("$y", position.Y),
+            ("$z", position.Z),
+            ("$dimension", position.Dimension),
+            ("$id", candidates[0].Id))
+            .ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return RelayAttribution.Recorded;
+    }
+
+    public async Task RecordCompanionReportAsync(
+        string instanceId,
+        string packVersion,
+        DateTimeOffset atUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _database.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        await ExecuteAsync(
+            connection, null,
+            """
+            INSERT OR IGNORE INTO companion_reports (instance_id, reported_utc, pack_version)
+            VALUES ($instance, $at, $version);
+            """,
+            cancellationToken,
+            ("$instance", instanceId),
+            ("$at", Stamp(atUtc)),
+            ("$version", packVersion))
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The sessions a relayed gamertag can mean, under <see cref="CompanionAttribution"/>:
+    /// this instance, opened during this run, carrying exactly that name on their
+    /// own connect line; open, or closed recently when asked for.
+    /// </summary>
+    /// <remarks>
+    /// The comparisons are on stored text. Every stamp is written by <see cref="Stamp"/>
+    /// in one format and one offset, so text order is time order — the same property
+    /// the class summary relies on for ORDER BY. SQLite compares text by bytes, so
+    /// the name match is exact and case-sensitive.
+    /// </remarks>
+    private static async Task<List<(long Id, string Xuid)>> CandidatesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string instanceId,
+        DateTimeOffset runStartedUtc,
+        string gamertag,
+        DateTimeOffset atUtc,
+        bool includeRecentlyClosed,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT id, xuid FROM player_sessions
+            WHERE instance_id = $instance
+              AND gamertag = $gamertag
+              AND connected_utc >= $runStart
+              AND (disconnected_utc IS NULL
+                   OR ($recent = 1 AND disconnected_utc >= $cutoff));
+            """;
+        command.Parameters.AddWithValue("$instance", instanceId);
+        command.Parameters.AddWithValue("$gamertag", gamertag);
+        command.Parameters.AddWithValue("$runStart", Stamp(runStartedUtc));
+        command.Parameters.AddWithValue("$recent", includeRecentlyClosed ? 1 : 0);
+        command.Parameters.AddWithValue("$cutoff", Stamp(atUtc - CompanionAttribution.RecentlyClosed));
+
+        var found = new List<(long, string)>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            found.Add((reader.GetInt64(0), reader.GetString(1)));
+        }
+
+        return found;
     }
 
     private static async Task DisconnectAsync(
@@ -202,14 +432,14 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
             }
         }
 
-        var sessions = new Dictionary<string, List<(string Instance, DateTimeOffset From, DateTimeOffset? To)>>(
+        var sessions = new Dictionary<string, List<(string Instance, DateTimeOffset From, DateTimeOffset? To, BlockPosition? Exit)>>(
             StringComparer.Ordinal);
 
         await using (var command = connection.CreateCommand())
         {
             command.CommandText =
-                """
-                SELECT xuid, instance_id, connected_utc, disconnected_utc
+                $"""
+                SELECT xuid, instance_id, connected_utc, disconnected_utc, {ExitColumns}
                 FROM player_sessions
                 WHERE ($instance IS NULL OR instance_id = $instance);
                 """;
@@ -228,9 +458,16 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
                 list.Add((
                     reader.GetString(1),
                     ReadStamp(reader.GetString(2)),
-                    reader.IsDBNull(3) ? null : ReadStamp(reader.GetString(3))));
+                    reader.IsDBNull(3) ? null : ReadStamp(reader.GetString(3)),
+                    ReadExit(reader, 4)));
             }
         }
+
+        // One server's roster only: see PlayerSummary.Deaths for why the global
+        // view carries none.
+        var (reportedSince, deaths) = instanceId is null
+            ? (null, new Dictionary<string, int>(StringComparer.Ordinal))
+            : await DeathsOnAsync(connection, instanceId, cancellationToken).ConfigureAwait(false);
 
         var summaries = new List<PlayerSummary>();
 
@@ -256,7 +493,7 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
 
             var playtime = TimeSpan.Zero;
 
-            foreach (var (_, from, to) in played)
+            foreach (var (_, from, to, _) in played)
             {
                 // An open session counts up to now rather than to nothing, so a
                 // player's total moves while they are still on the server.
@@ -276,7 +513,11 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
                     : played.Min(s => s.From),
                 played.Count == 0 ? null : played.Max(s => s.To ?? s.From),
                 playtime,
-                played.Count));
+                played.Count,
+                reportedSince is { } since
+                    ? new DeathTally(deaths.GetValueOrDefault(xuid), since)
+                    : null,
+                instanceId is null ? null : LatestExit(played.Select(s => (s.From, s.Exit)))));
         }
 
         return summaries;
@@ -315,14 +556,14 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
             firstSeen = ReadStamp(reader.GetString(4));
         }
 
-        var byInstance = new Dictionary<string, List<(DateTimeOffset From, DateTimeOffset? To)>>(
+        var byInstance = new Dictionary<string, List<(DateTimeOffset From, DateTimeOffset? To, BlockPosition? Exit)>>(
             StringComparer.OrdinalIgnoreCase);
 
         await using (var command = connection.CreateCommand())
         {
             command.CommandText =
-                """
-                SELECT instance_id, connected_utc, disconnected_utc
+                $"""
+                SELECT instance_id, connected_utc, disconnected_utc, {ExitColumns}
                 FROM player_sessions WHERE xuid = $xuid;
                 """;
             command.Parameters.AddWithValue("$xuid", xuid);
@@ -338,7 +579,41 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
 
                 list.Add((
                     ReadStamp(reader.GetString(1)),
-                    reader.IsDBNull(2) ? null : ReadStamp(reader.GetString(2))));
+                    reader.IsDBNull(2) ? null : ReadStamp(reader.GetString(2)),
+                    ReadExit(reader, 3)));
+            }
+        }
+
+        var tallies = new Dictionary<string, DeathTally>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var instance in byInstance.Keys)
+        {
+            var (since, deaths) = await DeathsOnAsync(connection, instance, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (since is { } reported)
+            {
+                tallies[instance] = new DeathTally(deaths.GetValueOrDefault(xuid), reported);
+            }
+        }
+
+        var recent = new List<RecordedDeath>();
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT instance_id, died_utc, message FROM player_deaths
+                WHERE xuid = $xuid ORDER BY died_utc DESC LIMIT $limit;
+                """;
+            command.Parameters.AddWithValue("$xuid", xuid);
+            command.Parameters.AddWithValue("$limit", PlayerProfile.RecentDeathLimit);
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                recent.Add(new RecordedDeath(
+                    reader.GetString(0), ReadStamp(reader.GetString(1)), reader.GetString(2)));
             }
         }
 
@@ -347,7 +622,7 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
         foreach (var (instance, played) in byInstance)
         {
             var total = TimeSpan.Zero;
-            foreach (var (from, to) in played)
+            foreach (var (from, to, _) in played)
             {
                 total += (to ?? asOfUtc) - from;
             }
@@ -361,7 +636,9 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
                 played.Where(s => s.To is null)
                       .Select(s => (DateTimeOffset?)s.From)
                       .OrderByDescending(s => s)
-                      .FirstOrDefault()));
+                      .FirstOrDefault(),
+                tallies.TryGetValue(instance, out var tally) ? tally : null,
+                LatestExit(played.Select(s => (s.From, s.Exit)))));
         }
 
         activity.Sort((a, b) => b.Playtime.CompareTo(a.Playtime));
@@ -378,7 +655,8 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
             activity.Count == 0 ? null : activity.Max(a => a.LastSeenUtc),
             activity.Aggregate(TimeSpan.Zero, (sum, a) => sum + a.Playtime),
             activity.Sum(a => a.SessionCount),
-            activity);
+            activity,
+            recent);
     }
 
     public async Task<bool> UpdateProfileAsync(
@@ -468,9 +746,9 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
     }
 
     /// <remarks>
-    /// One delete, and the cascade takes the sessions and per-instance state with
-    /// it — which is why <see cref="PlayerDatabase.OpenAsync"/> turns foreign keys
-    /// on. Counted first so the caller can say how much went.
+    /// One delete, and the cascade takes the sessions, per-instance state and
+    /// deaths with it — which is why <see cref="PlayerDatabase.OpenAsync"/> turns
+    /// foreign keys on. Counted first so the caller can say how much went.
     /// </remarks>
     public async Task<int> ForgetPlayerAsync(
         string xuid, CancellationToken cancellationToken = default)
@@ -482,7 +760,8 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
             """
             SELECT (SELECT COUNT(*) FROM players               WHERE xuid = $xuid)
                  + (SELECT COUNT(*) FROM player_sessions       WHERE xuid = $xuid)
-                 + (SELECT COUNT(*) FROM player_instance_state WHERE xuid = $xuid);
+                 + (SELECT COUNT(*) FROM player_instance_state WHERE xuid = $xuid)
+                 + (SELECT COUNT(*) FROM player_deaths         WHERE xuid = $xuid);
             """,
             cancellationToken,
             ("$xuid", xuid))
@@ -496,9 +775,10 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
     }
 
     /// <remarks>
-    /// Sessions and per-instance state only. The profiles themselves are global
-    /// and survive — a person known to this install does not stop being known
-    /// because one server they played on was removed.
+    /// Everything keyed by the instance: sessions, per-instance state, deaths and
+    /// the companion pack's reports. The profiles themselves are global and
+    /// survive — a person known to this install does not stop being known because
+    /// one server they played on was removed.
     /// </remarks>
     public async Task<int> CountAsync(string instanceId, CancellationToken cancellationToken = default)
     {
@@ -508,7 +788,9 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
             connection,
             """
             SELECT (SELECT COUNT(*) FROM player_sessions       WHERE instance_id = $instance)
-                 + (SELECT COUNT(*) FROM player_instance_state WHERE instance_id = $instance);
+                 + (SELECT COUNT(*) FROM player_instance_state WHERE instance_id = $instance)
+                 + (SELECT COUNT(*) FROM player_deaths         WHERE instance_id = $instance)
+                 + (SELECT COUNT(*) FROM companion_reports     WHERE instance_id = $instance);
             """,
             cancellationToken,
             ("$instance", instanceId))
@@ -532,6 +814,18 @@ public sealed class SqlitePlayerStore : IPlayerStore, IInstancePlayerData
         await ExecuteAsync(
             connection, (SqliteTransaction)transaction,
             "DELETE FROM player_instance_state WHERE instance_id = $instance;",
+            cancellationToken, ("$instance", instanceId))
+            .ConfigureAwait(false);
+
+        await ExecuteAsync(
+            connection, (SqliteTransaction)transaction,
+            "DELETE FROM player_deaths WHERE instance_id = $instance;",
+            cancellationToken, ("$instance", instanceId))
+            .ConfigureAwait(false);
+
+        await ExecuteAsync(
+            connection, (SqliteTransaction)transaction,
+            "DELETE FROM companion_reports WHERE instance_id = $instance;",
             cancellationToken, ("$instance", instanceId))
             .ConfigureAwait(false);
 

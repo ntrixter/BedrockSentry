@@ -70,6 +70,11 @@ public static class SaveManifest
                 return false;
             }
 
+            if (!StaysInWorlds(path))
+            {
+                return false;
+            }
+
             if (!long.TryParse(segment[(colon + 1)..], out var length) || length < 0)
             {
                 return false;
@@ -85,5 +90,23 @@ public static class SaveManifest
 
         entries = parsed;
         return true;
+    }
+
+    /// <summary>
+    /// Whether a path the server printed names a file beneath <c>worlds</c>: relative,
+    /// with no <c>..</c> segment, no drive and no stream.
+    /// </summary>
+    /// <remarks>
+    /// The server writes this line, and a backup copies whatever it names with the
+    /// service's own rights. At low integrity (milestone 18.5, <c>D126</c>) the server is
+    /// less trusted than the service, so a line naming the credential or the
+    /// certificate would carry them into an archive the server could later be handed
+    /// back. Such a line is not a manifest at all: the real one still arrives.
+    /// </remarks>
+    public static bool StaysInWorlds(string path)
+    {
+        // A leading separator, a share's two and an empty path all leave an empty
+        // segment, so one rule over the segments covers them.
+        return !path.Contains(':') && path.Split('/', '\\').All(part => part is not ("" or "." or ".."));
     }
 }

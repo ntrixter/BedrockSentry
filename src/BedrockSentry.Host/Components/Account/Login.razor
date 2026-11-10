@@ -3,13 +3,15 @@
 @attribute [AllowAnonymous]
 
 @using System.ComponentModel.DataAnnotations
-@using System.Security.Claims
 @using BedrockSentry.Core.Security
 @using BedrockSentry.Services.Security
 @using Microsoft.AspNetCore.Authentication
 @using Microsoft.AspNetCore.Authentication.Cookies
 
 @inject IAdminCredentialService Credentials
+@inject IAdminMfaService Mfa
+@inject SignInThrottle Throttle
+@inject TimeProvider Time
 @inject NavigationManager Navigation
 
 <PageTitle>Sign in · BedrockSentry</PageTitle>
@@ -22,7 +24,11 @@
         <EditForm Model="Input" method="post" OnValidSubmit="SignInAsync" FormName="login">
             <DataAnnotationsValidator />
 
-            @if (failed)
+            @if (refusal is not null)
+            {
+                <div class="auth-error" role="alert">@refusal</div>
+            }
+            else if (failed)
             {
                 @* Deliberately does not say which field was wrong — that would confirm
                    whether a username exists to anyone probing the form. *@
@@ -60,6 +66,7 @@
 
 @code {
     private bool failed;
+    private string? refusal;
 
     [CascadingParameter]
     private HttpContext HttpContext { get; set; } = default!;
@@ -80,13 +87,26 @@
 
     private async Task SignInAsync()
     {
+        // D125. Counted per address, apart from the second step's count, so a right
+        // password cannot wipe the wrong codes.
+        var key = SignInThrottle.PasswordKey(HttpContext.Connection.RemoteIpAddress?.ToString());
+
+        if (Throttle.RefusedUntil(key) is { } until)
+        {
+            refusal = SignInThrottle.RefusalMessage(until, Time.GetUtcNow());
+            return;
+        }
+
         var result = Credentials.Verify(Input!.Username, Input.Password);
 
         if (result == CredentialVerification.Failed)
         {
+            Throttle.RecordFailure(key);
             failed = true;
             return;
         }
+
+        Throttle.RecordSuccess(key);
 
         if (result == CredentialVerification.SuccessRehashNeeded)
         {
@@ -96,42 +116,31 @@
         }
 
         var current = Credentials.Current;
+        var username = current.Username ?? Input!.Username;
 
-        var identity = new ClaimsIdentity(
-            [
-                new Claim(ClaimTypes.Name, current.Username ?? Input!.Username),
-                new Claim(BedrockSentryClaims.SecurityStamp, current.SecurityStamp ?? string.Empty),
-            ],
-            CookieAuthenticationDefaults.AuthenticationScheme);
+        if (Mfa.IsEnabled)
+        {
+            // D125. Half signed in: this cookie opens the code page and nothing else.
+            await HttpContext.SignInAsync(
+                SecondStepSignIn.Scheme,
+                SecondStepSignIn.Pending(username, current.SecurityStamp, Input!.RememberMe),
+                new AuthenticationProperties
+                {
+                    IsPersistent = false,
+                    ExpiresUtc = Time.GetUtcNow() + SecondStepSignIn.Lifetime,
+                });
+
+            Navigation.NavigateTo(
+                SecondStepSignIn.Path + "?returnUrl=" + Uri.EscapeDataString(SecondStepSignIn.SafeReturnUrl(ReturnUrl)));
+            return;
+        }
 
         await HttpContext.SignInAsync(
             CookieAuthenticationDefaults.AuthenticationScheme,
-            new ClaimsPrincipal(identity),
+            SecondStepSignIn.SignedIn(username, current.SecurityStamp),
             SignInLifetime.For(Input!.RememberMe, DateTimeOffset.UtcNow));
 
-        Navigation.NavigateTo(SafeReturnUrl());
-    }
-
-    /// <summary>
-    /// Only same-site, path-relative destinations are honoured.
-    /// </summary>
-    /// <remarks>
-    /// The leading-double-slash check is the part that matters: "//evil.com" is a
-    /// protocol-relative absolute URL that browsers follow off-site, and it passes
-    /// Uri.IsWellFormedUriString and a naive StartsWith('/') test alike.
-    /// </remarks>
-    private string SafeReturnUrl()
-    {
-        var target = ReturnUrl;
-
-        if (string.IsNullOrWhiteSpace(target)
-            || !target.StartsWith('/')
-            || target.StartsWith("//", StringComparison.Ordinal))
-        {
-            return "/";
-        }
-
-        return target;
+        Navigation.NavigateTo(SecondStepSignIn.SafeReturnUrl(ReturnUrl));
     }
 
     private sealed class LoginModel

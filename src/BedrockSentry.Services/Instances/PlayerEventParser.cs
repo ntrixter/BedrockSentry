@@ -27,14 +27,19 @@ namespace BedrockSentry.Services.Instances;
 /// <c>pfid</c> is present on the disconnect and absent on the connect, so nothing
 /// here may require it.
 ///
-/// The pattern is deliberately unanchored: BDS prefixes its own timestamp and log
-/// level, and the wrapper's console strips or keeps that depending on where the
-/// line came from. Anchoring at the start would make correctness depend on which.
+/// The pattern is anchored at the start of the message: the text after BDS's own
+/// <c>[timestamp LEVEL]</c> prefix and any <c>NO LOG FILE! - </c> in front of it,
+/// both stripped here by <see cref="BdsLogParser.Parse"/> so a raw line and a
+/// recorded message read alike. The anchor is what keeps a connect line out of
+/// everything else that can print one: a behaviour pack's script output, and a
+/// player's own words in a relayed chat message. Unanchored, either opened a
+/// session for somebody who never connected. <see cref="ConsoleLineClassifier"/>
+/// already matched only at the start, and a test pins the two to one answer.
 /// </remarks>
 public static partial class PlayerEventParser
 {
     [GeneratedRegex(
-        @"Player (?<kind>connected|disconnected):\s*(?<name>.*?),\s*xuid:\s*(?<xuid>\d+)",
+        @"^\s*Player (?<kind>connected|disconnected):\s*(?<name>.*?),\s*xuid:\s*(?<xuid>\d+)",
         RegexOptions.CultureInvariant)]
     private static partial Regex PlayerLine();
 
@@ -51,7 +56,8 @@ public static partial class PlayerEventParser
             return false;
         }
 
-        var match = PlayerLine().Match(line);
+        var (_, message, _) = BdsLogParser.Parse(line);
+        var match = PlayerLine().Match(message);
         if (!match.Success)
         {
             return false;

@@ -1,0 +1,161 @@
+@* T411. A port change leaves the firewall rule on the old port: the server listens
+   somewhere nothing lets in, and the old port stays open with nothing behind it.
+   Shown only when a rule named for this server opens a port it no longer uses; the
+   button moves that rule rather than adding a second one beside it. *@
+
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Services.Diagnostics
+@using BedrockSentry.Services.Instances
+
+@inject IFirewallService Firewall
+@inject FirewallReadings Readings
+@inject FirewallNoticeDismissals Dismissals
+
+@* T414. A strip under the server's controls on every tab, beside a backup's or a
+   restore's, so a port change saved anywhere is seen wherever the server is. *@
+@if (stale.Count > 0 && !dismissed)
+{
+    <section class="sync-strip firewall-strip" role="status" aria-label="Firewall rules are out of date">
+        <div class="sync-strip-head">
+            <svg class="sync-strip-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z" />
+                <path d="M12 8v5" />
+                <path d="M12 16h.01" />
+            </svg>
+            <strong>Firewall rules are out of date</strong>
+            <span class="console-spacer"></span>
+            <button type="button" class="btn btn-sm btn-primary" @onclick="UpdateAsync" disabled="@busy">
+                @(busy ? "Updating…" : "Update firewall rules")
+            </button>
+            <button type="button" class="btn btn-sm btn-secondary" @onclick="Dismiss" disabled="@busy"
+                    title="Leave the rules as they are. This notice comes back if the ports change again.">
+                Dismiss
+            </button>
+        </div>
+        <p class="sync-strip-line">
+            @string.Join(", ", stale.Select(r => $"\"{r}\"")) @(stale.Count == 1 ? "is" : "are") on an old
+            port; the server now uses @string.Join(", ", sockets.Select(s => $"{FirewallInspector.Name(s.Protocol)} {s.Ports}")).
+        </p>
+    </section>
+}
+
+@if (outcome is { } done)
+{
+    <p class="@(done.Succeeded ? "prop-saved" : "console-fault")">@done.Message</p>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    private IReadOnlyList<string> stale = [];
+    private IReadOnlyList<ReachableSockets> sockets = [];
+    private SystemCheckFix? outcome;
+    private bool busy;
+    private string? shownFor;
+    private DateTime shownWritten;
+    private bool dismissed;
+
+    /// After a render rather than in OnParametersSetAsync, which also runs during
+    /// prerender and would hold the page's HTTP response on the broker's firewall read
+    /// (`T412`). The page renders every second, so this reads again when the server
+    /// changes or its server.properties is written, which is when the ports move; the
+    /// file's time is a stat, the firewall read happens only then.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var written = Written();
+
+        if (shownFor != Supervisor.InstanceId || written != shownWritten)
+        {
+            if (shownFor != Supervisor.InstanceId)
+            {
+                outcome = null;
+            }
+
+            shownFor = Supervisor.InstanceId;
+            shownWritten = written;
+            await RecheckAsync();
+        }
+    }
+
+    private DateTime Written()
+    {
+        try
+        {
+            return File.GetLastWriteTimeUtc(ServerProperties.PathFor(Supervisor.WorkingDirectory));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return default;
+        }
+    }
+
+    /// <summary>Reads the firewall again.</summary>
+    public async Task RecheckAsync()
+    {
+        try
+        {
+            sockets = PortInspector.ReachableOn(Supervisor.WorkingDirectory);
+
+            // T414 clause 1. The rules a port change leaves behind are the ones last read,
+            // so they are said now; the fresh read, which takes seconds, follows.
+            if (Readings.Latest is { } known)
+            {
+                Show(FirewallRuleSync.Stale(known, Supervisor.Definition.Name, sockets));
+            }
+
+            // Shared across tabs: a read takes seconds (T414 clause 1).
+            var rules = await Readings.ReadAsync();
+            stale = FirewallRuleSync.Stale(rules, Supervisor.Definition.Name, sockets);
+        }
+        catch (Exception)
+        {
+            // An unreadable file or firewall is the Status tab's and the system checks'
+            // to report; this card only speaks when it knows the rules are behind.
+            stale = [];
+        }
+
+        dismissed = stale.Count > 0
+            && Dismissals.IsDismissed(Supervisor.InstanceId, FirewallNoticeDismissals.Fingerprint(stale, sockets));
+
+        StateHasChanged();
+    }
+
+    private void Show(IReadOnlyList<string> rules)
+    {
+        stale = rules;
+        dismissed = stale.Count > 0
+            && Dismissals.IsDismissed(Supervisor.InstanceId, FirewallNoticeDismissals.Fingerprint(stale, sockets));
+        StateHasChanged();
+    }
+
+    private void Dismiss()
+    {
+        Dismissals.Dismiss(Supervisor.InstanceId, FirewallNoticeDismissals.Fingerprint(stale, sockets));
+        dismissed = true;
+    }
+
+    private async Task UpdateAsync()
+    {
+        busy = true;
+        outcome = null;
+
+        try
+        {
+            outcome = await Firewall.UpdateServerRulesAsync(
+                Supervisor.InstanceId, Supervisor.Definition.Name, sockets);
+        }
+        catch (Exception ex)
+        {
+            outcome = new SystemCheckFix(false, ex.Message);
+        }
+        finally
+        {
+            busy = false;
+        }
+
+        Readings.Forget();
+        await RecheckAsync();
+    }
+}

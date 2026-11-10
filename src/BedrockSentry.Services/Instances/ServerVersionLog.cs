@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BedrockSentry.Core.Configuration;
+using BedrockSentry.Core.Packages;
 using Microsoft.Extensions.Logging;
 
 namespace BedrockSentry.Services.Instances;
@@ -22,11 +23,24 @@ namespace BedrockSentry.Services.Instances;
 /// stopped instance leaves it stopped. Defaulted to true so records written
 /// before this distinction existed read as what they were.
 /// </param>
+/// <param name="Package">
+/// The version of the package this wrapper last laid down here, or null when it
+/// never has (<c>D53</c>). What a Preview build is identified by, since its own
+/// announcement does not parse.
+/// </param>
+/// <param name="PackageReported">
+/// What the server announced on the first start after that install, or null when
+/// it has not started on those files yet. A later announcement that differs means
+/// somebody has replaced the files, and <see cref="Package"/> no longer describes
+/// them (<see cref="BedrockSentry.Core.Packages.InstalledBuild"/>).
+/// </param>
 public sealed record ServerVersionRecord(
     string Version,
     DateTimeOffset FirstSeenUtc,
     string? PreviousVersion,
-    bool Reported = true)
+    bool Reported = true,
+    string? Package = null,
+    string? PackageReported = null)
 {
     /// <summary>True when this record represents a version actually changing.</summary>
     [JsonIgnore]
@@ -140,33 +154,54 @@ public sealed class ServerVersionLog
         {
             var existing = Read(instanceId);
 
+            // The first announcement on files this wrapper installed says what those
+            // files call themselves, which is what keeps the package an identity only
+            // while it is still true (`D53`).
+            var firstOnPackage = reported && existing is { Package: not null, PackageReported: null };
+            var packageReported = firstOnPackage ? version : existing?.PackageReported;
+
             if (existing is not null
                 && string.Equals(existing.Version, version, StringComparison.OrdinalIgnoreCase))
             {
                 // Same version. Reinstalling a build over itself is a repair, not an
                 // update, and dating it as one would be wrong. The one thing worth
                 // writing is that a server has now confirmed what was only installed.
-                if (!reported || existing.Reported)
+                if ((!reported || existing.Reported) && !firstOnPackage)
                 {
                     return null;
                 }
 
-                var confirmed = existing with { Reported = true };
-
-                try
+                Confirm(instanceId, existing with
                 {
-                    AtomicFile.WriteAllText(
-                        FileFor(instanceId), JsonSerializer.Serialize(confirmed, Json));
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    _log.LogWarning(ex, "Could not record the version for {InstanceId}", instanceId);
-                }
+                    Reported = existing.Reported || reported,
+                    PackageReported = packageReported,
+                });
 
                 return null;
             }
 
-            var record = new ServerVersionRecord(version, atUtc, existing?.Version, reported);
+            // An install onto a stopped server recorded the package's own version, and
+            // a Preview build announces itself in another spelling: 1.26.60.21 installed,
+            // 1.26.60-beta21 announced. The same files, so a confirmation rather than an
+            // update that would date the build twice. An announcement that parses and
+            // differs is a different build and falls through to be recorded as one.
+            if (firstOnPackage
+                && !existing!.Reported
+                && (InstalledBuild.Parse(version) is not { } announced
+                    || announced == InstalledBuild.Parse(existing.Package)))
+            {
+                Confirm(instanceId, existing with
+                {
+                    Version = version,
+                    Reported = true,
+                    PackageReported = version,
+                });
+
+                return null;
+            }
+
+            var record = new ServerVersionRecord(
+                version, atUtc, existing?.Version, reported, existing?.Package, packageReported);
 
             try
             {
@@ -206,7 +241,55 @@ public sealed class ServerVersionLog
         }
     }
 
-    /// <summary>Forgets an instance's record, for removal (<c>D14</c>).</summary>
+    /// <summary>
+    /// Notes the package this wrapper has just laid down on an instance (<c>D53</c>).
+    /// </summary>
+    /// <param name="package">The package's version, from its file name.</param>
+    /// <param name="reportedNow">
+    /// What the server has already announced on those files, or null when it has not
+    /// started on them yet; the next announcement then fills it in.
+    /// </param>
+    /// <remarks>
+    /// Kept apart from <see cref="ServerVersionRecord.Version"/>'s history: the package is an identity for
+    /// comparing against an offer, and <see cref="ServerVersionRecord.FirstSeenUtc"/>
+    /// dates what the server said. A server with no record yet, one just created from
+    /// a package, gets one saying the package is installed and has not run.
+    /// </remarks>
+    public void RecordPackage(
+        string instanceId, System.Version package, string? reportedNow, DateTimeOffset atUtc)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+
+        lock (_gate)
+        {
+            var existing = Read(instanceId);
+            var reported = reportedNow is { Length: > 0 } ? reportedNow.Trim() : null;
+
+            Confirm(instanceId, existing is null
+                ? new ServerVersionRecord(
+                    reported ?? package.ToString(), atUtc, null, reported is not null,
+                    package.ToString(), reported)
+                : existing with { Package = package.ToString(), PackageReported = reported });
+        }
+    }
+
+    private void Confirm(string instanceId, ServerVersionRecord record)
+    {
+        try
+        {
+            AtomicFile.WriteAllText(FileFor(instanceId), JsonSerializer.Serialize(record, Json));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogWarning(ex, "Could not record the version for {InstanceId}", instanceId);
+        }
+    }
+
+    /// <summary>
+    /// Forgets an instance's record: at removal (<c>D14</c>), and before a new
+    /// instance is created under an id a removed one may have left a record for
+    /// (<c>T315</c>).
+    /// </summary>
     public void Forget(string instanceId)
     {
         try

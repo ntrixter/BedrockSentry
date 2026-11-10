@@ -22,7 +22,7 @@ namespace BedrockSentry.Services.Diagnostics;
 /// without somebody pressing the button.
 /// </para>
 /// </remarks>
-public sealed class DefenderInspector
+public sealed class DefenderInspector : IDefenderService
 {
     private readonly IPowerShellRunner _powerShell;
     private readonly ILogger<DefenderInspector> _log;
@@ -33,18 +33,13 @@ public sealed class DefenderInspector
         _log = log;
     }
 
-    /// <summary>
-    /// Defender's configured path exclusions, or why they could not be read.
-    /// </summary>
-    public sealed record Exclusions(bool Read, string Json, string Error);
-
     /// <summary>Reads Defender's exclusion list, once.</summary>
     /// <remarks>
     /// Separate from <see cref="Check"/> for the same reason the firewall read
     /// is: the exclusion list belongs to the machine, not to an instance, and
     /// asking once per server meant paying for an identical answer every time.
     /// </remarks>
-    public async Task<Exclusions> ReadAsync(CancellationToken cancellationToken = default)
+    public async Task<DefenderExclusions> ReadAsync(CancellationToken cancellationToken = default)
     {
         var result = await _powerShell.RunAsync(
                 """
@@ -56,13 +51,13 @@ public sealed class DefenderInspector
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return new Exclusions(result.Succeeded, result.Output, result.Reason);
+        return new DefenderExclusions(result.Succeeded, result.Output, result.Reason);
     }
 
     /// <summary>The row's name, needed before its answer arrives.</summary>
     public static string CheckTitle(string label) => $"Defender exclusion — {label}";
 
-    public static SystemCheck Check(Exclusions exclusions, string label, string directory)
+    public static SystemCheck Check(DefenderExclusions exclusions, string label, string directory)
     {
         var title = CheckTitle(label);
 
@@ -74,6 +69,16 @@ public sealed class DefenderInspector
             return new SystemCheck(
                 title, SystemCheckState.Unknown,
                 $"Could not ask Defender. {exclusions.Error}");
+        }
+
+        if (IsHiddenList(exclusions.Json))
+        {
+            // Not a list: Defender's way of refusing a non-administrator, which
+            // parsed as one would read as "not excluded" and offer a fix that fails.
+            return new SystemCheck(
+                title, SystemCheckState.Unknown,
+                "Defender shows its exclusions only to administrators, and this service does not run "
+                + "as one. With the privilege broker installed, it asks the broker instead.");
         }
 
         var covering = FindExclusion(exclusions.Json, directory);
@@ -95,6 +100,40 @@ public sealed class DefenderInspector
                     + "file somebody copies in. That is a real reduction in protection, and it "
                     + "is why this is a folder rather than a drive and a button rather than a "
                     + "default.");
+    }
+
+    /// <summary>
+    /// What <c>Get-MpPreference</c> puts in <c>ExclusionPath</c> for a caller that is not
+    /// an administrator, in place of the list.
+    /// </summary>
+    public const string HiddenListMarker = "N/A: Must be an administrator to view exclusions";
+
+    /// <summary>Whether the read is Defender's refusal rather than a list.</summary>
+    /// <remarks>
+    /// Matched on its <c>N/A:</c> prefix as well as the whole sentence: no excluded
+    /// path starts that way, and the rest of the sentence may be worded differently.
+    /// </remarks>
+    public static bool IsHiddenList(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            var only = root.ValueKind == JsonValueKind.Array && root.GetArrayLength() == 1 ? root[0] : root;
+
+            return only.ValueKind == JsonValueKind.String
+                && only.GetString() is { } value
+                && value.StartsWith("N/A:", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -159,6 +198,11 @@ public sealed class DefenderInspector
     private static string Normalise(string path) =>
         Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim()));
 
+    public Task<SystemCheckFix> ExcludeAsync(
+        string instanceId, string directory, CancellationToken cancellationToken = default) =>
+        ExcludeAsync(directory, cancellationToken);
+
+    /// <summary>Adds <paramref name="directory"/> to Defender's exclusion list.</summary>
     public async Task<SystemCheckFix> ExcludeAsync(
         string directory, CancellationToken cancellationToken = default)
     {

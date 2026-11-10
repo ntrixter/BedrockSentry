@@ -1,7 +1,12 @@
-@* Everyone in scope, online and not. Shared by the global players page and each
-   instance's own Players tab, because docs/design.md § 7.3 describes two views over one
-   set of rows rather than two features — the only real difference is that the
-   global view has a server to report and the per-instance view already knows. *@
+@* Everyone on every server, online and not: the global Players page. A server's
+   own Players tab is `PlayersTab`, which joins the same rows with that server's
+   allow list and roles (docs/design.md § 7.3, § 7.5).
+
+   This said it was shared by both, and it had a per-server mode nothing rendered,
+   so the Deaths column and last position built into that mode never reached the
+   server's tab (`T293`). They are on `PlayersTab` now. The global rows carry
+   neither, because a death count summed over servers with different starting
+   points is a number nobody can read (`PlayerSummary.Deaths`). *@
 
 @using BedrockSentry.Core.Players
 @using BedrockSentry.Services.Instances
@@ -37,17 +42,13 @@ else if (!loaded)
 else if (all.Count == 0)
 {
     <p class="empty-state">
-        @(InstanceId is null
-            ? "Nobody has connected to any server yet. Sessions are recorded from this build onward."
-            : "Nobody has connected to this server yet.")
+        Nobody has connected to any server yet. Sessions are recorded from this build onward.
     </p>
 }
 else if (visibleCount == 0)
 {
     <p class="empty-state">
-        @(InstanceId is null
-            ? "Nobody is online on any server right now."
-            : "Nobody is online on this server right now.")
+        Nobody is online on any server right now.
         Untick <strong>Online only</strong> to see everyone who has played.
     </p>
 }
@@ -62,14 +63,11 @@ else
                             Player @Caret("player")
                         </button>
                     </th>
-                    @if (InstanceId is null)
-                    {
-                        <th aria-sort="@AriaSort("server")">
-                            <button type="button" class="sort-head" @onclick='() => SortBy("server")'>
-                                Server @Caret("server")
-                            </button>
-                        </th>
-                    }
+                    <th aria-sort="@AriaSort("server")">
+                        <button type="button" class="sort-head" @onclick='() => SortBy("server")'>
+                            Server @Caret("server")
+                        </button>
+                    </th>
                     <th aria-sort="@AriaSort("session")">
                         <button type="button" class="sort-head" @onclick='() => SortBy("session")'>
                             Session @Caret("session")
@@ -102,31 +100,33 @@ else
                 {
                     <tr class="@(player.IsOnline ? "roster-online" : null)">
                         <td>
-                            <a href="@($"players/{player.Xuid}")">
-                                <strong>@(player.Nickname ?? player.Gamertag)</strong>
-                            </a>
-                            @if (player.Nickname is not null)
-                            {
-                                @* The gamertag stays visible even when a nickname is set:
-                                   it is the name the server's own console uses, so hiding
-                                   it would make the two disagree. *@
-                                <span class="roster-gamertag">@player.Gamertag</span>
-                            }
+                            <div class="player-cell">
+                                <PlayerFaceImage Xuid="@player.Xuid" />
+                                <div>
+                                    <a href="@($"players/{player.Xuid}")">
+                                        <strong>@(player.Nickname ?? player.Gamertag)</strong>
+                                    </a>
+                                    @if (player.Nickname is not null)
+                                    {
+                                        @* The gamertag stays visible even when a nickname is set:
+                                           it is the name the server's own console uses, so hiding
+                                           it would make the two disagree. *@
+                                        <span class="roster-gamertag">@player.Gamertag</span>
+                                    }
+                                </div>
+                            </div>
                         </td>
 
-                        @if (InstanceId is null)
-                        {
-                            <td>
-                                @if (player.OnlineOn is { } instance)
-                                {
-                                    <a href="@($"instances/{instance}/players")">@NameOf(instance)</a>
-                                }
-                                else
-                                {
-                                    <span class="check-detail">—</span>
-                                }
-                            </td>
-                        }
+                        <td>
+                            @if (player.OnlineOn is { } instance)
+                            {
+                                <a href="@($"instances/{instance}/players")">@NameOf(instance)</a>
+                            }
+                            else
+                            {
+                                <span class="check-detail">—</span>
+                            }
+                        </td>
 
                         <td class="num">
                             @if (player.CurrentSession(now) is { } session)
@@ -141,8 +141,8 @@ else
 
                         <td class="num">@Duration(player.Playtime)</td>
                         <td class="num">@player.SessionCount</td>
-                        <td class="num">@Date(player.FirstSeenUtc)</td>
-                        <td class="num">@(player.IsOnline ? "now" : Date(player.LastSeenUtc))</td>
+                        <td class="num text-nowrap">@Date(player.FirstSeenUtc)</td>
+                        <td class="num text-nowrap">@(player.IsOnline ? "now" : DateAndTime(player.LastSeenUtc))</td>
                     </tr>
                 }
             </tbody>
@@ -151,9 +151,6 @@ else
 }
 
 @code {
-    /// <summary>Null for the global view, which reports which server instead.</summary>
-    [Parameter] public string? InstanceId { get; set; }
-
     private IReadOnlyList<PlayerSummary> all = [];
     private PeriodicTimer? timer;
     private CancellationTokenSource? cts;
@@ -214,7 +211,7 @@ else
         try
         {
             now = Time.GetUtcNow();
-            all = await Players.ListAsync(InstanceId, now);
+            all = await Players.ListAsync(null, now);
             failure = null;
         }
         catch (Exception ex)
@@ -294,6 +291,8 @@ else
     private static string Duration(TimeSpan span) => PlayerFormat.Duration(span);
 
     private static string Date(DateTimeOffset? value) => PlayerFormat.Date(value);
+
+    private static string DateAndTime(DateTimeOffset? value) => PlayerFormat.DateAndTime(value);
 
     public async ValueTask DisposeAsync()
     {

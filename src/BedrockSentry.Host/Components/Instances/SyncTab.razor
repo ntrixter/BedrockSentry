@@ -1,0 +1,748 @@
+@* D103. The server this one takes its world from, the Sync Areas of this one's world
+   it keeps (D106), and the button that runs a sync. Every sentence about what a sync does
+   or refuses comes from Core or Services, where the suite reads it; this page only
+   edits the settings and asks for the confirmation. *@
+@implements IDisposable
+
+@using BedrockSentry.Core.Addons
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Core.Structures
+@using BedrockSentry.Core.Sync
+@using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Sync
+@using Microsoft.AspNetCore.Components.Authorization
+
+@inject InstanceRegistry Registry
+@inject WorldSync Sync
+@inject AreaRestore AreaRestores
+@inject DestructiveConfirmPolicy Confirm
+
+<p class="lead">
+    A sync copies another server's newest backup into this one, then puts this server's Sync
+    Areas back over it. The other server is only read through its backups: it is not stopped
+    or changed.
+</p>
+
+@if (waiting is { } left)
+{
+    @* D103: a sync that replaced the world and stopped before its Sync Areas were put back. *@
+    <section class="sync-section sync-waiting">
+        <h3>Sync Areas waiting to be put back</h3>
+
+        <p>@UnfinishedSyncText.Waiting(left, ClockText.TimeOnDay(left.StoppedUtc.ToLocalTime()))</p>
+        <p class="check-detail">
+            The saved pieces are in <code>@Sync.PiecesDirectory(Supervisor.InstanceId)</code>.
+            @UnfinishedSyncText.DiscardMeans
+        </p>
+
+        @foreach (var problem in putBackProblems)
+        {
+            <p class="prop-check warn">@problem</p>
+        }
+
+        @if (confirmingPutBack)
+        {
+            <div class="danger-panel">
+                <h3>@UnfinishedSyncText.ConfirmTitle(left)</h3>
+
+                @foreach (var line in UnfinishedSyncText.Confirmation(Supervisor.Definition.Name, left))
+                {
+                    <p>@line</p>
+                }
+
+                @if (Confirm.PasswordRequired)
+                {
+                    <label class="field">
+                        <span>@Confirm.FieldLabel</span>
+                        <input class="form-control" type="@Confirm.FieldType" autocomplete="@Confirm.FieldAutocomplete"
+                               value="@putBackPassword" @oninput="e => putBackPassword = e.Value?.ToString() ?? string.Empty"
+                               disabled="@puttingBack" />
+                    </label>
+                }
+                else
+                {
+                    <p class="prop-check warn">@DestructiveConfirmPolicy.Waiver</p>
+                }
+
+                @if (putBackError is not null)
+                {
+                    <p class="console-fault">@putBackError</p>
+                }
+
+                <div class="provision-controls">
+                    <button type="button" class="btn btn-danger" disabled="@(puttingBack || !Confirm.MayConfirm(putBackPassword))"
+                            @onclick="PutBackAsync">
+                        @(puttingBack ? "Starting…" : "Put back now")
+                    </button>
+                    <button type="button" class="btn btn-secondary" disabled="@puttingBack" @onclick="CancelPutBack">Cancel</button>
+                </div>
+            </div>
+        }
+        else
+        {
+            @if (putBackError is not null)
+            {
+                <p class="console-fault">@putBackError</p>
+            }
+
+            <div class="provision-controls">
+                <button type="button" class="btn btn-danger" disabled="@(Locked || putBackProblems.Count > 0)"
+                        @onclick="AskPutBack">
+                    Put the Sync Areas back
+                </button>
+                <button type="button" class="btn btn-secondary" disabled="@Locked" @onclick="Discard">Discard</button>
+            </div>
+        }
+    </section>
+}
+
+<section class="sync-section">
+    <h3>Takes its world from</h3>
+
+    <label class="field sync-source">
+        <span>Server</span>
+        <select class="form-select" value="@sourceId" @onchange="SourceChangedAsync" disabled="@Locked">
+            <option value="">Choose a server</option>
+            @foreach (var other in Others)
+            {
+                <option value="@other.InstanceId">@other.Definition.Name</option>
+            }
+            @if (SourceIsGone)
+            {
+                <option value="@sourceId">@sourceId (no longer here)</option>
+            }
+        </select>
+    </label>
+
+    @if (readiness is { Source: { } from, Backup: { } backup })
+    {
+        <p class="check-detail">
+            A sync copies in @from.Definition.Name's newest backup that holds a world:
+            <code>@backup.Name</code>, taken @ClockText.TimeOnDay(backup.TakenUtc.ToLocalTime()).
+            Safety backups are passed over, since each holds a world that was replaced.
+        </p>
+    }
+</section>
+
+<section class="sync-section">
+    <h3>Sync Areas</h3>
+
+    <p class="check-detail">
+        Each area is two opposite corners in one dimension, both included, as the game's coordinates
+        show them. Height runs from @WorldHeight.Overworld.Bottom to @WorldHeight.Overworld.Top in the
+        Overworld, @WorldHeight.Nether.Bottom to @WorldHeight.Nether.Top in the Nether and
+        @WorldHeight.End.Bottom to @WorldHeight.End.Top in the End. What an area holds on this server,
+        entities included, is put back over the other server's world.
+    </p>
+
+    <p class="check-detail">
+        With <em>Show in game</em> ticked, an area is outlined in its colour for operators within
+        @CompanionPack.OutlineReach blocks of an edge, while the server runs with the companion pack and
+        its resources. Nobody else sees it, and an operator who declined the server's resource packs
+        sees no outline.
+    </p>
+
+    @if (areas.Count == 0)
+    {
+        <p class="empty-state">No Sync Areas, so a sync replaces this whole world.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="sync-areas">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Dimension</th>
+                        <th>Corners x, y, z</th>
+                        <th>Size</th>
+                        <th>In game</th>
+                        @* Named by a label rather than a visually hidden span: that span is
+                           positioned against the page, not the scrolling wrapper, and widened
+                           the page at phone width. *@
+                        <th aria-label="Actions"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (var i = 0; i < areas.Count; i++)
+                    {
+                        var index = i;
+                        var area = areas[i];
+
+                        <tr>
+                            <td>
+                                <input class="form-control" value="@area.Name" maxlength="@SyncPlan.MaxNameLength"
+                                       aria-label="Name" disabled="@Locked"
+                                       @onchange="e => EditAsync(index, a => a.Name = e.Value?.ToString() ?? string.Empty)" />
+                            </td>
+                            <td>
+                                @* An id Bedrock does not have is kept as it was saved and listed, so the
+                                   plan's problem names what is wrong rather than the select hiding it. *@
+                                <select class="form-select" value="@DimensionValue(area)" aria-label="Dimension" disabled="@Locked"
+                                        @onchange="e => EditAsync(index, a => a.Dimension = e.Value?.ToString() ?? string.Empty)">
+                                    @foreach (var dimension in BedrockDimension.All)
+                                    {
+                                        <option value="@dimension.Id">@dimension.Title</option>
+                                    }
+                                    @if (BedrockDimension.Find(area.Dimension) is null)
+                                    {
+                                        <option value="@area.Dimension">@area.Dimension</option>
+                                    }
+                                </select>
+                            </td>
+                            <td>
+                                @* The two corners stacked in one cell, so the row fits a 1280-pixel page
+                                   with the In game column beside them. *@
+                                <div class="sync-corner">
+                                    <span class="sync-corner-label">From</span>
+                                    <input type="number" class="form-control" value="@area.X1" aria-label="From x" disabled="@Locked"
+                                           @onchange="e => EditAsync(index, a => a.X1 = Number(e, a.X1))" />
+                                    <input type="number" class="form-control" value="@area.Y1" aria-label="From y" disabled="@Locked"
+                                           @onchange="e => EditAsync(index, a => a.Y1 = Number(e, a.Y1))" />
+                                    <input type="number" class="form-control" value="@area.Z1" aria-label="From z" disabled="@Locked"
+                                           @onchange="e => EditAsync(index, a => a.Z1 = Number(e, a.Z1))" />
+                                </div>
+                                <div class="sync-corner">
+                                    <span class="sync-corner-label">To</span>
+                                    <input type="number" class="form-control" value="@area.X2" aria-label="To x" disabled="@Locked"
+                                           @onchange="e => EditAsync(index, a => a.X2 = Number(e, a.X2))" />
+                                    <input type="number" class="form-control" value="@area.Y2" aria-label="To y" disabled="@Locked"
+                                           @onchange="e => EditAsync(index, a => a.Y2 = Number(e, a.Y2))" />
+                                    <input type="number" class="form-control" value="@area.Z2" aria-label="To z" disabled="@Locked"
+                                           @onchange="e => EditAsync(index, a => a.Z2 = Number(e, a.Z2))" />
+                                </div>
+                            </td>
+                            <td class="sync-size">@SyncText.AreaSize(plan.Areas[index].Plan)</td>
+                            <td>
+                                <div class="sync-in-game">
+                                    <input type="checkbox" class="form-check-input" checked="@area.ShowInGame" disabled="@Locked"
+                                           aria-label="Show in game" title="Show in game"
+                                           @onchange="e => EditAsync(index, a => a.ShowInGame = e.Value is true)" />
+                                    @* The picker shows the colour the outline is drawn in, the area's own or
+                                       its place's, so what it shows is what operators see. *@
+                                    <input type="color" class="form-control form-control-color" aria-label="Outline colour" title="Outline colour"
+                                           value="@AreaColors.Of(area.Color, index)" disabled="@Locked"
+                                           @onchange="e => EditAsync(index, a => a.Color = e.Value?.ToString() ?? string.Empty)" />
+                                </div>
+                            </td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-secondary" disabled="@Locked"
+                                        @onclick="() => RemoveAsync(index)">
+                                    Remove
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <p>
+        <button type="button" class="btn btn-sm btn-secondary" disabled="@Locked" @onclick="AddAsync">Add an area</button>
+    </p>
+
+    @if (plan.Areas.Count > 0 && plan.CanSync)
+    {
+        <p class="check-detail">@SyncText.PlanSummary(plan)</p>
+    }
+
+    @foreach (var problem in plan.Problems)
+    {
+        <p class="prop-check warn">@problem</p>
+    }
+
+    @if (saveError is not null)
+    {
+        <p class="console-fault">@saveError</p>
+    }
+</section>
+
+<section class="sync-section">
+    <h3>Sync</h3>
+
+    @foreach (var problem in OtherProblems)
+    {
+        <p class="prop-check warn">@problem</p>
+    }
+
+    <p>
+        <button type="button" class="btn btn-primary" disabled="@(!CanAsk)" @onclick="Ask">Sync now…</button>
+    </p>
+</section>
+
+@* D111. One area from the source's newest backup, the rest of this world left as it is:
+   an area restore whose backup is the other server's, so its steps show in the strip
+   under the controls like any area restore's. No password, as an area restore asks
+   none: the whole world is backed up first. *@
+<section class="sync-section">
+    <h3>Sync one area</h3>
+
+    <p class="check-detail">@AreaRestoreText.SyncOneLead(SourceName)</p>
+
+    <AreaPicker Areas="Supervisor.Definition.Sync.KeptAreas" Group="sync-one-kind" Disabled="@(areaStarting || Locked)"
+                TargetChanged="AreaTargetChangedAsync" />
+
+    @if (!HasSource)
+    {
+        <p class="prop-check warn">@AreaRestoreText.SyncOneNoSource</p>
+    }
+    else if (areaCheck is { } check)
+    {
+        @if (check.CanStart)
+        {
+            <p class="check-detail">@AreaRestoreText.Size(check.Plan) @AreaRestoreText.SyncOneFrom(check.BackupLabel)</p>
+        }
+        else
+        {
+            @foreach (var problem in check.Problems)
+            {
+                <p class="prop-check warn">@problem</p>
+            }
+        }
+    }
+
+    @if (areaError is not null)
+    {
+        <p class="console-fault">@areaError</p>
+    }
+
+    <p>
+        <button type="button" class="btn btn-danger" disabled="@(areaStarting || Locked || areaCheck is not { CanStart: true })"
+                @onclick="SyncAreaAsync">
+            @(areaStarting ? "Starting…" : "Sync this area")
+        </button>
+    </p>
+</section>
+
+@if (confirming && readiness is { Source: { } source, Backup: { } chosen })
+{
+    @* A danger panel and the password, like a restore: the world here is replaced. *@
+    <div class="danger-panel">
+        <h3>Sync @Supervisor.Definition.Name from @source.Definition.Name</h3>
+
+        @foreach (var line in SyncText.Confirmation(
+                      Supervisor.Definition.Name, source.Definition.Name, chosen.Name, readiness.Plan))
+        {
+            <p>@line</p>
+        }
+
+        @if (Confirm.PasswordRequired)
+        {
+            <label class="field">
+                <span>@Confirm.FieldLabel</span>
+                <input class="form-control" type="@Confirm.FieldType" autocomplete="@Confirm.FieldAutocomplete"
+                       value="@password" @oninput="e => password = e.Value?.ToString() ?? string.Empty"
+                       disabled="@starting" />
+            </label>
+        }
+        else
+        {
+            <p class="prop-check warn">@DestructiveConfirmPolicy.Waiver</p>
+        }
+
+        @if (startError is not null)
+        {
+            <p class="console-fault">@startError</p>
+        }
+
+        <div class="provision-controls">
+            <button type="button" class="btn btn-danger" disabled="@(starting || !Confirm.MayConfirm(password))"
+                    @onclick="StartAsync">
+                @(starting ? "Starting…" : "Sync now")
+            </button>
+            <button type="button" class="btn btn-secondary" disabled="@starting" @onclick="Cancel">Cancel</button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private string sourceId = string.Empty;
+    private List<KeptAreaSettings> areas = [];
+    private SyncPlan plan = SyncPlan.For([]);
+    private SyncReadiness? readiness;
+
+    private string? saveError;
+    private bool saving;
+    private bool confirming;
+    private string password = string.Empty;
+    private bool starting;
+    private string? startError;
+
+    // D103: Sync Areas waiting after a sync that stopped early.
+    private UnfinishedSync? waiting;
+    private IReadOnlyList<string> putBackProblems = [];
+    private bool confirmingPutBack;
+    private string putBackPassword = string.Empty;
+    private bool puttingBack;
+    private string? putBackError;
+
+    // D111: Sync one area.
+    private AreaRestoreTarget areaTarget = AreaRestoreTarget.Named(string.Empty);
+    private AreaRestoreCheck? areaCheck;
+    private bool areaStarting;
+    private string? areaError;
+
+    private string? SourceName => Registry.TryGet(sourceId, out var source) ? source.Definition.Name : null;
+
+    /// <summary>The other servers this one can take its world from, by name.</summary>
+    private IEnumerable<InstanceSupervisor> Others => Registry.All
+        .Where(s => s.InstanceId != Supervisor.InstanceId)
+        .OrderBy(s => s.Definition.Name, StringComparer.CurrentCultureIgnoreCase);
+
+    private bool SourceIsGone =>
+        sourceId.Length > 0 && sourceId != Supervisor.InstanceId && !Registry.TryGet(sourceId, out _);
+
+    /// <summary>Nothing is edited while a sync runs: it read these settings when it started.</summary>
+    private bool Locked => Sync.IsRunning(Supervisor.InstanceId);
+
+    /// <summary>The refusals the sections above do not already show.</summary>
+    private IEnumerable<string> OtherProblems =>
+        readiness is null ? [] : readiness.Problems.Except(plan.Problems);
+
+    /// <summary>Whether a server other than this one is chosen to copy from.</summary>
+    private bool HasSource => sourceId.Length > 0 && sourceId != Supervisor.InstanceId;
+
+    private bool CanAsk => readiness is { CanStart: true } && !Locked && !confirming;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var settings = Supervisor.Definition.Sync;
+        sourceId = settings.SourceInstanceId;
+        areas = [.. settings.KeptAreas.Select(Copy)];
+        plan = SyncPlan.For(areas);
+
+        Sync.Changed += OnSyncChanged;
+        AreaRestores.Changed += OnAreaRestoreChanged;
+        Registry.SyncSettingsChanged += OnSettingsChanged;
+        await CheckAsync();
+    }
+
+    public void Dispose()
+    {
+        Sync.Changed -= OnSyncChanged;
+        AreaRestores.Changed -= OnAreaRestoreChanged;
+        Registry.SyncSettingsChanged -= OnSettingsChanged;
+    }
+
+    /// <summary>
+    /// Reads the areas again when something else saved them, such as <c>syncarea</c> typed in
+    /// game (D106), so this page never saves over an edit it has not shown. Its own save
+    /// raises the same event and is skipped.
+    /// </summary>
+    private void OnSettingsChanged(string instanceId)
+    {
+        if (instanceId != Supervisor.InstanceId || saving)
+        {
+            return;
+        }
+
+        _ = InvokeAsync(async () =>
+        {
+            var settings = Supervisor.Definition.Sync;
+            sourceId = settings.SourceInstanceId;
+            areas = [.. settings.KeptAreas.Select(Copy)];
+            plan = SyncPlan.For(areas);
+            await CheckAsync();
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>
+    /// Asks again once a sync here ends, so the button comes back without a reload:
+    /// the refusal "a sync is already running" is the readiness this page holds.
+    /// </summary>
+    private void OnSyncChanged(string instanceId)
+    {
+        if (instanceId == Supervisor.InstanceId && !Sync.IsRunning(instanceId))
+        {
+            _ = InvokeAsync(async () =>
+            {
+                await CheckAsync();
+                StateHasChanged();
+            });
+        }
+    }
+
+    /// <summary>Asks again once an area restore here ends, so Sync this area comes back without a reload.</summary>
+    private void OnAreaRestoreChanged(string instanceId)
+    {
+        if (instanceId == Supervisor.InstanceId && !AreaRestores.IsRunning(instanceId))
+        {
+            _ = InvokeAsync(async () =>
+            {
+                await CheckAreaAsync();
+                StateHasChanged();
+            });
+        }
+    }
+
+    private async Task CheckAsync()
+    {
+        try
+        {
+            readiness = await Sync.CheckAsync(Supervisor.InstanceId);
+            waiting = Sync.Waiting(Supervisor.InstanceId);
+            putBackProblems = waiting is null ? [] : Sync.CheckPutBack(Supervisor.InstanceId);
+        }
+        catch (Exception ex)
+        {
+            readiness = null;
+            saveError = ex.Message;
+        }
+
+        await CheckAreaAsync();
+    }
+
+    private async Task AreaTargetChangedAsync(AreaRestoreTarget target)
+    {
+        areaTarget = target;
+        await CheckAreaAsync();
+    }
+
+    /// <summary>Whether Sync one area can start: an area restore here from the source's newest backup.</summary>
+    private async Task CheckAreaAsync()
+    {
+        if (!HasSource)
+        {
+            areaCheck = null;
+            return;
+        }
+
+        try
+        {
+            areaCheck = await AreaRestores.CheckAsync(Supervisor.InstanceId, areaTarget, BackupChoice.Latest, sourceId);
+        }
+        catch (Exception ex)
+        {
+            areaCheck = null;
+            areaError = ex.Message;
+        }
+    }
+
+    private async Task SyncAreaAsync()
+    {
+        if (areaStarting || Locked || areaCheck is not { CanStart: true })
+        {
+            return;
+        }
+
+        areaStarting = true;
+        areaError = null;
+
+        try
+        {
+            await AreaRestores.StartAsync(Supervisor.InstanceId, areaTarget, BackupChoice.Latest, sourceId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            areaError = ex.Message;
+        }
+        finally
+        {
+            areaStarting = false;
+            await CheckAreaAsync();
+        }
+    }
+
+    private static KeptAreaSettings Copy(KeptAreaSettings a) => new()
+    {
+        Name = a.Name, Dimension = a.Dimension, Color = a.Color, ShowInGame = a.ShowInGame,
+        X1 = a.X1, Y1 = a.Y1, Z1 = a.Z1, X2 = a.X2, Y2 = a.Y2, Z2 = a.Z2,
+    };
+
+    /// <summary>The select's value: a dimension Bedrock has by its id, an empty one as the overworld.</summary>
+    private static string DimensionValue(KeptAreaSettings a) =>
+        BedrockDimension.Find(a.Dimension)?.Id ?? a.Dimension;
+
+    /// <summary>A whole number from a number box, or what was there when it is not one.</summary>
+    private static int Number(ChangeEventArgs e, int was) =>
+        int.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : was;
+
+    private Task SourceChangedAsync(ChangeEventArgs e)
+    {
+        sourceId = e.Value?.ToString() ?? string.Empty;
+        return SaveAsync();
+    }
+
+    private Task EditAsync(int index, Action<KeptAreaSettings> edit)
+    {
+        edit(areas[index]);
+        return SaveAsync();
+    }
+
+    private Task AddAsync()
+    {
+        // A small area near the world's spawn height, named so it can be told apart
+        // until it is given a name of its own.
+        // Its colour is the first of the palette no other area here has (D106).
+        areas.Add(new KeptAreaSettings
+        {
+            Name = $"Area {areas.Count + 1}",
+            Dimension = BedrockDimension.Overworld.Id,
+            Color = AreaColors.Next(areas.Select((a, i) => AreaColors.Of(a.Color, i))),
+            X1 = 0, Y1 = 60, Z1 = 0,
+            X2 = 15, Y2 = 80, Z2 = 15,
+        });
+
+        return SaveAsync();
+    }
+
+    private Task RemoveAsync(int index)
+    {
+        areas.RemoveAt(index);
+        return SaveAsync();
+    }
+
+    /// <summary>Saves on every change, as the panel does elsewhere, and asks again what a sync would do.</summary>
+    private async Task SaveAsync()
+    {
+        saveError = null;
+        plan = SyncPlan.For(areas);
+
+        try
+        {
+            saving = true;
+            await Registry.SetSyncAsync(
+                Supervisor.InstanceId,
+                new SyncSettings { SourceInstanceId = sourceId, KeptAreas = [.. areas.Select(Copy)] });
+        }
+        catch (Exception ex)
+        {
+            saveError = $"Not saved: {ex.Message}";
+        }
+        finally
+        {
+            saving = false;
+        }
+
+        await CheckAsync();
+    }
+
+    private void Ask()
+    {
+        if (!CanAsk)
+        {
+            return;
+        }
+
+        confirming = true;
+        password = string.Empty;
+        startError = null;
+    }
+
+    private void Cancel()
+    {
+        confirming = false;
+        password = string.Empty;
+        startError = null;
+    }
+
+    private async Task StartAsync()
+    {
+        if (starting || !Confirm.MayConfirm(password))
+        {
+            return;
+        }
+
+        starting = true;
+        startError = null;
+
+        try
+        {
+            var state = AuthenticationState is null ? null : await AuthenticationState;
+
+            if (await Confirm.RefusalAsync(state?.User.Identity?.Name, password) is { } refusal)
+            {
+                startError = refusal;
+                return;
+            }
+
+            await Sync.StartAsync(Supervisor.InstanceId);
+            confirming = false;
+        }
+        catch (Exception ex)
+        {
+            startError = ex.Message;
+        }
+        finally
+        {
+            starting = false;
+            password = string.Empty;
+            await CheckAsync();
+        }
+    }
+
+    private void AskPutBack()
+    {
+        if (Locked || putBackProblems.Count > 0)
+        {
+            return;
+        }
+
+        confirmingPutBack = true;
+        putBackPassword = string.Empty;
+        putBackError = null;
+    }
+
+    private void CancelPutBack()
+    {
+        confirmingPutBack = false;
+        putBackPassword = string.Empty;
+        putBackError = null;
+    }
+
+    private async Task PutBackAsync()
+    {
+        if (puttingBack || !Confirm.MayConfirm(putBackPassword))
+        {
+            return;
+        }
+
+        puttingBack = true;
+        putBackError = null;
+
+        try
+        {
+            var state = AuthenticationState is null ? null : await AuthenticationState;
+
+            if (await Confirm.RefusalAsync(state?.User.Identity?.Name, putBackPassword) is { } refusal)
+            {
+                putBackError = refusal;
+                return;
+            }
+
+            await Sync.PutBackAsync(Supervisor.InstanceId);
+            confirmingPutBack = false;
+        }
+        catch (InvalidOperationException ex)
+        {
+            putBackError = ex.Message;
+        }
+        finally
+        {
+            puttingBack = false;
+            putBackPassword = string.Empty;
+            await CheckAsync();
+        }
+    }
+
+    private async Task Discard()
+    {
+        putBackError = null;
+
+        if (!Sync.DiscardWaiting(Supervisor.InstanceId))
+        {
+            putBackError = UnfinishedSyncText.NothingWaiting;
+        }
+
+        await CheckAsync();
+    }
+}

@@ -1,0 +1,225 @@
+@* D125. The authenticator-app second step on sign-in: off by default, switched on
+   here. Nothing is stored until a code from the shown secret is confirmed, so walking
+   away from the QR code changes nothing. *@
+
+@using BedrockSentry.Core.Security
+@using BedrockSentry.Services.Security
+@using Microsoft.AspNetCore.Components.Authorization
+
+@inject IAdminMfaService Mfa
+@inject IAdminCredentialService Credentials
+
+<h2>Authenticator app</h2>
+
+<p class="lead">
+    Asks for a six-digit code from an app such as Google Authenticator, Microsoft
+    Authenticator or 1Password after the password, so a leaked password alone does not
+    open the panel. Switching it on or off signs every browser out, this one included.
+</p>
+
+<div class="provision-panel" style="max-width:34rem">
+    @if (recoveryCodes is not null)
+    {
+        <p class="check-detail">
+            <strong>Save these recovery codes now.</strong> Each signs in once in place of a
+            code, if the phone is lost. They are not shown again.
+        </p>
+        <ul>
+            @foreach (var recovery in recoveryCodes)
+            {
+                <li><code>@recovery</code></li>
+            }
+        </ul>
+        <p class="check-detail">This browser asks you to sign in again the next time a page loads.</p>
+        <div class="provision-controls">
+            <button class="btn btn-primary" @onclick="() => recoveryCodes = null">I have saved them</button>
+        </div>
+    }
+    else if (enrolment is not null)
+    {
+        <p>Scan this with the app, or type the key into it, then enter the code it shows.</p>
+        @* White behind the code in both themes: a scanner needs the quiet zone light. *@
+        <img src="@enrolment.QrCodePngDataUri" alt="QR code for the authenticator app"
+             width="220" height="220" style="background:#fff;padding:6px;border-radius:4px" />
+        <p class="check-detail">Key: <code>@SpacedKey(enrolment.Secret)</code></p>
+
+        <label class="field">
+            <span>Code from the app</span>
+            <input class="form-control" autocomplete="one-time-code" inputmode="numeric"
+                   value="@typedCode" @oninput="e => typedCode = e.Value?.ToString() ?? string.Empty"
+                   disabled="@busy" />
+        </label>
+
+        @if (error is not null)
+        {
+            <p class="console-fault">@error</p>
+        }
+
+        <div class="provision-controls">
+            <button class="btn btn-primary" @onclick="ConfirmAsync" disabled="@(busy || typedCode.Length == 0)">
+                @(busy ? "Checking…" : "Switch on")
+            </button>
+            <button class="btn btn-outline-secondary" @onclick="Cancel" disabled="@busy">Cancel</button>
+        </div>
+    }
+    else if (Mfa.IsEnabled)
+    {
+        <p class="check-detail">
+            <strong>On.</strong> @Mfa.RecoveryCodesLeft of @AdminMfaService.RecoveryCodeCount recovery codes unused.
+        </p>
+
+        <label class="field">
+            <span>Current password</span>
+            <input class="form-control" type="password" autocomplete="current-password"
+                   value="@password" @oninput="e => password = e.Value?.ToString() ?? string.Empty"
+                   disabled="@busy" />
+        </label>
+
+        <label class="field">
+            <span>Code from the app</span>
+            <input class="form-control" autocomplete="one-time-code" inputmode="numeric"
+                   value="@typedCode" @oninput="e => typedCode = e.Value?.ToString() ?? string.Empty"
+                   disabled="@busy" />
+        </label>
+
+        @if (error is not null)
+        {
+            <p class="console-fault">@error</p>
+        }
+
+        <div class="provision-controls">
+            <button class="btn btn-outline-secondary" @onclick="NewCodesAsync" disabled="@(busy || !CanAct)">
+                New recovery codes
+            </button>
+            <button class="btn btn-outline-danger" @onclick="DisableAsync" disabled="@(busy || !CanAct)">
+                Switch off
+            </button>
+        </div>
+        <p class="check-detail">Both need the password and a current code.</p>
+    }
+    else
+    {
+        <p class="check-detail"><strong>Off.</strong> Signing in takes the password only.</p>
+        <div class="provision-controls">
+            <button class="btn btn-primary" @onclick="BeginAsync">Set up</button>
+        </div>
+    }
+</div>
+
+@code {
+    private MfaEnrolment? enrolment;
+    private IReadOnlyList<string>? recoveryCodes;
+    private string typedCode = string.Empty;
+    private string password = string.Empty;
+    private string? error;
+    private bool busy;
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private bool CanAct => password.Length > 0 && typedCode.Length > 0;
+
+    private async Task<string?> UsernameAsync()
+    {
+        var state = AuthenticationState is null ? null : await AuthenticationState;
+        return state?.User.Identity?.Name;
+    }
+
+    private async Task BeginAsync()
+    {
+        error = null;
+        enrolment = Mfa.BeginEnrolment(await UsernameAsync() ?? "admin");
+    }
+
+    private void Cancel()
+    {
+        enrolment = null;
+        typedCode = string.Empty;
+        error = null;
+    }
+
+    private async Task ConfirmAsync() => await RunAsync(async () =>
+    {
+        var codes = await Mfa.CompleteEnrolmentAsync(enrolment!.Secret, typedCode);
+
+        if (codes is null)
+        {
+            error = "That code does not match. Check the phone's clock is set automatically, and try the next code.";
+            return;
+        }
+
+        enrolment = null;
+        recoveryCodes = codes;
+    });
+
+    private async Task NewCodesAsync() => await RunAsync(async () =>
+    {
+        if (await ConfirmedAsync())
+        {
+            recoveryCodes = await Mfa.RegenerateRecoveryCodesAsync();
+        }
+    });
+
+    private async Task DisableAsync() => await RunAsync(async () =>
+    {
+        if (await ConfirmedAsync())
+        {
+            await Mfa.DisableAsync();
+        }
+    });
+
+    /// <summary>
+    /// The password and a current code, both: the switch-off has to be as hard to reach
+    /// with a stolen session as the sign-in it removes.
+    /// </summary>
+    private async Task<bool> ConfirmedAsync()
+    {
+        var username = await UsernameAsync();
+
+        if (username is not { Length: > 0 }
+            || Credentials.Verify(username, password) is CredentialVerification.Failed)
+        {
+            error = "That password is not right.";
+            return false;
+        }
+
+        // A recovery code is accepted here too, so a lost phone can still switch it off.
+        if (await Mfa.VerifyAsync(typedCode) is not (MfaCheck.Accepted or MfaCheck.AcceptedRecoveryCode))
+        {
+            error = "That code was not accepted.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+
+        try
+        {
+            await action();
+            typedCode = string.Empty;
+            password = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private static string SpacedKey(string key) =>
+        string.Join(' ', Enumerable.Range(0, (key.Length + 3) / 4)
+            .Select(i => key.Substring(i * 4, Math.Min(4, key.Length - i * 4))));
+}

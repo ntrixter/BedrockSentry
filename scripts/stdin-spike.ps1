@@ -24,9 +24,10 @@
     the wrong habit on its first day.
 
     -AsSystem re-runs the whole thing as a scheduled task under the SYSTEM
-    account, which is session 0 and non-interactive: the same conditions the
-    Windows Service will launch BDS under. Running it only from an interactive
-    admin console proves less than it appears to.
+    account, which is session 0 and non-interactive: the session the Windows
+    Service launches BDS in. The service starts each server under a restricted
+    copy of its own account, which this run does not reproduce. Running it only
+    from an interactive admin console proves less than it appears to.
 
 .PARAMETER ServerPath
     The BDS folder, or bedrock_server.exe itself. The folder is used as the

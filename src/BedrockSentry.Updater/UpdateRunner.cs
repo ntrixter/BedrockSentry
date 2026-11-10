@@ -46,16 +46,16 @@ internal static class UpdateRunner
 
         log.Write($"BedrockSentry updater starting. {plan.PreviousIdentity} -> {plan.TargetIdentity}");
 
-        // Refuse to operate on the tree this process is running from. Doing so would
-        // put a lock on the directory being renamed, and the rename would fail with
-        // "access denied" after the service is already stopped.
+        // Refuse to operate on the tree this process is running from: a lock on a
+        // version directory it may prune, or a helper running through the junction it
+        // flips, fails after the service is already stopped.
         var here = Path.GetFullPath(AppContext.BaseDirectory);
         var installRoot = Path.GetFullPath(plan.InstallRoot);
 
-        if (here.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase))
+        if (HelperLocation.InsideABuild(here, installRoot))
         {
-            log.Write($"REFUSED: the helper is running from inside {installRoot}. It must be staged elsewhere first.");
-            await WriteResultAsync(plan, false, false, "The updater was run from inside the install directory.");
+            log.Write($"REFUSED: the helper is running from a build inside {installRoot}. It must be staged elsewhere first.");
+            await WriteResultAsync(plan, false, false, "The updater was run from inside a build it would replace.");
             return 4;
         }
 
@@ -79,17 +79,18 @@ internal static class UpdateRunner
 
         try
         {
-            if (!await StopServiceAsync(plan, log))
+            if (!await StopServicesAsync(plan, log))
             {
                 // Nothing has been touched yet, so this is the cheapest possible
-                // failure — the running build is still running.
+                // failure: whatever was stopped starts again on the build it ran.
+                TryStartServices(plan, log);
                 await WriteResultAsync(plan, false, false, "The service could not be stopped; no files were changed.");
                 return 1;
             }
 
             PointAt(currentLink, plan.TargetVersionDirectory, log);
 
-            StartService(plan, log);
+            StartServices(plan, log);
 
             var (healthy, detail) = await WaitForHealthAsync(plan, log);
 
@@ -110,6 +111,59 @@ internal static class UpdateRunner
             log.Write($"Unhandled failure: {ex}");
             return await RollBackAsync(plan, currentLink, log, ex.Message);
         }
+    }
+
+    /// <summary>The main service, then the broker: the main service may ask the broker for something as it stops.</summary>
+    private static async Task<bool> StopServicesAsync(UpdatePlan plan, UpdateLog log)
+    {
+        if (!await StopServiceAsync(plan, log))
+        {
+            return false;
+        }
+
+        return string.IsNullOrWhiteSpace(plan.BrokerServiceName) || StopBroker(plan, log);
+    }
+
+    private static bool StopBroker(UpdatePlan plan, UpdateLog log)
+    {
+        try
+        {
+            using var broker = new ServiceController(plan.BrokerServiceName);
+
+            if (broker.Status != ServiceControllerStatus.Stopped)
+            {
+                log.Write($"Stopping {plan.BrokerServiceName}...");
+                broker.Stop();
+                broker.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(plan.StopTimeoutSeconds));
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // The main service is already stopped. Starting it again on the build it
+            // was running is the cheapest way back, and the caller does that.
+            log.Write($"Could not stop {plan.BrokerServiceName}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>The broker, then the main service, which asks the broker for things as it starts.</summary>
+    private static void StartServices(UpdatePlan plan, UpdateLog log)
+    {
+        if (!string.IsNullOrWhiteSpace(plan.BrokerServiceName))
+        {
+            using var broker = new ServiceController(plan.BrokerServiceName);
+            log.Write($"Starting {plan.BrokerServiceName}...");
+            broker.Refresh();
+
+            if (broker.Status == ServiceControllerStatus.Stopped)
+            {
+                broker.Start();
+            }
+        }
+
+        StartService(plan, log);
     }
 
     private static async Task<bool> StopServiceAsync(UpdatePlan plan, UpdateLog log)
@@ -246,6 +300,18 @@ internal static class UpdateRunner
         log.Write($"current -> {Path.GetFileName(targetDirectory)}");
     }
 
+    private static void TryStartServices(UpdatePlan plan, UpdateLog log)
+    {
+        try
+        {
+            StartServices(plan, log);
+        }
+        catch (Exception ex)
+        {
+            log.Write($"Could not start the services again: {ex.Message}");
+        }
+    }
+
     private static void StartService(UpdatePlan plan, UpdateLog log)
     {
         using var service = new ServiceController(plan.ServiceName);
@@ -256,10 +322,7 @@ internal static class UpdateRunner
 
     private static async Task<(bool Healthy, string Detail)> WaitForHealthAsync(UpdatePlan plan, UpdateLog log)
     {
-        using var http = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(5),
-        };
+        using var http = HealthProbe.CreateClient();
 
         var deadline = DateTimeOffset.UtcNow.AddSeconds(plan.HealthTimeoutSeconds);
         var lastDetail = "no response";
@@ -284,54 +347,14 @@ internal static class UpdateRunner
 
             try
             {
-                using var response = await http.GetAsync(plan.HealthUrl);
+                var (verdict, detail) = await HealthProbe.ReadAsync(http, plan.HealthUrl, plan.TargetIdentity);
 
-                if (response.StatusCode is System.Net.HttpStatusCode.Found
-                    or System.Net.HttpStatusCode.TemporaryRedirect
-                    or System.Net.HttpStatusCode.MovedPermanently)
+                if (verdict is not HealthProbe.Verdict.NotYet)
                 {
-                    // Very specific message on purpose. A redirect here means the health
-                    // endpoint is behind authentication or behind HTTPS redirection, not
-                    // that the build is broken — and every update would fail identically
-                    // and be misdiagnosed as a bad build.
-                    return (false,
-                        $"the health endpoint redirected to '{response.Headers.Location}' instead of answering. " +
-                        "It must be anonymous and exempt from HTTPS redirection");
+                    return (verdict is HealthProbe.Verdict.Healthy, detail);
                 }
 
-                if (response.IsSuccessStatusCode)
-                {
-                    var body = await response.Content.ReadAsStringAsync();
-
-                    using var document = JsonDocument.Parse(body);
-                    var root = document.RootElement;
-
-                    var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
-                    var version = root.TryGetProperty("version", out var v) ? v.GetString() : null;
-
-                    if (!string.Equals(status, "Healthy", StringComparison.OrdinalIgnoreCase))
-                    {
-                        lastDetail = $"status was '{status}'";
-                    }
-                    else if (!string.Equals(version, plan.TargetIdentity, StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Healthy, but not the build we installed. That means the stop or
-                        // the junction flip did not take effect and the OLD build is still
-                        // serving — which would otherwise be recorded as a successful
-                        // update, and the previous version pruned out from under it.
-                        return (false,
-                            $"the running build reports '{version}' but '{plan.TargetIdentity}' was installed — " +
-                            "the service stop or the version switch did not take effect");
-                    }
-                    else
-                    {
-                        return (true, "healthy");
-                    }
-                }
-                else
-                {
-                    lastDetail = $"HTTP {(int)response.StatusCode}";
-                }
+                lastDetail = detail;
             }
             catch (Exception ex)
             {
@@ -360,8 +383,13 @@ internal static class UpdateRunner
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(plan.BrokerServiceName))
+            {
+                StopBroker(plan, log);
+            }
+
             PointAt(currentLink, plan.PreviousVersionDirectory, log);
-            StartService(plan, log);
+            StartServices(plan, log);
 
             log.Write($"Rolled back to {plan.PreviousIdentity}.");
 

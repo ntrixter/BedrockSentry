@@ -16,9 +16,9 @@ namespace BedrockSentry.Services.Configuration;
 /// The wizard claims the administrator account, so anything that can reach it before
 /// setup completes owns the install. Two controls sit in front of it: the server binds
 /// to loopback only until setup is done, and completing the wizard requires a token
-/// readable only by SYSTEM and Administrators. Either alone would be thin; together an
-/// attacker needs both network position on the box and privileged file access, at which
-/// point they have easier routes.
+/// readable only by SYSTEM, Administrators and the service's own account. Either alone
+/// would be thin; together an attacker needs both network position on the machine and
+/// privileged file access, at which point they have easier routes.
 /// </para>
 /// <para>
 /// The configured flag is a <em>latch</em>. Once set it never clears, even if the
@@ -31,8 +31,6 @@ namespace BedrockSentry.Services.Configuration;
 /// </remarks>
 public sealed class SetupState
 {
-    private const string TokenFileName = "setup-token.txt";
-
     private readonly ISentryPaths _paths;
     private readonly IOptionsMonitor<AdminCredentialOptions> _credentials;
     private readonly ILogger<SetupState> _logger;
@@ -89,7 +87,7 @@ public sealed class SetupState
                 return _token;
             }
 
-            var file = Path.Combine(_paths.Config, TokenFileName);
+            var file = SecretFiles.SetupToken(_paths);
 
             if (File.Exists(file))
             {
@@ -109,7 +107,7 @@ public sealed class SetupState
 
             if (OperatingSystem.IsWindows())
             {
-                WindowsAcl.RestrictToSystemAndAdministrators(new FileInfo(file));
+                WindowsAcl.SecureSecretFile(file);
             }
 
             _logger.LogWarning(
@@ -149,7 +147,7 @@ public sealed class SetupState
             _token = null;
         }
 
-        var file = Path.Combine(_paths.Config, TokenFileName);
+        var file = SecretFiles.SetupToken(_paths);
 
         try
         {

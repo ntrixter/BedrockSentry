@@ -40,4 +40,29 @@ public interface IStartPreflight
     /// the supervisor and the Readiness panel answering the same question.
     /// </remarks>
     IReadOnlyList<PortConflict> ConflictsForStart(string instanceId, string workingDirectory);
+
+    /// <summary>
+    /// The ports in <paramref name="workingDirectory"/>'s file that a
+    /// <em>predecessor of this wrapper</em> is still holding. Empty when there
+    /// are none, which is the ordinary case.
+    /// </summary>
+    /// <remarks>
+    /// <para><c>D74</c>. These are deliberately not conflicts: refusing over one
+    /// would fault the pair's owner on every service restart, because the
+    /// outgoing host keeps its discovery sockets past the moment the SCM reports
+    /// the service stopped. But they are not nothing either, which is what
+    /// <c>T200</c> cost — the launch went ahead into a port that was genuinely
+    /// still held, BDS opened the world before failing to bind, and the unclean
+    /// close was reported as an ordinary watchdog failure.</para>
+    ///
+    /// <para>Separate from <see cref="ConflictsForStart"/> rather than folded
+    /// into it because the two answers drive different behaviour and a caller
+    /// that could not tell them apart is the whole defect. A conflict means
+    /// refuse; this means wait, briefly, and then start either way.</para>
+    ///
+    /// <para>No instance id: unlike <see cref="ConflictsForStart"/> this needs
+    /// nothing from the registry. Who else is running does not change whether an
+    /// outgoing host of <em>ours</em> still has the socket open.</para>
+    /// </remarks>
+    IReadOnlyList<int> PredecessorHolds(string workingDirectory);
 }

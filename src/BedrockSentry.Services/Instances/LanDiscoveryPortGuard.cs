@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using BedrockSentry.Core.Instances;
 using Microsoft.Extensions.Logging;
 
 namespace BedrockSentry.Services.Instances;
@@ -51,8 +52,11 @@ namespace BedrockSentry.Services.Instances;
 /// </remarks>
 public sealed class LanDiscoveryPortGuard : IDisposable
 {
-    public const int DefaultPortV4 = 19132;
-    public const int DefaultPortV6 = 19133;
+    // BDS's own defaults, and the discovery pair are the same two numbers. Taken
+    // from Core rather than restated, so the pre-flight's idea of the default port
+    // and this guard's idea of the pair cannot come apart.
+    public const int DefaultPortV4 = ServerPorts.DefaultPort;
+    public const int DefaultPortV6 = ServerPorts.DefaultPortV6;
 
     /// <summary>
     /// How long the start slot is held when a server never reports itself
@@ -137,13 +141,44 @@ public sealed class LanDiscoveryPortGuard : IDisposable
     /// case it is the one the pair is being held <em>for</em> and must not be
     /// held against.
     /// </summary>
-    public bool OwnsDiscoveryPair(IEnumerable<(string Key, int Port)> ports) =>
-        ports.Any(p => p.Port == _portV4 || p.Port == _portV6);
+    /// <remarks>
+    /// <para><strong><see cref="ServerTransport.RakNet"/> only</strong>, which is
+    /// not a detail (<c>D70</c>). Bedrock's answer-on-19132-whatever-your-port
+    /// behaviour is documented for <c>transport=raknet</c> and nothing else, so a
+    /// <see cref="ServerTransport.NetherNet"/> server configured for 19132 never
+    /// performs discovery on the pair whatever it binds. Counting it as the owner
+    /// would hand the pair to a server that does not use it and leave every other
+    /// instance's discovery unprotected for as long as it ran.</para>
+    ///
+    /// <para><strong>The transport rather than the protocol, which is a
+    /// correction.</strong> This asked <em>does it hold a UDP socket on one of
+    /// these numbers</em>, which agreed with the transport only for as long as a
+    /// NetherNet server had no UDP row at all. It has one now — play lands on
+    /// <c>server-port</c>'s UDP side when <c>server-udp-ports</c> is unset
+    /// (<c>D71</c>) — so the old test would have called such a server on 19132 the
+    /// owner. A derived signal that happens to agree is not the question being
+    /// asked, and it stops agreeing without anything announcing it
+    /// (<c>T151</c> clause 6).</para>
+    /// </remarks>
+    public bool OwnsDiscoveryPair(InstancePorts model) =>
+        model.Transport is ServerTransport.RakNet
+        && model.Ports.Any(p => p.Protocol == PortProtocol.Udp
+            && (p.Port == _portV4 || p.Port == _portV6));
 
     /// <summary>
-    /// Takes the start slot, and the discovery pair with it unless
-    /// <paramref name="instanceOwnsPair"/>. Dispose to release both.
+    /// Takes the start slot, and the standing hold on the discovery pair with it
+    /// unless <paramref name="instanceOwnsPair"/>. Disposing releases the slot and
+    /// nothing else.
     /// </summary>
+    /// <remarks>
+    /// This said "dispose to release both" until `T223`, and it is where that
+    /// entry's false sentences came from: the sockets are standing, and the
+    /// owner's own start is what frees them. A caller writing from this line
+    /// inherits whatever it gets wrong (`T145`), so the arm the two readings
+    /// differ on is pinned rather than described —
+    /// <c>The_hold_outlives_the_starting_servers_ready_line</c> disposes a
+    /// non-owner's hold and asserts the pair is still bound afterwards.
+    /// </remarks>
     /// <remarks>
     /// Binding is best-effort. Failing to bind means something already holds the
     /// port — usually the owning instance, running — and that protects it just as

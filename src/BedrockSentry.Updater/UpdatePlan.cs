@@ -18,6 +18,10 @@ internal sealed class UpdatePlan
     [JsonPropertyName("serviceName")]
     public string ServiceName { get; set; } = "BedrockSentry";
 
+    /// <summary>Stopped after the main service and started before it; empty when there is none.</summary>
+    [JsonPropertyName("brokerServiceName")]
+    public string BrokerServiceName { get; set; } = string.Empty;
+
     [JsonPropertyName("installRoot")]
     public string InstallRoot { get; set; } = string.Empty;
 

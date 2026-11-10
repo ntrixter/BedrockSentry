@@ -1,0 +1,19 @@
+@* A player's face beside their name (D47). The image is its own request to
+   PlayerFaces.Route, so the list renders at once and each face arrives when it
+   does; with faces off, or nothing found, it is the face generated from the XUID. *@
+
+@using BedrockSentry.Services.Players
+
+@inject PlayerFaces Faces
+
+<img class="player-face" src="@Faces.UrlFor(Xuid)" width="@Size" height="@Size"
+     alt="" loading="lazy" decoding="async" />
+
+@code {
+    [Parameter, EditorRequired]
+    public string Xuid { get; set; } = string.Empty;
+
+    /// Pixels on a side. A face is 8 by 8, so a multiple of 8 keeps it sharp.
+    [Parameter]
+    public int Size { get; set; } = 24;
+}

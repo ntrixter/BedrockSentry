@@ -39,9 +39,7 @@ public sealed class CustomCommandStrategy : IBackupStrategy
 
     public string Name => "custom-command";
 
-    public bool IsEnabled(BackupSettings settings) =>
-        settings.CustomCommand.Enabled
-        && !string.IsNullOrWhiteSpace(settings.CustomCommand.Command);
+    public bool IsEnabled(BackupSettings settings) => settings.CustomCommand.IsSet;
 
     /// <inheritdoc />
     /// <remarks>
@@ -103,6 +101,11 @@ public sealed class CustomCommandStrategy : IBackupStrategy
         environment["BEDROCKSENTRY_INSTANCE_ID"] = context.InstanceId;
         environment["BEDROCKSENTRY_INSTANCE_NAME"] = context.InstanceName;
         environment["BEDROCKSENTRY_WORKING_DIR"] = context.WorkingDirectory;
+        // The world where it LIVES, not where this run happens to be reading it
+        // from (`D66`). A custom command is somebody's own script against their own
+        // server; handing it a shadow-copy device path it did not ask for would
+        // break every script that writes, and the ones that only read are better
+        // served by the path they can reproduce by hand.
         environment["BEDROCKSENTRY_WORLDS_DIR"] = context.WorldsDirectory;
         environment["BEDROCKSENTRY_ARTIFACT_DIR"] = context.ArtifactDirectory;
         environment["BEDROCKSENTRY_MANIFEST_FILE"] = manifestFile;

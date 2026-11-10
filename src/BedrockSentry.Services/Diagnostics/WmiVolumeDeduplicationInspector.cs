@@ -19,7 +19,7 @@ namespace BedrockSentry.Services.Diagnostics;
 /// <c>root\Microsoft\Windows\Deduplication</c>, so the same rows are reachable
 /// through WMI with no shell at all. One named operation, an argument the
 /// wrapper derives itself, and an interface in <c>Core</c> — the
-/// <see cref="Backups.IShadowCopyService"/> shape.
+/// <see cref="Core.Backups.IShadowCopyService"/> shape.
 /// </para>
 /// <para>
 /// This class does the reading and nothing else. Matching a row to a volume the

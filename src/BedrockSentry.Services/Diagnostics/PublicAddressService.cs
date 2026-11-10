@@ -22,12 +22,26 @@ namespace BedrockSentry.Services.Diagnostics;
 /// the machine is offline is the same problem wearing a different hat, and the
 /// page has something honest to show either way.
 /// </para>
+/// <para>
+/// <strong>Which makes the registration part of the type</strong>, and it was
+/// wrong (<c>T217</c>). A field cache only caches for as long as there is one
+/// instance, and <c>AddHttpClient&lt;T&gt;()</c> registers the typed client
+/// transient — so this was a correctness requirement enforced by nothing but the
+/// accident of a single singleton consumer. Registered singleton against a named
+/// client now, and taking <see cref="IHttpClientFactory"/> rather than holding one
+/// <see cref="HttpClient"/> for the life of the process: a captured handler holds
+/// its DNS answers for just as long, which is the cost the other half of that
+/// pattern exists to avoid.
+/// </para>
 /// </remarks>
 public sealed class PublicAddressService
 {
+    /// <summary>The named client, so its traffic stays separable in diagnosis.</summary>
+    public const string HttpClientName = "public-address";
+
     private static readonly TimeSpan RetryAfterFailure = TimeSpan.FromMinutes(2);
 
-    private readonly HttpClient _http;
+    private readonly IHttpClientFactory _clients;
     private readonly IOptionsMonitor<HostDetailsOptions> _options;
     private readonly TimeProvider _time;
     private readonly ILogger<PublicAddressService> _log;
@@ -39,20 +53,26 @@ public sealed class PublicAddressService
     private DateTimeOffset _goodUntil;
 
     public PublicAddressService(
-        HttpClient http,
+        IHttpClientFactory clients,
         IOptionsMonitor<HostDetailsOptions> options,
         TimeProvider time,
         ILogger<PublicAddressService> log)
     {
-        _http = http;
+        _clients = clients;
         _options = options;
         _time = time;
         _log = log;
+    }
+
+    private HttpClient NewClient()
+    {
+        var http = _clients.CreateClient(HttpClientName);
 
         // The echo services are tiny and the page is waiting on this; a long
         // default timeout would leave the status page blank for a minute and a
         // half on a machine with no route out.
-        _http.Timeout = TimeSpan.FromSeconds(8);
+        http.Timeout = TimeSpan.FromSeconds(8);
+        return http;
     }
 
     /// <summary>
@@ -88,7 +108,9 @@ public sealed class PublicAddressService
 
             try
             {
-                var text = await _http.GetStringAsync(options.PublicAddressEndpoint, cancellationToken)
+                using var http = NewClient();
+
+                var text = await http.GetStringAsync(options.PublicAddressEndpoint, cancellationToken)
                     .ConfigureAwait(false);
 
                 _address = IPAddress.TryParse(text.Trim(), out var parsed) ? parsed.ToString() : null;

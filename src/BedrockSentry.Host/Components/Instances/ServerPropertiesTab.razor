@@ -4,6 +4,7 @@
 @using BedrockSentry.Services.Instances
 
 @inject PortInspector Ports
+@inject BedrockSentry.Services.Diagnostics.PublicAddressService PublicAddress
 
 <div class="prop-toolbar">
     <span class="prop-path"><code>@path</code></span>
@@ -29,6 +30,31 @@
 @if (document is null)
 {
     <p class="empty-state">Reading @ServerProperties.FileName…</p>
+}
+else if (!document.Known)
+{
+    @* T234. This arm did not exist and the read was uncaught, so an ACL-denied
+       server.properties escaped OnParametersSetAsync past a Host with no
+       ErrorBoundary and the whole tab answered with an error page. The file is the
+       one an administrator opens this tab to repair, so the tab has to survive not
+       being able to read it -- and it renders Windows's own reason, which is the
+       half that says whether this is a permission, a lock or a missing drive.
+
+       BEFORE the no-file arm below, because an unreadable file is not an absent
+       one: an instance whose server has not been installed is at every default,
+       and one whose file something else is holding says nothing at all. *@
+    <p class="empty-state">
+        <code>@ServerProperties.FileName</code> in
+        <code>@Supervisor.WorkingDirectory</code> could not be read, so nothing on
+        this tab describes it. @document.Why
+        @* `T239`. It says the tab is watching because it now is -- and the promise is
+           the reason the re-read had to be built rather than the sentence pointing at
+           Reload from file. A sentence naming a button is a workaround written down;
+           this is the tab doing the thing. *@
+        <span class="check-detail">
+            This fills in on its own once the file can be read again.
+        </span>
+    </p>
 }
 else if (document.Properties.Count == 0 && mode == Mode.Form)
 {
@@ -142,6 +168,7 @@ else
 
                                 @if (IsEnabled(property))
                                 {
+                                    @* Typed boxes record on input, so Save enables while typing (T421). *@
                                     @switch (property.Editor)
                                     {
                                         case ServerPropertyEditor.Boolean:
@@ -161,13 +188,13 @@ else
                                                    min="@property.Minimum" max="@property.Maximum"
                                                    step="@(property.IsInteger ? "1" : "any")"
                                                    value="@Value(property)"
-                                                   @onchange="e => Edit(property, e.Value?.ToString())" />
+                                                   @oninput="e => Edit(property, e.Value?.ToString())" />
                                             break;
 
                                         default:
                                             <input class="form-control" id="@FieldId(property)"
                                                    value="@Value(property)"
-                                                   @onchange="e => Edit(property, e.Value?.ToString())" />
+                                                   @oninput="e => Edit(property, e.Value?.ToString())" />
                                             break;
                                     }
                                 }
@@ -251,6 +278,7 @@ else
     [Parameter, EditorRequired]
     public InstanceSupervisor Supervisor { get; set; } = default!;
 
+
     private const string OtherGroup = "Everything else";
 
     private enum Mode
@@ -333,6 +361,33 @@ else
         if (document is null)
         {
             await ReloadAsync();
+            return;
+        }
+
+        // `T239`. THE CACHING JUSTIFICATION ABOVE DOES NOT COVER THIS ARM, which is
+        // the whole defect: "re-reading that often would fight with an edit in
+        // progress" is true of a document that was read, and an unreadable one
+        // renders no editor at all -- there is nothing to fight with. So an
+        // administrator who fixed the ACL in another window and clicked back onto
+        // this tab saw the identical stale sentence, because Blazor keeps the keyed
+        // component across a same-URL sub-tab click and nothing re-read.
+        //
+        // The staleness check below could never have covered it either: it is in the
+        // branch taken only when the document IS known, and it compares
+        // LastWriteTimeUtc, which an ACL change does not move. An arm that looks
+        // covered because a nearby check exists, where that check cannot reach it --
+        // `T187`.
+        //
+        // The probe is one failed open per tick while a file is unreadable, and the
+        // document is replaced ONLY when the read comes back known, so a file that
+        // stays unreadable churns nothing.
+        if (document.ShouldRetryRead)
+        {
+            if (ServerProperties.ReadFile(path).Known)
+            {
+                await ReloadAsync();
+            }
+
             return;
         }
 
@@ -538,12 +593,114 @@ else
         }
     }
 
-    private void Edit(ServerProperty property, string? value)
+    private async Task Edit(ServerProperty property, string? value)
     {
-        edits[property.Key] = value ?? string.Empty;
+        edits[property.Key] = ServerPropertiesDocument.ValueTyped(property.Key, value);
         saved = false;
         saveError = null;
+
+        if (property.Key.Equals(ServerTransports.PropertyKey, StringComparison.OrdinalIgnoreCase))
+        {
+            await TransportEditedAsync();
+        }
     }
+
+    /// The window this page wrote into server-udp-ports itself, so a later suggestion
+    /// may replace it and never replaces one somebody typed.
+    private string? suggestedWindow;
+
+    private RecentPortClaims? recentClaims;
+
+    /// <summary>
+    /// A server switched to NetherNet here is given a play window that is free on this
+    /// machine (`T415`), unless the one it has already is.
+    /// </summary>
+    /// <remarks>
+    /// <para>A window left from before the switch, 19132 say, was saved as it stood and
+    /// the server was refused at start: another program had UDP 19132. The suggestion
+    /// starts at server-port and steps past every server's file and every socket open
+    /// on this machine (`PortInspector.ClaimsBesides`).</para>
+    /// <para>A window typed on this page is left alone. One already in the file is kept
+    /// when it is free and as wide as max-players, since it is somebody's own value
+    /// that works.</para>
+    /// </remarks>
+    private async Task TransportEditedAsync()
+    {
+        if (document is null
+            || EditedTransport() is not ServerTransport.NetherNet
+            || PortInspector.ModelOf(Supervisor.WorkingDirectory).Transport is ServerTransport.NetherNet)
+        {
+            return;
+        }
+
+        var existing = document.Find(ServerUdpPorts.Key);
+
+        if (edits.TryGetValue(ServerUdpPorts.Key, out var typed) && typed != suggestedWindow)
+        {
+            return;
+        }
+
+        var claims = Ports.ClaimsBesides(Supervisor.InstanceId);
+        var width = EditedNumber("max-players") is > 0 and var players ? players : NewServerPorts.PackageMaxPlayers;
+
+        if (suggestedWindow is null
+            && existing is { IsSet: true }
+            && ServerUdpPorts.Parse(existing.Value).Local is { } current
+            && current.Width >= width
+            && NewServerPorts.Describe(claims, [new ReachableSockets(current, PortProtocol.Udp)]).Count == 0)
+        {
+            return;
+        }
+
+        var start = EditedNumber(ServerPorts.PortKey) ?? ServerPorts.DefaultPort;
+
+        if (NewServerPorts.FreeWindow(claims, start, width) is not { } first)
+        {
+            return;
+        }
+
+        SuggestWindow(ServerUdpPorts.Suggest(publicAddress: null, first, width));
+
+        // The address is a third party's answer, cached; the window works without it
+        // and gains it when it lands, unless somebody has typed over it meanwhile.
+        var (address, _) = await PublicAddress.GetAsync();
+
+        if (address is not null && EditedTransport() is ServerTransport.NetherNet
+            && edits.TryGetValue(ServerUdpPorts.Key, out var still) && still == suggestedWindow)
+        {
+            SuggestWindow(ServerUdpPorts.Suggest(address, first, width));
+        }
+    }
+
+    private void SuggestWindow(string? window)
+    {
+        if (window is null || document is null)
+        {
+            return;
+        }
+
+        if (document.Find(ServerUdpPorts.Key) is null)
+        {
+            // Not in the file at all: added the way the Add box adds a setting.
+            document.Set(ServerUdpPorts.Key, window);
+            documentChanged = true;
+        }
+
+        enabled.Add(ServerUdpPorts.Key);
+        edits[ServerUdpPorts.Key] = window;
+        suggestedWindow = window;
+    }
+
+    /// The transport as this page would save it.
+    private ServerTransport? EditedTransport() =>
+        document?.Find(ServerTransports.PropertyKey) is { } property && IsEnabled(property)
+            ? ServerTransports.Parse(Value(property))
+            : PortInspector.ModelOf(Supervisor.WorkingDirectory).Transport;
+
+    private int? EditedNumber(string key) =>
+        document?.Find(key) is { } property && IsEnabled(property) && int.TryParse(Value(property), out var number)
+            ? number
+            : null;
 
     /// <summary>
     /// What is worth saying about this setting's current value: refusals first,
@@ -569,6 +726,11 @@ else
             yield return new Note("warn", $"Outside what the file documents — {warning}.");
         }
 
+        if (ServerProperties.CheatsNote(property.Key, value) is { } cheats)
+        {
+            yield return new Note("warn", cheats);
+        }
+
         foreach (var note in PortNotes(property, value))
         {
             yield return note;
@@ -583,15 +745,52 @@ else
         // question (D24) rather than a reason to reject a saved value — and
         // rejecting it blocked the one setting every instance after the first
         // needed turned on.
+        if (property.Key.Equals(ServerUdpPorts.Key, StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var note in WindowNotes(value))
+            {
+                yield return note;
+            }
+
+            yield break;
+        }
+
         if (property.Key is not ("server-port" or "server-portv6") || !int.TryParse(value, out var wanted))
         {
+            yield break;
+        }
+
+        // Which of these two keys this server actually binds, and on what
+        // protocol, is decided by its transport (`D70`). A NetherNet server does
+        // not read server-portv6 at all, so telling somebody the number they just
+        // typed into it is free implies it will be used. Read from the same place
+        // the start pre-flight and the Readiness panel read it, rather than from
+        // this editor's own state: a transport changed here but not yet saved is
+        // not what the server would bind if it started now.
+        // Every protocol this key is bound on, not the first: a transport this
+        // wrapper does not recognise is checked on both, and reporting one of them
+        // would be the panel quietly under-reporting what the start path refuses
+        // over.
+        var bound = PortInspector.PortsOf(Supervisor.WorkingDirectory)
+            .Where(p => p.Key == property.Key)
+            .Select(p => p.Protocol)
+            .Distinct()
+            .ToList();
+
+        if (bound.Count == 0)
+        {
+            yield return new Note(
+                "warn",
+                $"This server's transport does not use {property.Key}, so nothing reads this value.");
             yield break;
         }
 
         // Sockets this instance's own process holds are excluded by the
         // inspector, by owning process id, so a running server is never
         // reported as colliding with itself.
-        var conflicts = Ports.Check(Supervisor.InstanceId, wanted);
+        var conflicts = bound
+            .SelectMany(protocol => Ports.Check(Supervisor.InstanceId, wanted, protocol))
+            .ToList();
 
         if (conflicts.Count == 0)
         {
@@ -604,6 +803,55 @@ else
         foreach (var conflict in conflicts)
         {
             yield return new Note("bad", PortConflictText.Line(conflict));
+        }
+    }
+
+    /// <summary>
+    /// Whether the play window runs into another server or a socket open on this
+    /// machine (`T415`); a clash refuses the save, as a taken server-port does.
+    /// </summary>
+    /// <remarks>
+    /// The transport as this page would save it, unlike server-port's note: a switch
+    /// to NetherNet and its window are saved together, and the window is what the
+    /// server binds after that save.
+    /// </remarks>
+    private IEnumerable<Note> WindowNotes(string value)
+    {
+        if (EditedTransport() is not ServerTransport.NetherNet)
+        {
+            yield break;
+        }
+
+        var parsed = ServerUdpPorts.Parse(value);
+
+        if (parsed.Kind is UdpPortsKind.Unreadable)
+        {
+            // `T417`. BDS starts on a value it cannot read and binds nobody knows what.
+            yield return new Note("bad", $"\"{value}\" is not a port range such as 19134-19143.");
+            yield break;
+        }
+
+        if (parsed.Local is not { } window)
+        {
+            yield break;
+        }
+
+        // `T426`. Read on every render, this walk of the machine's sockets held the
+        // circuit, and on Windows the tab stopped taking input.
+        recentClaims ??= new RecentPortClaims(() => Ports.ClaimsBesides(Supervisor.InstanceId));
+
+        var taken = NewServerPorts.Describe(
+            recentClaims.Get(), [new ReachableSockets(window, PortProtocol.Udp)]);
+
+        if (taken.Count == 0)
+        {
+            yield return new Note("ok", $"UDP {window} is free.");
+            yield break;
+        }
+
+        foreach (var sentence in taken)
+        {
+            yield return new Note("bad", sentence);
         }
     }
 
@@ -624,11 +872,28 @@ else
         // mentions the setting on every startup, so the obvious reading is that
         // something is being hidden. It is not: with no add-ons installed these
         // stay silent.
-        "content-log-console-output-enabled" or "content-log-file-enabled" or "content-log-level" =>
-            "\"Content\" means add-ons — behaviour and resource packs. These control where "
-            + "errors from scripts, malformed manifests and broken pack references go. A "
-            + "vanilla server with no add-ons has nothing to report, which is why they ship "
-            + "off; turn the console one on while installing a pack that is not working.",
+        "content-log-file-enabled" =>
+            "\"Content\" means add-ons — behaviour and resource packs. This controls whether "
+            + "errors from scripts, malformed manifests and broken pack references are also "
+            + "written to a file. A vanilla server with no add-ons has nothing to report.",
+
+        // Its own sentence for the reason the next one has one: at warning or
+        // error it hides everything a script prints as well (D94).
+        "content-log-level" =>
+            "\"Content\" means add-ons — behaviour and resource packs. This is the least "
+            + "serious content message shown. At warning or error it also hides everything a "
+            + "script prints, the companion pack's reports included. Bedrock ships info; keep "
+            + "it at info or verbose while any script pack is switched on.",
+
+        // Its own sentence, because it does more than route errors: with it off,
+        // nothing a script prints reaches the console (D91), and advising it on
+        // only "while installing a pack" invited turning it off again under a
+        // pack that reports through it.
+        "content-log-console-output-enabled" =>
+            "\"Content\" means add-ons — behaviour and resource packs. With this off, errors "
+            + "from scripts and pack references stay out of the console, and so does everything "
+            + "a script prints: a script pack can be working and show nothing at all. Bedrock "
+            + "ships it off. Leave it on while any script pack is switched on.",
 
         _ => null,
     };
@@ -646,6 +911,8 @@ else
 
         try
         {
+            var levelBefore = BedrockSentry.Services.Worlds.UngeneratedWorld.LevelNameOf(Supervisor.WorkingDirectory);
+
             if (mode == Mode.Text)
             {
                 // Unchecked on purpose. The text view exists for the cases the
@@ -658,10 +925,14 @@ else
                 return;
             }
 
-            Supervisor.Console.Append(
-                ConsoleOrigin.Notice,
-                $"{ServerProperties.FileName} updated from the web interface; "
-                + "restart the server to apply it");
+            Supervisor.Console.Append(ConsoleOrigin.Notice, ServerProperties.UpdatedNotice);
+
+            // T424 clause 2. A level-name changed before the first start takes the
+            // folder the companion pack was switched on in, which holds no world yet.
+            BedrockSentry.Services.Worlds.UngeneratedWorld.FollowLevelName(
+                Supervisor.WorkingDirectory,
+                levelBefore,
+                BedrockSentry.Services.Worlds.UngeneratedWorld.LevelNameOf(Supervisor.WorkingDirectory));
 
             await ReloadAsync();
             saved = true;

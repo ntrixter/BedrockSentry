@@ -1,0 +1,326 @@
+@* D107. The world's ticking areas, the console's third view: read from the server with
+   `tickingarea list all-dimensions`, changed with the commands an operator would type, and
+   shown in game for operators like Sync Areas. Every rule and sentence about them is in Core
+   or Services (TickingAreaCommands, TickingAreaEdits, TickingAreas). *@
+@implements IDisposable
+
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Core.Instances
+@using BedrockSentry.Core.Structures
+@using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Worlds
+
+@inject TickingAreas Areas
+@inject InstanceRegistry Registry
+
+<div class="ticking-areas">
+    @if (Supervisor.TickingAreas is { } read)
+    {
+        <p class="check-detail">
+            @read.List.InUse of @read.List.Max ticking areas in use in all dimensions, read at
+            @ClockText.TimeOnDay(read.ReadUtc.ToLocalTime()).
+            <button type="button" class="btn btn-sm btn-secondary" disabled="@busy" @onclick="ReadAsync">Read again</button>
+        </p>
+
+        @if (read.List.Areas.Count == 0)
+        {
+            <p class="empty-state">This world has no ticking areas.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="sync-areas tick-areas">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Dimension</th>
+                            <th>Area</th>
+                            <th>Preload</th>
+                            <th>In game</th>
+                            <th aria-label="Actions"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (var i = 0; i < read.List.Areas.Count; i++)
+                        {
+                            var area = read.List.Areas[i];
+                            var index = TickingAreaOutlines.Index(Supervisor.Definition.TickingAreas, area);
+                            var shown = index >= 0 && Supervisor.Definition.TickingAreas[index].ShowInGame;
+                            @* An area with no settings yet shows the colour it would be given when shown,
+                               the first no other ticking area has (TickingAreaEdits.WithDisplay). *@
+                            var colour = index >= 0
+                                ? AreaColors.Of(Supervisor.Definition.TickingAreas[index].Color, index)
+                                : AreaColors.Next(Supervisor.Definition.TickingAreas.Select((s, n) => AreaColors.Of(s.Color, n)));
+
+                            <tr>
+                                <td>
+                                    @area.Name
+                                    @if (area.IsSyncs)
+                                    {
+                                        <span class="check-detail"> (a sync's, while it runs)</span>
+                                    }
+                                </td>
+                                <td>@area.Dimension.Title</td>
+                                <td>@area.Extent</td>
+                                <td>
+                                    <input type="checkbox" class="form-check-input" aria-label="Preload" title="Loaded before the world starts"
+                                           checked="@area.Preload" disabled="@(busy || area.IsSyncs)"
+                                           @onchange="e => PreloadAsync(area, e.Value is true)" />
+                                </td>
+                                <td>
+                                    <div class="sync-in-game">
+                                        <input type="checkbox" class="form-check-input" aria-label="Show in game" title="Show in game"
+                                               checked="@shown" disabled="@(busy || area.IsSyncs)"
+                                               @onchange="e => DisplayAsync(area, e.Value is true, null)" />
+                                        <input type="color" class="form-control form-control-color" aria-label="Outline colour" title="Outline colour"
+                                               value="@colour" disabled="@(busy || area.IsSyncs)"
+                                               @onchange="e => DisplayAsync(area, shown, e.Value?.ToString())" />
+                                    </div>
+                                </td>
+                                <td>
+                                    @if (!area.IsSyncs)
+                                    {
+                                        <div class="provision-controls">
+                                            <button type="button" class="btn btn-sm btn-secondary" disabled="@busy" @onclick="() => Edit(area)">Edit</button>
+                                            <button type="button" class="btn btn-sm btn-secondary" disabled="@busy" @onclick="() => RemoveAsync(area)">Remove</button>
+                                        </div>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @foreach (var line in read.List.Unread)
+        {
+            <p class="prop-check warn">Not read: <code>@line</code></p>
+        }
+
+        <section class="sync-section">
+            <h3>@(editing is null ? "Add a ticking area" : $"Edit {editing.Name}")</h3>
+
+            @if (editing is not null)
+            {
+                <p class="check-detail">
+                    Bedrock cannot change a ticking area in place, so saving removes it and adds it again;
+                    if the new one is refused, the old one is put back.
+                </p>
+            }
+
+            <div class="tick-form">
+                <label class="field">
+                    <span>Name</span>
+                    <input class="form-control" value="@name" disabled="@busy" @onchange="e => name = e.Value?.ToString() ?? string.Empty" />
+                </label>
+                <label class="field">
+                    <span>Dimension</span>
+                    <select class="form-select" value="@dimensionId" disabled="@busy" @onchange="e => dimensionId = e.Value?.ToString() ?? string.Empty">
+                        @foreach (var dimension in BedrockDimension.All)
+                        {
+                            <option value="@dimension.Id">@dimension.Title</option>
+                        }
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Shape</span>
+                    <select class="form-select" value="@ShapeValue" disabled="@busy" @onchange="ShapeChanged">
+                        <option value="box">Box</option>
+                        <option value="circle">Circle</option>
+                    </select>
+                </label>
+                @if (circle)
+                {
+                    <div class="field">
+                        <span>Centre x, z and radius in chunks (at most 4)</span>
+                        <div class="sync-corner">
+                            <input type="number" class="form-control" aria-label="Centre x" value="@x1" disabled="@busy" @onchange="e => x1 = Number(e, x1)" />
+                            <input type="number" class="form-control" aria-label="Centre z" value="@z1" disabled="@busy" @onchange="e => z1 = Number(e, z1)" />
+                            <input type="number" class="form-control" aria-label="Radius" min="0" max="4" value="@radius" disabled="@busy" @onchange="e => radius = Number(e, radius)" />
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="field">
+                        <span>Corners x, z (at most 100 chunks)</span>
+                        <div class="sync-corner">
+                            <input type="number" class="form-control" aria-label="From x" value="@x1" disabled="@busy" @onchange="e => x1 = Number(e, x1)" />
+                            <input type="number" class="form-control" aria-label="From z" value="@z1" disabled="@busy" @onchange="e => z1 = Number(e, z1)" />
+                            <input type="number" class="form-control" aria-label="To x" value="@x2" disabled="@busy" @onchange="e => x2 = Number(e, x2)" />
+                            <input type="number" class="form-control" aria-label="To z" value="@z2" disabled="@busy" @onchange="e => z2 = Number(e, z2)" />
+                        </div>
+                    </div>
+                }
+                <label class="form-check-label tick-preload">
+                    <input type="checkbox" class="form-check-input" checked="@preload" disabled="@busy" @onchange="e => preload = e.Value is true" />
+                    Preload
+                </label>
+            </div>
+
+            <p class="provision-controls">
+                <button type="button" class="btn btn-sm btn-primary" disabled="@(busy || (editing is null && read.List.InUse >= read.List.Max))"
+                        @onclick="SaveAsync">
+                    @(editing is null ? "Add" : "Save")
+                </button>
+                @if (editing is not null)
+                {
+                    <button type="button" class="btn btn-sm btn-secondary" disabled="@busy" @onclick="Cancel">Cancel</button>
+                }
+            </p>
+
+            @if (editing is null && read.List.InUse >= read.List.Max)
+            {
+                <p class="check-detail">A world has at most @read.List.Max ticking areas in all its dimensions together.</p>
+            }
+        </section>
+    }
+    else if (said is null)
+    {
+        <p class="empty-state">@(busy ? "Reading the ticking areas…" : TickingAreas.NotRunning)</p>
+    }
+
+    @if (said is not null)
+    {
+        <p class="@(ok ? "check-detail" : "console-fault")">@said</p>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public InstanceSupervisor Supervisor { get; set; } = default!;
+
+    private bool busy;
+    private bool ok = true;
+    private string? said;
+
+    private TickingArea? editing;
+    private string name = string.Empty;
+    private string dimensionId = BedrockDimension.Overworld.Id;
+    private bool circle;
+    private int x1, z1, x2 = 15, z2 = 15, radius = 1;
+    private bool preload;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Registry.TickingAreasChanged += OnChanged;
+        await ReadAsync();
+    }
+
+    public void Dispose() => Registry.TickingAreasChanged -= OnChanged;
+
+    /// <summary>Shows a display change made elsewhere, such as showtickingarea in game.</summary>
+    private void OnChanged(string instanceId)
+    {
+        if (instanceId == Supervisor.InstanceId)
+        {
+            _ = InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ReadAsync()
+    {
+        await RunAsync(() => Areas.ReadAsync(Supervisor), keepSaid: false);
+    }
+
+    private Task PreloadAsync(TickingArea area, bool value) =>
+        RunAsync(() => Areas.SetPreloadAsync(Supervisor, area, value));
+
+    private Task RemoveAsync(TickingArea area) =>
+        RunAsync(() => Areas.RemoveAsync(Supervisor, area));
+
+    private async Task DisplayAsync(TickingArea area, bool show, string? color)
+    {
+        busy = true;
+        try
+        {
+            await Areas.SetDisplayAsync(Supervisor, area, show, color);
+            ok = true;
+            said = null;
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            said = $"Not saved: {ex.Message}";
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void Edit(TickingArea area)
+    {
+        editing = area;
+        name = area.Name;
+        dimensionId = area.Dimension.Id;
+        circle = area.Shape == TickingAreaShape.Circle;
+        (x1, z1, x2, z2) = (area.From.X, area.From.Z, area.To.X, area.To.Z);
+        radius = area.Radius;
+        preload = area.Preload;
+        said = null;
+    }
+
+    private void Cancel()
+    {
+        editing = null;
+        name = string.Empty;
+        said = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (TickingAreaCommands.NameProblem(name) is { } problem)
+        {
+            ok = false;
+            said = problem;
+            return;
+        }
+
+        var dimension = BedrockDimension.Find(dimensionId) ?? BedrockDimension.Overworld;
+        var trimmed = name.Trim();
+        var add = circle
+            ? TickingAreaCommands.AddCircle(trimmed, dimension, x1, z1, radius, preload)
+            : TickingAreaCommands.AddBox(trimmed, dimension, x1, z1, x2, z2, preload);
+
+        var old = editing;
+        await RunAsync(() => old is null
+            ? Areas.AddAsync(Supervisor, add)
+            : Areas.ReplaceAsync(Supervisor, old, add, trimmed, dimension));
+
+        if (ok)
+        {
+            Cancel();
+            said = null;
+        }
+    }
+
+    private async Task RunAsync(Func<Task<TickingAreaResult>> action, bool keepSaid = true)
+    {
+        busy = true;
+        try
+        {
+            var result = await action();
+            ok = result.Ok;
+            said = result.Ok && !keepSaid ? null : result.Said;
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            said = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private string ShapeValue => circle ? "circle" : "box";
+
+    private void ShapeChanged(ChangeEventArgs e) => circle = e.Value?.ToString() == "circle";
+
+    private static int Number(ChangeEventArgs e, int was) =>
+        int.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : was;
+}

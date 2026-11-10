@@ -20,7 +20,8 @@ by anything here. See README.md.
 ----------------------------------------------------------------------
 
 Copyright (c) .NET Foundation and Contributors.
-Licensed under the MIT License (text below).
+Licensed under the MIT License (text below), except the parts named in the
+next section.
 
 This is the largest part of the archive by far: the shared framework, the
 ASP.NET Core module (aspnetcorev2_inprocess.dll), the QUIC transport
@@ -39,6 +40,38 @@ Also under this licence and copyright:
   System.Diagnostics.EventLog
   System.Management            (WMI, for the Data Deduplication read - D55)
   System.CodeDom               (pulled in by System.Management)
+
+
+----------------------------------------------------------------------
+.NET runtime files under the Microsoft .NET Library License
+----------------------------------------------------------------------
+
+Some of the Windows runtime is not MIT. Microsoft licenses these under
+the .NET Library License:
+
+  coreclr.dll and Microsoft.DiaSymReader.Native.amd64.dll, in the
+  archive's top folder and again in broker/
+
+  the .NET runtime built into updater/BedrockSentry.Updater.exe, which
+  is published as a single file
+
+They are redistributed here as part of BedrockSentry, not on their own,
+and your use and any redistribution of them is subject to those terms,
+not to BedrockSentry's MIT licence:
+
+  https://dotnet.microsoft.com/dotnet_library_license.htm
+
+Microsoft's list of which Windows runtime files carry which licence:
+
+  https://github.com/dotnet/core/blob/main/license-information-windows.md
+
+
+----------------------------------------------------------------------
+QRCoder  (the authenticator-app enrolment QR code - D125)
+----------------------------------------------------------------------
+
+Copyright (c) 2013-2018 Raffael Herrmann.
+Licensed under the MIT License (text below).
 
 
 ----------------------------------------------------------------------

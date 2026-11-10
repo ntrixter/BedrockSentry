@@ -16,6 +16,10 @@ namespace BedrockSentry.Services.Updates;
 /// <param name="RetryAfter">
 /// How long the server asked to be left alone, when it said so — otherwise null.
 /// </param>
+/// <param name="Failure">
+/// Why nothing usable arrived, as a clause for the panel (<c>T196</c>), or null
+/// when a manifest did.
+/// </param>
 /// <remarks>
 /// <b>This is deliberately not inferred from a status code alone.</b> A private
 /// repository answers 404 for a reason that has nothing to do with rate limiting
@@ -25,11 +29,7 @@ namespace BedrockSentry.Services.Updates;
 /// Populated only when the response actually carried a <c>Retry-After</c>, or the
 /// status was 429, which means it and nothing else.
 /// </remarks>
-public sealed record ManifestFetch(UpdateManifest? Manifest, TimeSpan? RetryAfter)
-{
-    /// <summary>A fetch that produced nothing and no throttle.</summary>
-    public static readonly ManifestFetch Nothing = new(null, null);
-}
+public sealed record ManifestFetch(UpdateManifest? Manifest, TimeSpan? RetryAfter, string? Failure = null);
 
 /// <summary>
 /// Fetches the channel manifest, downloads a release, verifies it, and stages it into
@@ -68,9 +68,11 @@ public sealed class UpdateClient
     private static readonly TimeSpan LongestRetryAfter = TimeSpan.FromHours(1);
 
     /// <summary>Reads the manifest describing the newest build on a channel.</summary>
-    public async Task<ManifestFetch> FetchManifestAsync(UpdateOptions options, CancellationToken ct = default)
+    /// <param name="feedUrlTemplate">The feed to read in place of <paramref name="options"/>' own.</param>
+    public async Task<ManifestFetch> FetchManifestAsync(
+        UpdateOptions options, CancellationToken ct = default, string? feedUrlTemplate = null)
     {
-        var url = options.FeedUrlTemplate.Replace(
+        var url = (feedUrlTemplate ?? options.FeedUrlTemplate).Replace(
             "{channel}",
             options.Channel.ToString().ToLowerInvariant(),
             StringComparison.OrdinalIgnoreCase);
@@ -106,17 +108,23 @@ public sealed class UpdateClient
                         wait);
                 }
 
-                return new ManifestFetch(null, retryAfter);
+                return new ManifestFetch(null, retryAfter, $"it answered {(int)response.StatusCode}");
             }
 
-            return new ManifestFetch(
-                JsonSerializer.Deserialize<UpdateManifest>(await response.Content.ReadAsStringAsync(ct)),
-                null);
+            return JsonSerializer.Deserialize<UpdateManifest>(await response.Content.ReadAsStringAsync(ct))
+                is { } manifest
+                ? new ManifestFetch(manifest, null)
+                : new ManifestFetch(null, null, "its answer held no build");
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             _logger.LogWarning(ex, "Could not read the update manifest from {Url}.", url);
-            return ManifestFetch.Nothing;
+            return new ManifestFetch(null, null, "it could not be reached");
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Could not read the update manifest from {Url}.", url);
+            return new ManifestFetch(null, null, "its answer was not a build description");
         }
     }
 
@@ -159,22 +167,33 @@ public sealed class UpdateClient
     /// <summary>
     /// Downloads and unpacks a release into its version directory.
     /// </summary>
+    /// <param name="fresh">
+    /// Unpack again over a version directory that already exists, rather than trust it.
+    /// The privilege broker asks for this: what it switches to is what it verified.
+    /// </param>
+    /// <param name="downloadDirectory">Where the archive is downloaded; null is the account's temp folder.</param>
     /// <returns>The staged version directory, or null if anything failed.</returns>
-    public async Task<string?> StageAsync(UpdateManifest manifest, CancellationToken ct = default)
+    public async Task<string?> StageAsync(
+        UpdateManifest manifest, CancellationToken ct = default, bool fresh = false, string? downloadDirectory = null)
     {
         var versionDirectory = _layout.VersionDirectory(manifest.Identity);
 
-        if (Directory.Exists(versionDirectory))
+        if (Directory.Exists(versionDirectory) && !fresh)
         {
             _logger.LogInformation("Build {Identity} is already staged.", manifest.Identity);
             return versionDirectory;
         }
 
         var staging = versionDirectory + ".staging";
-        var archive = Path.Combine(Path.GetTempPath(), $"bedrocksentry-{Guid.NewGuid():N}.zip");
+        var archive = Path.Combine(downloadDirectory ?? Path.GetTempPath(), $"bedrocksentry-{Guid.NewGuid():N}.zip");
 
         try
         {
+            if (downloadDirectory is not null)
+            {
+                Directory.CreateDirectory(downloadDirectory);
+            }
+
             _logger.LogInformation("Downloading {Identity} from {Url}.", manifest.Identity, manifest.DownloadUrl);
 
             using (var response = await _http.GetAsync(manifest.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
@@ -203,6 +222,14 @@ public sealed class UpdateClient
                 _logger.LogError("The downloaded archive has no BedrockSentry.Host.exe; refusing to stage it.");
                 Directory.Delete(staging, recursive: true);
                 return null;
+            }
+
+            if (Directory.Exists(versionDirectory))
+            {
+                // Only with fresh: an earlier copy of this build that nothing verified
+                // in this call. Recursive delete stops at a junction's link rather than
+                // its target, and nothing outside an administrator writes versions.
+                Directory.Delete(versionDirectory, recursive: true);
             }
 
             // Move only once the contents are complete and checked, so a version
@@ -263,7 +290,7 @@ public sealed class UpdateClient
                 File.Delete(path);
             }
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _logger.LogDebug(ex, "Could not delete the temporary download {Path}.", path);
         }
@@ -278,8 +305,11 @@ public sealed class UpdateClient
                 Directory.Delete(path, recursive: true);
             }
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // Both. A staging tree holds files extracted from a downloaded zip,
+            // and a read-only entry anywhere in it raises the second -- on a
+            // helper whose entire contract is that it never throws.
             _logger.LogDebug(ex, "Could not clean up the staging directory {Path}.", path);
         }
     }

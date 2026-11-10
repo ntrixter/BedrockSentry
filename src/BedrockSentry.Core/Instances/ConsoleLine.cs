@@ -77,7 +77,8 @@ public enum BdsLogLevel
 /// <param name="Level">Severity, if the line carried one.</param>
 /// <param name="Message">
 /// The line with its <c>[timestamp LEVEL]</c> prefix removed, or the whole line
-/// when there was no prefix. This is what the console page displays.
+/// when there was no prefix. What the console page displays is
+/// <see cref="DisplayText"/>.
 /// </param>
 /// <param name="ServerTimestamp">
 /// The timestamp BDS stamped on the line, if any. Kept separate from
@@ -105,4 +106,21 @@ public sealed record ConsoleLine(
     BdsLogLevel Level,
     string Message,
     DateTime? ServerTimestamp,
-    ConsoleLineKind Kind = ConsoleLineKind.Ordinary);
+    ConsoleLineKind Kind = ConsoleLineKind.Ordinary)
+{
+    /// <summary>
+    /// The companion pack's relay this line carries (<see cref="CompanionRelayReader"/>),
+    /// or null.
+    /// </summary>
+    /// <remarks>
+    /// Beside <see cref="Message"/>, never in place of it: the message stays what the
+    /// server printed, so every matcher reads the same text whatever a relay says.
+    /// </remarks>
+    public CompanionRelay? Relay { get; init; }
+
+    /// <summary>
+    /// What the console shows: chat as <c>name: text</c>, a relay's sentence where it
+    /// has one, and <see cref="Message"/> otherwise.
+    /// </summary>
+    public string DisplayText { get; init; } = Message;
+}

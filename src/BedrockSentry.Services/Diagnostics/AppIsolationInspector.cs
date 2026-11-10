@@ -30,7 +30,7 @@ public sealed record MinecraftPackage(string Family, bool Exempt);
 /// administrator has to think about.
 /// </para>
 /// </remarks>
-public sealed class AppIsolationInspector
+public sealed class AppIsolationInspector : ILoopbackExemptionService
 {
     private readonly IPowerShellRunner _powerShell;
     private readonly ILogger<AppIsolationInspector> _log;
@@ -41,9 +41,6 @@ public sealed class AppIsolationInspector
         _log = log;
     }
 
-    /// <summary>What Minecraft is installed here and what is exempted, or why not.</summary>
-    public sealed record Isolation(bool Read, string Json, string Error);
-
     /// <summary>Reads the installed Minecraft packages and the exemption list, once.</summary>
     /// <remarks>
     /// The exemption list is matched by looking for the package family name
@@ -51,19 +48,22 @@ public sealed class AppIsolationInspector
     /// prints a labelled block per exemption and those labels are localised;
     /// the family name inside them is not.
     /// </remarks>
-    public async Task<Isolation> ReadAsync(CancellationToken cancellationToken = default)
+    public async Task<LoopbackExemptions> ReadAsync(CancellationToken cancellationToken = default)
     {
         var result = await _powerShell.RunAsync(
                 """
                 $ErrorActionPreference = 'Stop'
                 try {
-                  # A machine with no packaged apps at all is a machine with no
-                  # Minecraft on it, which is an answer rather than a failure.
+                  # A machine without the Appx cmdlets has no packaged apps, so no
+                  # Minecraft, which is an answer. Any other error, access denied
+                  # above all, is a failure to read: -AllUsers needs an
+                  # administrator, and reading it as "none installed" hid a
+                  # Minecraft that was there (T395).
                   $packages = @()
                   try {
-                    $packages = @(Get-AppxPackage -AllUsers -Name 'Microsoft.Minecraft*' -ErrorAction SilentlyContinue |
+                    $packages = @(Get-AppxPackage -AllUsers -Name 'Microsoft.Minecraft*' -ErrorAction Stop |
                       ForEach-Object { $_.PackageFamilyName } | Sort-Object -Unique)
-                  } catch { $packages = @() }
+                  } catch [System.Management.Automation.CommandNotFoundException] { $packages = @() }
 
                   $exempt = ''
                   if ($packages.Count -gt 0) {
@@ -74,17 +74,23 @@ public sealed class AppIsolationInspector
                     $ErrorActionPreference = 'Stop'
                   }
 
-                  # The leading comma keeps a single package an array rather than
-                  # a bare object.
-                  ,@($packages | ForEach-Object {
-                    [pscustomobject]@{ Package = $_; Exempt = [bool]($exempt -match [regex]::Escape($_)) }
-                  }) | ConvertTo-Json -Compress
+                  # An account that does not have the package registered (LocalSystem,
+                  # in the broker) sees an exemption by its AppContainer SID only, with
+                  # "AppContainer NOT FOUND" for its name (T395), so the SIDs go too.
+                  $listed = @([regex]::Matches($exempt, 'S-1-15-2(-\d+)+') | ForEach-Object { $_.Value })
+
+                  # -InputObject keeps the list an array of any length. Piped, Windows
+                  # PowerShell 5.1 writes a comma-wrapped array as {"value":[...]}
+                  # (T398).
+                  ConvertTo-Json -Compress -InputObject @($packages | ForEach-Object {
+                    [pscustomobject]@{ Package = $_; Exempt = [bool]($exempt -match [regex]::Escape($_)); Listed = $listed }
+                  })
                 } catch { Write-Error $_.Exception.Message }
                 """,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return new Isolation(result.Succeeded, result.Output, result.Reason);
+        return new LoopbackExemptions(result.Succeeded, result.Output, result.Reason);
     }
 
     /// <summary>
@@ -105,9 +111,20 @@ public sealed class AppIsolationInspector
         {
             using var document = JsonDocument.Parse(json);
 
-            var entries = document.RootElement.ValueKind == JsonValueKind.Array
-                ? document.RootElement.EnumerateArray().ToList()
-                : [document.RootElement];
+            var root = document.RootElement;
+
+            // Windows PowerShell 5.1's rendering of a piped, comma-wrapped array, which
+            // every read before T398's fix produced.
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("value", out var wrapped)
+                && wrapped.ValueKind == JsonValueKind.Array)
+            {
+                root = wrapped;
+            }
+
+            var entries = root.ValueKind == JsonValueKind.Array
+                ? root.EnumerateArray().ToList()
+                : [root];
 
             var packages = new List<MinecraftPackage>();
 
@@ -121,8 +138,9 @@ public sealed class AppIsolationInspector
                     continue;
                 }
 
-                var exempt = entry.TryGetProperty("Exempt", out var value)
-                             && value.ValueKind == JsonValueKind.True;
+                var exempt = (entry.TryGetProperty("Exempt", out var value)
+                              && value.ValueKind == JsonValueKind.True)
+                             || Listed(entry).Contains(AppContainerSid(name), StringComparer.OrdinalIgnoreCase);
 
                 packages.Add(new MinecraftPackage(name, exempt));
             }
@@ -136,6 +154,42 @@ public sealed class AppIsolationInspector
             // something that cannot use it.
             return [];
         }
+    }
+
+    /// <summary>The AppContainer SIDs the exemption list named, as the probe found them.</summary>
+    private static IEnumerable<string> Listed(JsonElement entry)
+    {
+        if (!entry.TryGetProperty("Listed", out var listed))
+        {
+            return [];
+        }
+
+        // One SID may arrive bare rather than as a list.
+        List<JsonElement> values = listed.ValueKind switch
+        {
+            JsonValueKind.Array => listed.EnumerateArray().ToList(),
+            JsonValueKind.String => [listed],
+            _ => [],
+        };
+
+        return values.Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString()!);
+    }
+
+    /// <summary>
+    /// The AppContainer SID Windows gives a package family: <c>S-1-15-2-</c> and the first
+    /// seven little-endian words of the SHA-256 of the lower-cased name in UTF-16.
+    /// </summary>
+    /// <remarks>
+    /// What <c>DeriveAppContainerSidFromAppContainerName</c> returns, worked out here so the
+    /// rule can be tested anywhere; Minecraft's is the SID loopback guides quote for it.
+    /// </remarks>
+    public static string AppContainerSid(string family)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.Unicode.GetBytes(family.ToLowerInvariant()));
+
+        var words = Enumerable.Range(0, 7).Select(i => BitConverter.ToUInt32(hash, i * 4));
+        return "S-1-15-2-" + string.Join('-', words);
     }
 
     /// <summary>The row's name, needed before its answer arrives.</summary>
@@ -182,9 +236,10 @@ public sealed class AppIsolationInspector
     }
 
     /// <summary>The row shown when the check itself could not run.</summary>
-    public static SystemCheck Unavailable(string error) =>
+    /// <param name="unavailable">Why the read needs the broker, when this install has none.</param>
+    public static SystemCheck Unavailable(string error, string? unavailable = null) =>
         new("Local Minecraft", SystemCheckState.Unknown,
-            $"Could not tell whether Minecraft is installed here. {error}");
+            FirewallInspector.Unread($"Could not tell whether Minecraft is installed here. {error}", unavailable));
 
     /// <summary>Grants the loopback exemption described by <see cref="Check"/>.</summary>
     public async Task<SystemCheckFix> ExemptAsync(

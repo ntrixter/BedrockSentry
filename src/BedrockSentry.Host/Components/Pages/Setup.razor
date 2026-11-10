@@ -20,15 +20,10 @@
 <div class="auth-shell">
     <div class="auth-card auth-card-wide">
 
-        @* [AllowAnonymous] alone would leave this page reachable forever. The runtime
-           check is what actually closes it once an account exists. *@
-        @if (State.IsConfigured)
-        {
-            <h1>Already set up</h1>
-            <p>An administrator account already exists on this install.</p>
-            <p><a href="/account/login">Sign in</a></p>
-        }
-        else if (completed)
+        @* The request that just completed setup first (`T326`): completing it marks the
+           install configured before this renders again, so the check below took that
+           render too and the restart step was never shown. *@
+        @if (completed)
         {
             <h1>Setup complete</h1>
             <p>
@@ -44,7 +39,9 @@
                     wizard and claim the administrator account first. It starts
                     listening on the network on the next start.
                 </p>
-                <p class="setup-command">net stop BedrockSentry &amp;&amp; net start BedrockSentry</p>
+                @* One cmdlet rather than two commands joined by `&&`, which Windows
+                   PowerShell 5.1 refuses; the same command as the setup guide (`T326`). *@
+                <p class="setup-command">Restart-Service BedrockSentry</p>
                 <p>
                     Then sign in at
                     <code>https://&lt;this-server&gt;:@Tls.Value.Port/</code>. The
@@ -52,6 +49,14 @@
                     the first time.
                 </p>
             </div>
+        }
+        else if (State.IsConfigured)
+        {
+            @* [AllowAnonymous] alone would leave this page reachable forever. The runtime
+               check is what actually closes it once an account exists. *@
+            <h1>Already set up</h1>
+            <p>An administrator account already exists on this install.</p>
+            <p><a href="/account/login">Sign in</a></p>
         }
         else
         {
@@ -72,8 +77,8 @@
                 </label>
                 <p class="field-hint">
                     Written to <code>@TokenPath</code> when the service started, and
-                    recorded in the Windows event log. Readable only by SYSTEM and
-                    local administrators.
+                    recorded in the Windows event log. Readable only by SYSTEM, local
+                    administrators and the service's own account.
                 </p>
                 <ValidationMessage For="() => Input!.Token" />
 
@@ -136,7 +141,7 @@
     protected override void OnInitialized() =>
         Input ??= new() { InstanceRoot = Paths.Instances };
 
-    private string TokenPath => System.IO.Path.Combine(Paths.Config, "setup-token.txt");
+    private string TokenPath => BedrockSentry.Services.Security.SecretFiles.SetupToken(Paths);
 
     private async Task CompleteAsync()
     {

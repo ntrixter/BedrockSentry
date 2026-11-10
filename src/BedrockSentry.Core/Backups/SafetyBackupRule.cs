@@ -69,13 +69,12 @@ public static class SafetyBackupRule
     /// </remarks>
     public static string Promise(SafetyBackupNeed need) => need switch
     {
-        SafetyBackupNeed.Required =>
-            "A safety backup of the current state is taken first, whether the server is "
-            + "running or stopped, so undoing this is just restoring that one.",
-        SafetyBackupNeed.NotNeeded =>
-            "There is no world here to overwrite, so no safety backup is taken — nothing "
-            + "of this server's is being replaced.",
+        // Shortened at the operator's request (`D111`); it still promises only what the
+        // `Required` arm delivers.
+        SafetyBackupNeed.Required => "A safety backup is taken first, so you can undo this by restoring it.",
+        SafetyBackupNeed.NotNeeded => "There is no world here to overwrite, so no safety backup is taken.",
         SafetyBackupNeed.ImpossibleForConfig => Refusal,
+        SafetyBackupNeed.WorldUnreadable => UnreadableWorldRefusal,
         _ => Refusal,
     };
 
@@ -93,6 +92,40 @@ public static class SafetyBackupRule
         + "be made to hold them: there is no world here, and an archive of nothing is "
         + "refused. Untick the configuration to restore the world on its own — that "
         + "overwrites nothing and needs no undo.";
+
+    /// <summary>
+    /// Whether this need is a refusal rather than a promise (<c>T244</c>).
+    /// </summary>
+    /// <remarks>
+    /// One predicate because the dialog asks twice — once for the warning style, once
+    /// for whether the confirm button may act — and `T244` added a state that both had
+    /// to learn. Two lists of members in a <c>.razor</c> the suite cannot reach is this
+    /// file's own recurring defect waiting to happen; here a test can hold it.
+    /// </remarks>
+    public static bool Refuses(SafetyBackupNeed need) =>
+        need is SafetyBackupNeed.ImpossibleForConfig or SafetyBackupNeed.WorldUnreadable;
+
+    /// <summary>
+    /// Why a restore is refused when this server's own world cannot be read
+    /// (<c>T244</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para><strong>A fourth state rather than a catch, because the third one lies.</strong>
+    /// Treating an unreadable world as "it has files" reaches
+    /// <see cref="SafetyBackupNeed.Required"/>, whose promise says a safety backup
+    /// <em>is taken first, so undoing this is just restoring that one</em> — and a
+    /// safety backup of a directory nobody can enumerate does not get taken. The
+    /// conservative branch is the right ACTION and the wrong SENTENCE, which is
+    /// `T176` arriving through the one door that looked safe.</para>
+    ///
+    /// <para><strong>Refused before the stop</strong>, like the guard beside it and for
+    /// `T168`'s reason: finding this out after the server is down and the world has
+    /// been moved aside costs uptime for an answer the disk gives for free.</para>
+    /// </remarks>
+    public const string UnreadableWorldRefusal =
+        "This server's own world could not be read, so nothing here can say what a "
+        + "restore would overwrite and no safety backup can be taken of it. Nothing has "
+        + "been changed. Fix the folder's permissions and try again.";
 }
 
 /// <summary>What a restore needs before it may overwrite anything.</summary>
@@ -108,6 +141,12 @@ public enum SafetyBackupNeed
     /// Something is being overwritten and no safety backup can cover it. Refuse.
     /// </summary>
     ImpossibleForConfig,
+
+    /// <summary>
+    /// This server's own world could not be read, so what a restore would overwrite
+    /// is unknown and no safety backup can be taken. Refuse (<c>T244</c>).
+    /// </summary>
+    WorldUnreadable,
 }
 
 /// <summary>
@@ -133,7 +172,8 @@ public sealed record SafetyBackup(string? ArchivePath)
 
     /// <summary>The clause a summary adds about the undo. Empty when there is none.</summary>
     public string SummaryClause => Exists
-        ? " The previous state is in the safety backup above."
+        // Not "above": the sentence is shown under the server's controls, away from the list (`D111`).
+        ? " The world from before is in a safety backup."
 
         // Deliberately says what happened rather than nothing at all: somebody
         // reading a restore summary is entitled to know no undo was recorded, even

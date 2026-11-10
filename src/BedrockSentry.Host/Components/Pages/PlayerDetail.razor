@@ -3,15 +3,19 @@
    somebody is online. *@
 @rendermode InteractiveServer
 
+@using BedrockSentry.Core.Diagnostics
 @using BedrockSentry.Core.Players
 @using BedrockSentry.Core.Security
+@using BedrockSentry.Host.Components.Players
 @using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Players
 @using Microsoft.AspNetCore.Components.Authorization
 
 @inject IPlayerStore Players
 @inject InstanceRegistry Registry
 @inject NavigationManager Navigation
 @inject TimeProvider Time
+@inject PlayerFaces Faces
 
 <PageTitle>@(profile?.Display ?? "Player") · BedrockSentry</PageTitle>
 
@@ -29,7 +33,7 @@ else if (profile is null)
 }
 else
 {
-    <h1>@profile.Display</h1>
+    <h1 class="player-title"><PlayerFaceImage @key="faceVersion" Xuid="@profile.Xuid" Size="48" />@profile.Display</h1>
 
     <p class="lead">
         @if (profile.Display != profile.Gamertag)
@@ -108,6 +112,8 @@ else
         }
     </div>
 
+    <PlayerFaceSetPanel Xuid="@profile.Xuid" OnChanged="() => faceVersion++" />
+
     <h2>Activity per server</h2>
 
     @if (profile.Instances.Count == 0)
@@ -129,6 +135,8 @@ else
                         <th class="num">Sessions</th>
                         <th class="num">First seen</th>
                         <th class="num">Last seen</th>
+                        <th class="num">Deaths</th>
+                        <th>Last known location</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -150,6 +158,56 @@ else
                             <td class="num">@activity.SessionCount</td>
                             <td class="num">@Stamp(activity.FirstSeenUtc)</td>
                             <td class="num">@(activity.IsOnline ? "now" : Stamp(activity.LastSeenUtc))</td>
+                            <td class="num">
+                                @DeathText.Count(activity.Deaths)
+                                @if (activity.Deaths is { } tally)
+                                {
+                                    <div class="check-detail">since @Stamp(tally.SinceUtc)</div>
+                                }
+                            </td>
+                            <td>
+                                @* Where the latest session ended, so it sits beside the last-seen
+                                   time it belongs to; none while online. *@
+                                @if (!activity.IsOnline && activity.LastKnownPosition is { } where)
+                                {
+                                    @DimensionNames.Describe(where)
+                                }
+                                else
+                                {
+                                    <span class="check-detail">—</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @if (profile.RecentDeaths.Count > 0)
+    {
+        <h2>Recent deaths</h2>
+        <p class="lead">
+            The last @PlayerProfile.RecentDeathLimit the companion pack reported, on any server,
+            as the console showed them.
+        </p>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="num">When</th>
+                        <th>Server</th>
+                        <th>What happened</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var death in profile.RecentDeaths)
+                    {
+                        <tr>
+                            <td class="num">@Stamp(death.DiedUtc)</td>
+                            <td><a href="@($"instances/{death.InstanceId}/players")">@NameOf(death.InstanceId)</a></td>
+                            <td>@death.Message</td>
                         </tr>
                     }
                 </tbody>
@@ -161,7 +219,7 @@ else
         <h3>Erase this player</h3>
         <p>
             Removes @profile.Display everywhere — the profile, every session on every
-            server, and any allowlist or operator state. This is the whole person, not
+            server, any allowlist or operator state, and their face. This is the whole person, not
             one server's history: to clear a single instance, use that instance's
             Configuration tab instead.
         </p>
@@ -177,12 +235,13 @@ else
         }
         else
         {
-            @* The password rather than a typed name, matching instance removal:
+            @* The password rather than a typed name, matching instance removal, or
+               the authenticator code with that step on (D125):
                the account that owns the wrapper is the right thing to prove you
                are before destroying somebody's history. *@
             <label class="field">
-                <span>Confirm with your BedrockSentry password</span>
-                <input class="form-control" type="password" autocomplete="current-password"
+                <span>@Confirm.FieldLabel</span>
+                <input class="form-control" type="@Confirm.FieldType" autocomplete="@Confirm.FieldAutocomplete"
                        value="@password" @oninput="e => password = e.Value?.ToString() ?? string.Empty"
                        disabled="@busy" />
             </label>
@@ -210,7 +269,7 @@ else
     private Task<AuthenticationState>? AuthenticationState { get; set; }
 
     [Inject]
-    private IAdminCredentialService Credentials { get; set; } = default!;
+    private DestructiveConfirmPolicy Confirm { get; set; } = default!;
 
     private PlayerProfile? profile;
     private DateTimeOffset now;
@@ -227,6 +286,9 @@ else
     private bool busy;
     private string password = string.Empty;
     private string? eraseError;
+
+    /// <summary>Bumped when the face changes, so the heading's image is drawn again.</summary>
+    private int faceVersion;
 
     private bool Dirty =>
         profile is not null
@@ -305,12 +367,15 @@ else
 
         try
         {
-            if (!await PasswordIsRightAsync())
+            if (await RefusalAsync() is { } refusal)
             {
-                eraseError = "That password is not right.";
+                eraseError = refusal;
                 return;
             }
 
+            // The faces first: a file that cannot be deleted stops the erase while
+            // the profile still exists to try again from.
+            Faces.Forget(profile.Xuid);
             await Players.ForgetPlayerAsync(profile.Xuid);
 
             // Back to the list: staying here would leave the page describing
@@ -328,15 +393,14 @@ else
         }
     }
 
-    private async Task<bool> PasswordIsRightAsync()
+    private async Task<string?> RefusalAsync()
     {
         // The signed-in name rather than a typed one: this proves the person at
-        // the keyboard is the account already here, not a fresh sign-in.
+        // the keyboard is the account already here, not a fresh sign-in. The
+        // configuration waiver does not reach this dialog, as it never did.
         var state = AuthenticationState is null ? null : await AuthenticationState;
-        var username = state?.User.Identity?.Name;
 
-        return username is { Length: > 0 }
-            && Credentials.Verify(username, password) is not CredentialVerification.Failed;
+        return await Confirm.IdentityRefusalAsync(state?.User.Identity?.Name, password);
     }
 
     private string NameOf(string instanceId) =>
@@ -354,6 +418,5 @@ else
             : $"{(int)span.TotalDays}d {span.Hours}h";
     }
 
-    private static string Stamp(DateTimeOffset? value) =>
-        value is { } at ? at.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "—";
+    private static string Stamp(DateTimeOffset? value) => PlayerFormat.DateAndTime(value);
 }

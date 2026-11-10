@@ -9,6 +9,9 @@
    appears where it should not. *@
 
 @using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Services.Diagnostics
+
+@inject PrivilegedWork Work
 
 <div class="prop">
     @* Drawn as soon as the row is known to exist, before its answer arrives.
@@ -32,7 +35,13 @@
                 @check.Title
             </div>
 
-            @if (check is { State: SystemCheckState.Missing, CanFix: true })
+            @* Every fix these panels offer needs administrator rights, so without the
+               broker, under an account that has none, the button would only fail. *@
+            @if (check is { State: SystemCheckState.Missing, CanFix: true } && Work.FixesUnavailable is { } unavailable)
+            {
+                <span class="prop-allowed">@unavailable</span>
+            }
+            else if (check is { State: SystemCheckState.Missing, CanFix: true })
             {
                 <div class="provision-controls">
                     <button class="btn btn-secondary btn-sm" @onclick="OnFix" disabled="@Disabled">

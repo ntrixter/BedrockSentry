@@ -1,5 +1,7 @@
 using System.Text.Json.Nodes;
+using BedrockSentry.Core.Broker;
 using BedrockSentry.Core.Configuration;
+using BedrockSentry.Services.Broker;
 using Microsoft.Extensions.Logging;
 
 namespace BedrockSentry.Services.Configuration;
@@ -22,11 +24,13 @@ public sealed class StorageLocations
 {
     private readonly SentryPaths _paths;
     private readonly ILogger<StorageLocations> _log;
+    private readonly OutsideFolders? _outside;
 
-    public StorageLocations(SentryPaths paths, ILogger<StorageLocations> log)
+    public StorageLocations(SentryPaths paths, ILogger<StorageLocations> log, OutsideFolders? outside = null)
     {
         _paths = paths;
         _log = log;
+        _outside = outside;
     }
 
     private string ConfigPath => Path.Combine(_paths.Config, "bedrocksentry.json");
@@ -40,12 +44,12 @@ public sealed class StorageLocations
     public string DefaultServerPackagesRoot => Path.Combine(_paths.DataRoot, "server-packages");
 
     public Task SetBackupsRootAsync(string? root, CancellationToken cancellationToken = default) =>
-        SetAsync("BackupsRoot", root, apply: value =>
+        SetAsync("BackupsRoot", BrokerGrantTarget.BackupsRoot, CurrentOverride(_paths.Backups, DefaultBackupsRoot), root, apply: value =>
             _paths.ApplyStorageOverrides(value, CurrentOverride(_paths.ServerPackages, DefaultServerPackagesRoot)),
             cancellationToken);
 
     public Task SetServerPackagesRootAsync(string? root, CancellationToken cancellationToken = default) =>
-        SetAsync("ServerPackagesRoot", root, apply: value =>
+        SetAsync("ServerPackagesRoot", BrokerGrantTarget.ServerPackagesRoot, CurrentOverride(_paths.ServerPackages, DefaultServerPackagesRoot), root, apply: value =>
             _paths.ApplyStorageOverrides(CurrentOverride(_paths.Backups, DefaultBackupsRoot), value),
             cancellationToken);
 
@@ -61,7 +65,7 @@ public sealed class StorageLocations
             : current;
 
     private async Task SetAsync(
-        string key, string? root, Action<string?> apply, CancellationToken cancellationToken)
+        string key, BrokerGrantTarget target, string? previous, string? root, Action<string?> apply, CancellationToken cancellationToken)
     {
         string? value;
 
@@ -81,31 +85,86 @@ public sealed class StorageLocations
 
             value = Path.GetFullPath(root.Trim());
 
-            // Prove the location works before it is written anywhere: created if
-            // missing, one probe file written and removed. Failing now is a
-            // message beside the field; failing later is a backup that dies at
-            // three in the morning.
-            Directory.CreateDirectory(value);
-            var probe = Path.Combine(value, $".bedrocksentry-probe-{Guid.NewGuid():n}");
-            await File.WriteAllTextAsync(probe, "probe", cancellationToken).ConfigureAwait(false);
-            File.Delete(probe);
+            try
+            {
+                await ProveAsync(value, cancellationToken).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex) when (_outside is { } outside && outside.IsOutside(value))
+            {
+                await HandOverAsync(outside, key, target, previous, value, ex, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         // The file first, then the live paths: if the write fails, what the
         // wrapper is doing still matches what the config says.
-        await JsonConfigWriter
-            .MergeAsync(
-                ConfigPath,
-                new Dictionary<string, JsonNode?>
-                {
-                    [$"{StorageOptions.SectionName}:{key}"] = JsonValue.Create(value ?? ""),
-                },
-                cancellationToken)
-            .ConfigureAwait(false);
+        await WriteAsync(key, value, cancellationToken).ConfigureAwait(false);
 
         apply(value);
 
         _log.LogInformation(
             "Storage location {Key} set to {Value}", key, value ?? "(the default)");
+    }
+
+    /// <summary>
+    /// Proves the location works before it is written anywhere: created if missing, one
+    /// probe file written and removed. Failing now is a message beside the field; failing
+    /// later is a backup that dies at three in the morning.
+    /// </summary>
+    private static async Task ProveAsync(string folder, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(folder);
+        var probe = Path.Combine(folder, $".bedrocksentry-probe-{Guid.NewGuid():n}");
+        await File.WriteAllTextAsync(probe, "probe", cancellationToken).ConfigureAwait(false);
+        File.Delete(probe);
+    }
+
+    private Task WriteAsync(string key, string? value, CancellationToken cancellationToken) =>
+        JsonConfigWriter.MergeAsync(
+            ConfigPath,
+            new Dictionary<string, JsonNode?>
+            {
+                [$"{StorageOptions.SectionName}:{key}"] = JsonValue.Create(value ?? ""),
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// A folder outside the data root the service may not use (<c>D120</c>): the command
+    /// that hands it over, or, where the install lets the panel ask, the broker's grant.
+    /// </summary>
+    /// <remarks>
+    /// The broker grants the root it reads from the configuration, so the file names the
+    /// folder before it is asked, and names the previous one again if the grant or the
+    /// proof after it fails. The live paths change only once the proof passes.
+    /// </remarks>
+    private async Task HandOverAsync(
+        OutsideFolders outside, string key, BrokerGrantTarget target, string? previous, string value,
+        UnauthorizedAccessException denied, CancellationToken cancellationToken)
+    {
+        if (!outside.PanelMayGrant)
+        {
+            throw new InvalidOperationException(outside.Refusal(value), denied);
+        }
+
+        await WriteAsync(key, value, cancellationToken).ConfigureAwait(false);
+
+        var refused = await outside.GrantAsync(target, null, cancellationToken).ConfigureAwait(false);
+
+        if (refused is null)
+        {
+            try
+            {
+                await ProveAsync(value, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                refused = $"the folder was granted, but the service still could not write there ({ex.Message})";
+            }
+        }
+
+        if (refused is not null)
+        {
+            await WriteAsync(key, previous, cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException(outside.Refusal(value, refused), denied);
+        }
     }
 }

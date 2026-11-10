@@ -69,6 +69,55 @@ public sealed class PlayerDatabase
         CREATE INDEX ix_player_sessions_open
             ON player_sessions (instance_id) WHERE disconnected_utc IS NULL;
         """,
+
+        // Version 2, for the companion pack. Every column added is nullable and every table
+        // is new, so a build that knows only version 1 still reads the file.
+        """
+        -- The name BDS printed on this session's own connect line. The companion
+        -- pack relays a name, not an XUID, and this is what it is matched against;
+        -- players.gamertag holds only each XUID's latest name. Null on rows
+        -- written before this version, which therefore never match.
+        ALTER TABLE player_sessions ADD COLUMN gamertag TEXT NULL;
+
+        -- Where the player was when the session ended, or null. Null is never
+        -- written as 0,0,0: a crash leaves no position, and the page says so.
+        ALTER TABLE player_sessions ADD COLUMN exit_x INTEGER NULL;
+        ALTER TABLE player_sessions ADD COLUMN exit_y INTEGER NULL;
+        ALTER TABLE player_sessions ADD COLUMN exit_z INTEGER NULL;
+        ALTER TABLE player_sessions ADD COLUMN exit_dimension TEXT NULL;
+
+        -- One row per death. Counts and the cause breakdown are derived, never
+        -- stored. The unique key is what makes an import idempotent: a player
+        -- cannot die twice on one server in the same instant.
+        CREATE TABLE player_deaths (
+            id            INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            xuid          TEXT    NOT NULL REFERENCES players(xuid) ON DELETE CASCADE,
+            instance_id   TEXT    NOT NULL,
+            died_utc      TEXT    NOT NULL,
+            cause         TEXT    NOT NULL,
+            killer_type   TEXT    NULL,
+            killer_name   TEXT    NULL,
+            x             INTEGER NOT NULL,
+            y             INTEGER NOT NULL,
+            z             INTEGER NOT NULL,
+            dimension     TEXT    NOT NULL,
+            message       TEXT    NOT NULL,
+            UNIQUE (xuid, instance_id, died_utc)
+        );
+
+        CREATE INDEX ix_player_deaths_xuid_instance
+            ON player_deaths (xuid, instance_id);
+
+        -- One row each time the pack said hello. The earliest is when counting
+        -- began on that server, so a death from before it reads as unknown rather
+        -- than as a believable zero.
+        CREATE TABLE companion_reports (
+            instance_id   TEXT    NOT NULL,
+            reported_utc  TEXT    NOT NULL,
+            pack_version  TEXT    NOT NULL,
+            PRIMARY KEY (instance_id, reported_utc)
+        );
+        """,
     ];
 
     private readonly ILogger<PlayerDatabase> _log;
@@ -112,8 +161,18 @@ public sealed class PlayerDatabase
     }
 
     /// <summary>Brings the file up to <see cref="TargetVersion"/>, copying it first.</summary>
-    public async Task MigrateAsync(CancellationToken cancellationToken = default)
+    public Task MigrateAsync(CancellationToken cancellationToken = default) =>
+        MigrateAsync(TargetVersion, cancellationToken);
+
+    /// <summary>
+    /// Brings the file up to <paramref name="target"/> and no further. For tests
+    /// that need a real file at an older version, made by the migrations that
+    /// shipped rather than by a copy of them.
+    /// </summary>
+    internal async Task MigrateAsync(int target, CancellationToken cancellationToken = default)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(target, Migrations.Length);
+
         var directory = System.IO.Path.GetDirectoryName(FilePath);
         if (!string.IsNullOrEmpty(directory))
         {
@@ -123,7 +182,7 @@ public sealed class PlayerDatabase
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 
         var current = await ReadVersionAsync(connection, cancellationToken).ConfigureAwait(false);
-        if (current >= Migrations.Length)
+        if (current >= target)
         {
             return;
         }
@@ -136,7 +195,7 @@ public sealed class PlayerDatabase
             await BackUpAsync(connection, current, cancellationToken).ConfigureAwait(false);
         }
 
-        for (var version = current; version < Migrations.Length; version++)
+        for (var version = current; version < target; version++)
         {
             await using var transaction =
                 await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);

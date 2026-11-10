@@ -11,13 +11,12 @@ namespace BedrockSentry.Core.Backups;
 /// lets in the wrong people. Archiving the world alone was archiving most of
 /// the answer.
 ///
-/// They are stored under a reserved prefix rather than at the archive root,
-/// because the root is the <c>worlds/</c> namespace: an entry there is a path
-/// inside a world folder, and a file called <c>server.properties</c> sitting
-/// beside <c>Bedrock level/</c> would be indistinguishable from a world called
-/// <c>server.properties</c>. The prefix keeps the two apart and lets an older
-/// archive — which simply has no such entries — restore exactly as it always
-/// did.
+/// Backups written before <c>D110</c> stored them under a reserved prefix,
+/// because the archive's root was the <c>worlds/</c> namespace. From <c>D110</c>
+/// a backup is laid out as the server's own folder: the world under
+/// <c>worlds/</c> and these files at the root, where BDS reads them, so an
+/// unzipped backup with <c>bedrock_server.exe</c> dropped in is a server.
+/// <see cref="NewServerWorld"/> reads both layouts.
 ///
 /// <b>Restoring them is a separate, opt-in choice.</b> Putting an old
 /// <c>server.properties</c> back can move the port, which is the one change
@@ -28,8 +27,8 @@ namespace BedrockSentry.Core.Backups;
 public static class ServerConfigFiles
 {
     /// <summary>
-    /// Archive prefix for configuration entries. Chosen so no plausible world
-    /// folder collides with it, and checked against the manifest anyway.
+    /// Archive prefix for configuration entries in a backup written before
+    /// <c>D110</c>. Read, never written.
     /// </summary>
     public const string ArchivePrefix = "_serverconfig/";
 
@@ -50,7 +49,7 @@ public static class ServerConfigFiles
         "permissions.json",
     ];
 
-    /// <summary>The archive entry name for one configuration file.</summary>
+    /// <summary>The entry name for one configuration file in a backup written before <c>D110</c>.</summary>
     public static string EntryFor(string fileName) => ArchivePrefix + fileName;
 
     /// <summary>True when an archive entry is configuration rather than world.</summary>

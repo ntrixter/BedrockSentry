@@ -1,3 +1,5 @@
+using BedrockSentry.Core.Diagnostics;
+
 namespace BedrockSentry.Core.Instances;
 
 public enum RestartScheduleMode
@@ -112,7 +114,7 @@ public sealed class RestartSchedule
     /// </remarks>
     public string Describe() => Mode switch
     {
-        RestartScheduleMode.DailyAt => $"daily at {TimeOfDay:HH\\:mm}",
+        RestartScheduleMode.DailyAt => $"daily at {ClockText.TimeOfDay(TimeOfDay)}",
         RestartScheduleMode.EveryNHours =>
             IntervalHours == 1 ? "every hour" : $"every {IntervalHours} hours",
         RestartScheduleMode.EveryNMinutes =>

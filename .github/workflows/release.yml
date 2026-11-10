@@ -1,4 +1,4 @@
-# Builds, tests, and publishes a self-contained BedrockSentry release.
+# Builds and publishes a self-contained BedrockSentry release.
 #
 # Two consumers, one artifact: an administrator running install.ps1 for the first
 # time, and (from milestone 3.5) the wrapper's own self-update fetching a newer
@@ -45,8 +45,23 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # Only the two channel branches may publish. workflow_dispatch can be started
+      # by hand from any branch or tag, and the channel mapping below would read
+      # anything that is not `main` as Build and move the Build pointer every
+      # installed wrapper on that channel follows. A full ref, not the short name,
+      # so a tag called `main` or `build` is refused too.
+      - name: Refuse a ref that is not a channel branch
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -notin @('refs/heads/main', 'refs/heads/build')) {
+            throw "Releases are cut only from refs/heads/main or refs/heads/build, not $($env:GITHUB_REF)."
+          }
+
       - uses: actions/checkout@v7
         with:
+          # No step pushes with git; the publish steps pass GH_TOKEN to gh alone, so
+          # the write token is not left in .git/config for restore and build.
+          persist-credentials: false
           # SourceLink stamps the commit into InformationalVersion, which BuildInfo
           # parses back out to answer "is there an update".
           fetch-depth: 0
@@ -87,7 +102,14 @@ jobs:
           # land on `build` and are PROMOTED to `main`, which makes the arrangement a
           # ratchet - a stable release cannot be cut from unverified code by accident,
           # because promotion is its own deliberate act.
-          $channel = if ($env:GITHUB_REF_NAME -eq 'main') { 'stable' } else { 'build' }
+          #
+          # Both names are spelled out: the step above already refuses any other ref,
+          # and an unknown one must never fall through to Build.
+          $channel = switch ($env:GITHUB_REF) {
+            'refs/heads/main'  { 'stable' }
+            'refs/heads/build' { 'build' }
+            default { throw "No channel for $($env:GITHUB_REF)." }
+          }
 
           # The stable channel gets a clean semantic version; build gets a
           # monotonic prerelease so every run is distinguishable.
@@ -141,9 +163,6 @@ jobs:
           -p:Version=${{ steps.version.outputs.version }}
           -p:BedrockSentryChannel=${{ steps.version.outputs.channel }}
           -p:ContinuousIntegrationBuild=true
-
-      - name: Test
-        run: dotnet test --no-build -c Release --verbosity normal
 
       # These two steps were absent until 2026-09-10, which meant the PowerShell
       # was parsed on every branch EXCEPT the ones that ship it: ci.yml skipped
@@ -210,6 +229,17 @@ jobs:
           -p:ContinuousIntegrationBuild=true
           -o stage/updater
 
+      # Its own folder, as the updater has: two self-contained publishes in one folder
+      # would overwrite each other's copies of the libraries they share.
+      - name: Publish broker
+        run: >
+          dotnet publish src/BedrockSentry.Broker/BedrockSentry.Broker.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:BedrockSentryChannel=${{ steps.version.outputs.channel }}
+          -p:ContinuousIntegrationBuild=true
+          -o stage/broker
+
       - name: Assemble the archive
         id: package
         shell: pwsh
@@ -223,11 +253,18 @@ jobs:
           # it installed is the one that actually came up.
           Set-Content -Path stage/version.txt -Value $identity -Encoding UTF8 -NoNewline
 
-          Copy-Item scripts/install.ps1, scripts/uninstall.ps1, scripts/stdin-spike.ps1 -Destination stage/
+          # ServiceStop.ps1 is dot-sourced by install.ps1 and uninstall.ps1, and both
+          # degrade with a warning rather than throwing when it is absent (`T243`),
+          # so its omission is silent in the archive and loud only in
+          # Assert-ReleaseArchive. ReleaseContents.ps1 is the manifest that names it.
+          # ServiceRoots.ps1 is dot-sourced by the same two to read the roots from the
+          # registered service (`D99`).
+          Copy-Item scripts/install.ps1, scripts/uninstall.ps1, scripts/stdin-spike.ps1, scripts/ServiceStop.ps1, scripts/ServiceRoots.ps1 -Destination stage/
           # The wrapper's own licence, and the notices for everything a
           # self-contained publish redistributes alongside it. MIT and Apache-2.0
           # both ask that their notice travel with the copy, and until 2026-09-03
-          # the zip carried neither.
+          # the zip carried neither. Parts of the Windows runtime are under the .NET
+          # Library License instead; Assert-ReleaseArchive checks the notices name them.
           Copy-Item LICENSE, THIRD-PARTY-NOTICES.txt -Destination stage/
 
           # ZipFile rather than Compress-Archive: Compress-Archive mangles empty
@@ -262,6 +299,16 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
+          # D114. Read from Directory.Build.props like VersionPrefix, the same value
+          # the build stamps into BuildInfo.InstallEpoch, and refused unless it is a
+          # non-negative integer: anything else published here would deserialise as
+          # an error on every wrapper polling this channel.
+          $epoch = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.BedrockSentryInstallEpoch |
+            Where-Object { $_ } | Select-Object -First 1
+          if ($epoch -notmatch '^[0-9]+$') {
+            throw "BedrockSentryInstallEpoch in Directory.Build.props must be a non-negative integer, not '$epoch'."
+          }
+
           # The updater compares commitSha, not version: on the build channel the
           # version prefix never moves, so version comparison alone would never
           # detect an update.
@@ -273,6 +320,7 @@ jobs:
             publishedAt = (Get-Date).ToUniversalTime().ToString('o')
             sha256      = '${{ steps.package.outputs.sha256 }}'
             downloadUrl = "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.identity }}/${{ steps.package.outputs.zipName }}"
+            installEpoch = [int]$epoch
           } | ConvertTo-Json | Set-Content -Path version.json -Encoding UTF8
 
       - name: Publish the immutable release
@@ -343,7 +391,7 @@ jobs:
 #
 # It was removed because it eventually failed every run — "Artifact storage quota
 # has been hit" — after the release itself had already published. That is the
-# worst shape a CI failure can take: a red workflow whose build, tests and publish
+# worst shape a CI failure can take: a red workflow whose build and publish
 # all succeeded, so the red X trains people to assume the build is broken when it
 # is not, or worse, to stop reading it. A duplicate nobody consumes is not worth
 # a permanently failing pipeline.

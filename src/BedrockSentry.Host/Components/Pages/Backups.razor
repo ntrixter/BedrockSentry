@@ -3,11 +3,13 @@
 @rendermode InteractiveServer
 
 @using BedrockSentry.Core.Backups
+@using BedrockSentry.Core.Diagnostics
 @using BedrockSentry.Services.Backups
 @using BedrockSentry.Services.Instances
 
 @inject InstanceRegistry Registry
 @inject BackupHistory History
+@inject WorldRestorer Restorer
 
 <PageTitle>Backups · BedrockSentry</PageTitle>
 
@@ -35,7 +37,7 @@ else
                     <th>Instance</th>
                     <th>Last backup</th>
                     <th>Outcome</th>
-                    <th class="num">Archives</th>
+                    <th class="num">Backups</th>
                     <th class="num">On disk</th>
                 </tr>
             </thead>
@@ -45,7 +47,7 @@ else
                     <tr>
                         <td><a href="@($"instances/{row.InstanceId}/backups")">@row.Name</a></td>
                         <td class="num">
-                            @(row.Last is { } last ? last.StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "never")
+                            @(row.Last is { } last ? ClockText.DateAndTime(last.StartedUtc.ToLocalTime()) : "never")
                         </td>
                         <td>
                             @if (row.Last is not { } record)
@@ -61,8 +63,8 @@ else
                                 <span class="@outcome.Severity.BadgeClass()">@outcome.Label</span>
                             }
                         </td>
-                        <td class="num">@row.ArchiveCount</td>
-                        <td class="num">@Size(row.ArchiveBytes)</td>
+                        <td class="num">@row.BackupCount</td>
+                        <td class="num">@Size(row.BackupBytes)</td>
                     </tr>
                 }
             </tbody>
@@ -81,37 +83,10 @@ else
 
 @code {
     private sealed record Row(
-        string InstanceId, string Name, BackupRecord? Last, int ArchiveCount, long ArchiveBytes);
+        string InstanceId, string Name, BackupRecord? Last, int BackupCount, long BackupBytes);
 
     private IReadOnlyList<Row>? rows;
     private long? freeSpace;
-
-    /// <summary>
-    /// The size of an archive that may already be gone.
-    /// </summary>
-    /// <remarks>
-    /// Retention prunes <c>backup-*.zip</c> out of the same directory this page
-    /// enumerates, so a backup finishing while the page renders can delete a
-    /// file between the enumeration and this read — and <see cref="FileInfo.Length"/>
-    /// throws for a file that has gone, where the date properties merely return
-    /// a sentinel. A pruned archive counts as nothing rather than taking the
-    /// page down with it.
-    /// </remarks>
-    private static long SizeOf(FileInfo file)
-    {
-        try
-        {
-            return file.Length;
-        }
-        catch (FileNotFoundException)
-        {
-            return 0;
-        }
-        catch (DirectoryNotFoundException)
-        {
-            return 0;
-        }
-    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -121,17 +96,18 @@ else
         {
             var records = await History.ReadAsync(supervisor.InstanceId);
 
-            var directory = History.DirectoryFor(supervisor.InstanceId);
-            var archives = Directory.Exists(directory)
-                ? Directory.EnumerateFiles(directory, $"{ZipBackupStrategy.ArchivePrefix}*{ZipBackupStrategy.ArchiveSuffix}").Select(f => new FileInfo(f)).ToList()
-                : [];
+            // T276. The listing the instance tab's Kept on disk card counts, both
+            // formats, rather than a second enumeration of the same directory: this
+            // page counted backup-*.zip alone, so a server backed up by folder
+            // copies read 0 here and a figure on its own tab.
+            var kept = KeptOnDisk.Of(Restorer.ListBackups(supervisor.InstanceId));
 
             built.Add(new Row(
                 supervisor.InstanceId,
                 supervisor.Definition.Name,
-                records.Count == 0 ? null : records[^1],
-                archives.Count,
-                archives.Sum(SizeOf)));
+                records.LastOrDefault(r => !r.IsImported),
+                kept.Count,
+                kept.Bytes));
         }
 
         rows = built;
@@ -153,18 +129,9 @@ else
         }
     }
 
-    // T158. One place decides what a record reads as, because there were two —
-    // this page and the all-instances Backups page each had their own
-    // Skipped / Succeeded / else ladder, and neither can be reached by the test
-    // suite. The words and the severity come from BackupRecord.Outcome(); this
-    // only maps severity to the stylesheet's class.
-    private static string Size(long bytes)
-    {
-        // if-chain rather than relational patterns: Razor reads a leading "<"
-        // inside a code block as markup and refuses to compile the file.
-        if (bytes is 0) { return "—"; }
-        if (bytes / 1024.0 / 1024.0 is var mb && mb >= 1024) { return $"{mb / 1024.0:0.00} GB"; }
-        if (bytes >= 1024 * 1024) { return $"{bytes / 1024.0 / 1024.0:0.0} MB"; }
-        return $"{bytes / 1024.0:0.0} KB";
-    }
+    // Through ByteSize, as the instance tab's Size column is (`T273`). This had
+    // rules of its own — two decimals in GB, one in MB — so one server's backups
+    // read "1.50 GB" here and "1.5 GB" one click away. A dash rather than "0 B"
+    // for a server with nothing archived, which is the one thing this page adds.
+    private static string Size(long bytes) => bytes == 0 ? "—" : ByteSize.Format(bytes);
 }

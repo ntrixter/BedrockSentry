@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using BedrockSentry.Core.Diagnostics;
 using BedrockSentry.Core.Instances;
 using BedrockSentry.Core.Packages;
 using BedrockSentry.Services.Backups;
@@ -100,6 +101,14 @@ public sealed class BdsUpdateInstaller
     /// When to warn players before the server goes down. Null uses the
     /// instance's restart-schedule countdown; empty stops without warning.
     /// </param>
+    /// <exception cref="InstanceClaimedException">
+    /// Another job claims the server, such as a sync; nothing was stopped or installed.
+    /// </exception>
+    /// <remarks>
+    /// Claimed for its length (<see cref="ClaimText.Update"/>), so no other job's
+    /// start or stop lands between the swap and the health check, and a sync cannot
+    /// begin on files being replaced.
+    /// </remarks>
     public async Task<BdsInstallResult> ApplyAsync(
         InstanceSupervisor supervisor,
         ServerPackage package,
@@ -107,6 +116,11 @@ public sealed class BdsUpdateInstaller
         CancellationToken cancellationToken = default)
     {
         var version = package.VersionText ?? package.FileName;
+
+        using var claim = await supervisor
+            .ClaimAsync(ClaimText.Update(version), cancellationToken)
+            .ConfigureAwait(false);
+
         var wasRunning = supervisor.Status.State is InstanceState.Running or InstanceState.Starting;
 
         // One kept build, never a pile (`D37`). The copy from an earlier update has
@@ -171,6 +185,7 @@ public sealed class BdsUpdateInstaller
             // `Forget`, which is for removing an instance and took the whole
             // history with it.
             _versions.RecordInstall(supervisor.InstanceId, version, _time.GetUtcNow());
+            RecordPackage(supervisor, package, reportedNow: null);
 
             return new BdsInstallResult(
                 true, false, version,
@@ -184,7 +199,7 @@ public sealed class BdsUpdateInstaller
         // that is the caller's to choose.
         warnings ??= supervisor.Definition.RestartSchedule.WarningsOrDefault;
 
-        await supervisor
+        await claim
             .RestartAsync(
                 new GracefulStopRequest(
                     StopReason.ServerUpdate,
@@ -208,11 +223,17 @@ public sealed class BdsUpdateInstaller
         // build is not the problem here and must not be blamed for it; the kept
         // copy stays on disk either way, because this build has not proven
         // itself yet.
-        if (supervisor.Status is { State: Core.Instances.InstanceState.Faulted, FaultReason: { } refusal })
+        //
+        // Only a refusal (`D38`): a build that crashed fast enough for the watchdog to
+        // give up before this line is also Faulted, and that one is rolled back below.
+        if (HealthGateText.RefusedBeforeTheGate(supervisor.Status) is { } refusal)
         {
             _log.LogWarning(
                 "{InstanceId} did not start after installing Bedrock {Version}: {Reason}",
                 supervisor.InstanceId, version, refusal);
+
+            // The new files stay, so they are what the next start will announce.
+            RecordPackage(supervisor, package, reportedNow: null);
 
             return new BdsInstallResult(
                 true,
@@ -221,7 +242,13 @@ public sealed class BdsUpdateInstaller
                 $"Bedrock {version} is installed, but the server did not start: {refusal}");
         }
 
-        if (await supervisor.WaitForReadyAsync(_healthTimeout, cancellationToken).ConfigureAwait(false))
+        // `D38`. The wait ends early when the watchdog gives up on the new build:
+        // nothing will start it again, so the rest of the budget would be downtime.
+        var outcome = await supervisor
+            .WaitForReadyOutcomeAsync(_healthTimeout, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (outcome is ReadyWait.Ready)
         {
             // Cleared only on success. A rolled-back update leaves the previous
             // binaries on disk deliberately — somebody diagnosing why a build
@@ -229,23 +256,26 @@ public sealed class BdsUpdateInstaller
             TryRemove(keptAt);
 
             // The server reports its own version on startup and the log records
-            // the change from that, so nothing is written here: this would be
-            // the wrapper's opinion, and the console's is the fact.
+            // the change from that, so the version itself is not written here: this
+            // would be the wrapper's opinion, and the console's is the fact. Which
+            // package it installed IS the wrapper's to say, and is what a Preview
+            // build is identified by (`D53`). Only on success: a rolled-back update
+            // put the previous files back, and the previous record describes them.
+            RecordPackage(supervisor, package, supervisor.Status.ServerVersion);
+
             return new BdsInstallResult(
                 true, false, version, $"Bedrock {version} is installed and the server is running.");
         }
 
+        var why = HealthGateText.WhyRolledBack(version, outcome, _healthTimeout, supervisor.Status);
+
         _log.LogError(
-            "{InstanceId} did not report itself started within {Budget} on Bedrock {Version}; rolling back",
-            supervisor.InstanceId, _healthTimeout, version);
+            "{InstanceId} on Bedrock {Version}: {Why}; rolling back", supervisor.InstanceId, version, why);
 
         supervisor.Console.Append(
-            ConsoleOrigin.Notice,
-            $"Bedrock {version} did not start within {_healthTimeout.TotalMinutes:0} minutes; "
-            + "putting the previous build back",
-            _time.GetUtcNow());
+            ConsoleOrigin.Notice, $"{why}; putting the previous build back", _time.GetUtcNow());
 
-        await supervisor
+        await claim
             .StopAsync(
                 GracefulStopRequest.Immediate(StopReason.ServerUpdate, TimeSpan.FromSeconds(30)),
                 cancellationToken)
@@ -256,7 +286,7 @@ public sealed class BdsUpdateInstaller
             _packages.RollBack(supervisor.WorkingDirectory, swap);
         }
 
-        await supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
+        await claim.StartAsync(cancellationToken).ConfigureAwait(false);
 
         var recovered = await supervisor
             .WaitForReadyAsync(_healthTimeout, cancellationToken)
@@ -272,6 +302,28 @@ public sealed class BdsUpdateInstaller
                 : $"Bedrock {version} did not start and the previous build has been restored, but "
                   + "the server has not reported itself started either. Check the console.");
     }
+
+    private void RecordPackage(InstanceSupervisor supervisor, ServerPackage package, string? reportedNow)
+    {
+        // A package whose name carries no version is installable but identifies
+        // nothing, so it leaves the record as it was.
+        if (package.Version is { } installed)
+        {
+            _versions.RecordPackage(supervisor.InstanceId, installed, reportedNow, _time.GetUtcNow());
+        }
+
+        EventRaising.RaiseIndependently(
+            Installed, supervisor.InstanceId,
+            ex => _log.LogWarning(ex, "A listener threw while being told {Instance} has a new build", supervisor.InstanceId));
+    }
+
+    /// <summary>Raised with the instance's id after a package has been installed into it.</summary>
+    /// <remarks>
+    /// Console completion listens, to read the new version's commands and fetch Mojang's
+    /// data for it (<c>D105</c>). A singleton for the life of the service: whatever
+    /// subscribes must unsubscribe.
+    /// </remarks>
+    public event Action<string>? Installed;
 
     private const string KeptPrefix = ".previous-";
     private const string KeptStamp = "yyyyMMdd-HHmmss";

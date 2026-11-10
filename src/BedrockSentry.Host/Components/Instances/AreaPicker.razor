@@ -1,0 +1,114 @@
+@* D108, D111. Which area a restore or a one-area sync takes: one of the Sync Areas
+   given, carried with its corners, or two corners and a dimension. One picker for
+   the Backups tab's area restore and the Sync tab's Sync one area, so the two ask
+   the same question the same way. What the choice plans to is AreaRestorePlan's,
+   in Core. *@
+
+@using BedrockSentry.Core.Structures
+@using BedrockSentry.Core.Sync
+
+<div class="field-row" role="radiogroup" aria-label="Which area">
+    <label>
+        <input type="radio" name="@Group" checked="@byName"
+               disabled="@(Disabled || Names.Count == 0)"
+               @onchange="() => ChangeAsync(() => byName = true)" />
+        <span>A Sync Area</span>
+    </label>
+    <label>
+        <input type="radio" name="@Group" checked="@(!byName)" disabled="@Disabled"
+               @onchange="() => ChangeAsync(() => byName = false)" />
+        <span>Two corners</span>
+    </label>
+</div>
+
+@if (byName)
+{
+    <label class="field">
+        <span>Sync Area</span>
+        <select class="form-select" value="@name" disabled="@Disabled"
+                @onchange="e => ChangeAsync(() => name = e.Value?.ToString() ?? string.Empty)">
+            @foreach (var each in Names)
+            {
+                <option value="@each">@each</option>
+            }
+        </select>
+    </label>
+}
+else
+{
+    <div class="area-corners">
+        <label class="field"><span>From x</span><input class="form-control" type="number" value="@corners[0]" disabled="@Disabled" @onchange="e => SetCornerAsync(0, e)" /></label>
+        <label class="field"><span>y</span><input class="form-control" type="number" value="@corners[1]" disabled="@Disabled" @onchange="e => SetCornerAsync(1, e)" /></label>
+        <label class="field"><span>z</span><input class="form-control" type="number" value="@corners[2]" disabled="@Disabled" @onchange="e => SetCornerAsync(2, e)" /></label>
+        <label class="field"><span>To x</span><input class="form-control" type="number" value="@corners[3]" disabled="@Disabled" @onchange="e => SetCornerAsync(3, e)" /></label>
+        <label class="field"><span>y</span><input class="form-control" type="number" value="@corners[4]" disabled="@Disabled" @onchange="e => SetCornerAsync(4, e)" /></label>
+        <label class="field"><span>z</span><input class="form-control" type="number" value="@corners[5]" disabled="@Disabled" @onchange="e => SetCornerAsync(5, e)" /></label>
+        <label class="field">
+            <span>Dimension</span>
+            <select class="form-select" value="@dimension" disabled="@Disabled"
+                    @onchange="e => ChangeAsync(() => dimension = e.Value?.ToString() ?? BedrockDimension.Overworld.Id)">
+                @foreach (var each in BedrockDimension.All)
+                {
+                    <option value="@each.Id">@each.Title</option>
+                }
+            </select>
+        </label>
+    </div>
+}
+
+@code {
+    /// <summary>The Sync Areas offered by name.</summary>
+    [Parameter, EditorRequired]
+    public IReadOnlyList<KeptAreaSettings> Areas { get; set; } = [];
+
+    /// <summary>The radio group's name, unique on the page.</summary>
+    [Parameter, EditorRequired]
+    public string Group { get; set; } = "area-kind";
+
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    /// <summary>Told the area chosen when the picker opens and whenever it changes.</summary>
+    [Parameter]
+    public EventCallback<AreaRestoreTarget> TargetChanged { get; set; }
+
+    private bool byName = true;
+    private string name = string.Empty;
+    private readonly int[] corners = new int[6];
+    private string dimension = BedrockDimension.Overworld.Id;
+
+    private IReadOnlyList<string> Names =>
+        [.. Areas.Select(a => (a.Name ?? string.Empty).Trim()).Where(n => n.Length > 0)];
+
+    /// <summary>
+    /// The area chosen. A Sync Area is carried with its corners (<c>AreaRestoreTarget.Of</c>),
+    /// since the server it goes onto may have none of that name.
+    /// </summary>
+    public AreaRestoreTarget Target => byName
+        ? Areas.FirstOrDefault(a => string.Equals((a.Name ?? string.Empty).Trim(), name, StringComparison.OrdinalIgnoreCase)) is { } area
+            ? AreaRestoreTarget.Of(area)
+            : AreaRestoreTarget.Named(name)
+        : AreaRestoreTarget.Corners(
+            new BlockVector(corners[0], corners[1], corners[2]),
+            new BlockVector(corners[3], corners[4], corners[5]),
+            BedrockDimension.Find(dimension) ?? BedrockDimension.Overworld);
+
+    protected override Task OnInitializedAsync()
+    {
+        byName = Names.Count > 0;
+        name = Names.FirstOrDefault() ?? string.Empty;
+        return TargetChanged.InvokeAsync(Target);
+    }
+
+    private Task ChangeAsync(Action change)
+    {
+        change();
+        return TargetChanged.InvokeAsync(Target);
+    }
+
+    private Task SetCornerAsync(int index, ChangeEventArgs e) =>
+        int.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var value)
+            ? ChangeAsync(() => corners[index] = value)
+            : Task.CompletedTask;
+}

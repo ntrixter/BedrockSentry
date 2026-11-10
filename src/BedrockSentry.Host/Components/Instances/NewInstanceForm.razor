@@ -1,12 +1,22 @@
 @* Creating a server: name it, pick a version, take the suggested port. *@
 
+@using BedrockSentry.Core.Diagnostics
 @using BedrockSentry.Core.Instances
 @using BedrockSentry.Core.Packages
+@using BedrockSentry.Services.Addons
+@using BedrockSentry.Services.Backups
+@using BedrockSentry.Services.Diagnostics
 @using BedrockSentry.Services.Instances
 @using BedrockSentry.Services.Packages
 
+@implements IDisposable
+
 @inject InstanceRegistry Registry
 @inject ServerPackageStore Packages
+@inject BdsUpdateService Bds
+@inject WorldFileImport Import
+@inject PortInspector Ports
+@inject PublicAddressService PublicAddress
 
 <div class="provision-panel" style="max-width:36rem">
     <h3>New instance</h3>
@@ -14,13 +24,17 @@
     <label class="field">
         <span>Name</span>
         <input class="form-control" @bind="name" @bind:event="oninput"
-               placeholder="Creative" disabled="@busy" />
+               placeholder="Creative" disabled="@(busy || NoPackage)" />
     </label>
 
     <label class="field">
         <span>Server version</span>
-        <select class="form-select" @bind="package" disabled="@busy">
-            @if (available.Count == 0)
+        <select class="form-select" @bind="package" disabled="@(busy || fetching)">
+            @if (fetching)
+            {
+                <option value="">Downloading from Mojang…</option>
+            }
+            else if (available.Count == 0)
             {
                 <option value="">No packages in @Packages.Directory</option>
             }
@@ -28,20 +42,173 @@
             {
                 @foreach (var candidate in available)
                 {
-                    <option value="@candidate.FileName">@candidate.Display</option>
+                    <option value="@candidate.FileName">@candidate.Label</option>
                 }
             }
         </select>
+        @if (fetched is { } downloaded)
+        {
+            <span class="check-detail">@downloaded</span>
+        }
     </label>
+
+    @if (fetching)
+    {
+        <p class="check-detail">
+            There is no Bedrock server to install from yet, so the current Release build is
+            being downloaded from Mojang. This form fills in when it arrives.
+        </p>
+    }
+    else if (askEula)
+    {
+        <div class="empty-state">
+            <p>
+                There is no Bedrock server to install from yet. The wrapper can download the
+                current Release build from Mojang, or you can put a Bedrock server zip in
+                <code>@Packages.Directory</code> and open this form again.
+            </p>
+            <EulaPrompt OnAccept="AcceptEulaAsync" Busy="fetching" />
+        </div>
+    }
+    else if (NoPackage)
+    {
+        @* T205. This form installs a server from a package, so with no package
+           there is nothing for it to make. It used to create the instance
+           anyway: an empty folder, no server.properties, so every answer on this
+           form went nowhere — and with Start automatically ticked by default, the
+           service then tried to launch it on every start. The rest of the form is
+           inert rather than merely unsaved, because a control that cannot affect
+           anything should not be offered. *@
+        <p class="empty-state">
+            @if (fetchFailure is { } why)
+            {
+                @why<text> </text>
+            }
+            There is no Bedrock server to install from, so nothing can be created
+            here yet. Put a Bedrock server zip in <code>@Packages.Directory</code> —
+            the one you downloaded from Mojang, unchanged — then open this form
+            again. Every other field here is disabled until there is one.
+        </p>
+    }
 
     <label class="field">
         <span>Port</span>
-        <input class="form-control" type="number" @bind="port" disabled="@busy" />
+        @* ON1. Checked when the field loses focus, which is when @bind writes it. *@
+        <input class="form-control" type="number" @bind="port" @bind:after="PortTyped"
+               disabled="@(busy || NoPackage)" />
+        @if (!portTyped)
+        {
+            <span class="check-detail">
+                The first port no other server and nothing else on this machine is using.
+            </span>
+        }
+        @foreach (var warning in portWarnings)
+        {
+            <span class="prop-check warn">@warning</span>
+        }
     </label>
+
+    @* D75. Beside the port rather than under World, because it decides what the
+       port above it means: on NetherNet that number is bound as a TCP listener
+       carrying only the handshake, and play needs its UDP side as well (D71).
+       A port is a number and a listener is bound on one; saying the number IS a
+       listener and then naming that same number's UDP side is one phrase with
+       two referents, which is T247. *@
+    @if (!FileSettings)
+    {
+        <label class="field">
+            <span>Network protocol</span>
+            <select class="form-select" @bind="transport" @bind:after="SuggestPorts"
+                    disabled="@(busy || NoPackage)">
+                <option value="@nameof(ServerTransport.NetherNet)">NetherNet</option>
+                <option value="@nameof(ServerTransport.RakNet)">RakNet</option>
+            </select>
+            <span class="check-detail">
+                NetherNet is what Bedrock 1.26.60 and later run. They print a transport
+                error for RakNet and take players only over NetherNet, so pick RakNet
+                only for an older build. The answer is written into
+                <code>server.properties</code> either way instead of being left to
+                whichever package you picked.
+            </span>
+        </label>
+    }
+
+    @if (transport == ServerTransport.NetherNet && !FileSettings)
+    {
+        @* The cost is stated at the moment of choosing rather than left in a
+           document, because none of it follows from the name and all of it is
+           work out on the network instead of in this panel. *@
+        <div class="console-hint">
+            <strong>
+                NetherNet asks more of your network than RakNet does, and the
+                wrapper does not set any of it up for you.
+            </strong>
+            <ul class="cost-list">
+                <li>
+                    The port above is bound as a <strong>TCP</strong> listener.
+                    That listener carries the connection setup, and no play goes
+                    over it.
+                </li>
+                <li>
+                    Play moves to <strong>one UDP port per player online</strong>,
+                    so whatever you forward has to be at least as wide as
+                    <code>max-players</code>. <strong>Where those ports are is up
+                    to you.</strong> Leave <code>server-udp-ports</code> unset and
+                    they land on the port above's own <strong>UDP side</strong> —
+                    the same number, the other protocol, so that number needs both
+                    open. Set a range and they move into it, and the port above
+                    needs <strong>TCP only</strong>.
+                </li>
+                <li>
+                    Anyone joining from outside your own network needs your
+                    <strong>public address written into
+                    <code>server.properties</code></strong>, alongside that range,
+                    on <code>server-udp-ports</code>.
+                </li>
+                <li>
+                    Run <code>serveridentity save</code> once on this server's
+                    console, or every restart asks each player to trust the server
+                    again.
+                </li>
+            </ul>
+            The panel knows about all of this: port availability, the Readiness
+            checks and the firewall rows all read this server's own transport and
+            its <code>server-udp-ports</code>, so the rows follow whichever of the
+            two arrangements above you choose — press <strong>Apply fix</strong> on
+            each one that reads blocked. Its Status
+            tab works the <code>server-udp-ports</code> line out for you and tells
+            you when the address in it stops matching this machine's. The line
+            below is written when the server is created; the wrapper never rewrites
+            it afterwards, because the published half is a fact about your router
+            that nothing here can check.
+        </div>
+
+        <label class="field" style="margin-top:0.75rem">
+            <span>Play ports (<code>@ServerUdpPorts.Key</code>)</span>
+            @* T424. Typed from the first keystroke, so a suggestion arriving while the box
+               is being cleared (the public address lands seconds after the form opens)
+               does not write the window back. *@
+            <input class="form-control" @bind="udpPorts" @bind:after="UdpPortsTyped"
+                   @oninput="() => udpPortsTyped = true"
+                   disabled="@(busy || NoPackage)" />
+            <span class="check-detail">
+                One UDP port per player for <code>max-players=@NewServerPorts.PackageMaxPlayers</code>,
+                the package's default; widen it if you raise that.
+                @if (publicAddress is null)
+                {
+                    <text>
+                        This machine's public address is not known, so the line publishes
+                        none; add it in front for players outside your network.
+                    </text>
+                }
+                Leave it blank to write no line, and play lands on the port above's UDP side.
+            </span>
+        </label>
+    }
 
     <label class="field">
         <span>Folder</span>
-        <input class="form-control" @bind="folder" disabled="@busy"
+        <input class="form-control" @bind="folder" disabled="@(busy || NoPackage)"
                placeholder="@DefaultFolder" />
         <span class="check-detail">
             Leave blank for the default shown. A full path puts this server on
@@ -51,7 +218,7 @@
     </label>
 
     <div class="field-row">
-        <input type="checkbox" @bind="autoStart" disabled="@busy" />
+        <input type="checkbox" @bind="autoStart" disabled="@(busy || NoPackage)" />
         <span>Start automatically with the service</span>
     </div>
 
@@ -62,67 +229,164 @@
        before they click Create — and because the seed decides the terrain and
        does nothing at all after the first launch. *@
 
-    <label class="field">
-        <span>Seed</span>
-        <input class="form-control" @bind="seed" disabled="@busy"
-               placeholder="Leave blank for a random world" />
-        <span class="check-detail">
-            Only read when the world is first generated. Changing it later does
-            nothing to a world that already exists.
-        </span>
-    </label>
-
-    <label class="field">
-        <span>Game mode</span>
-        <select class="form-select" @bind="gamemode" disabled="@busy">
-            <option value="survival">Survival</option>
-            <option value="creative">Creative</option>
-            <option value="adventure">Adventure</option>
-        </select>
-    </label>
-
-    <label class="field">
-        <span>Difficulty</span>
-        <select class="form-select" @bind="difficulty" disabled="@busy">
-            <option value="peaceful">Peaceful</option>
-            <option value="easy">Easy</option>
-            <option value="normal">Normal</option>
-            <option value="hard">Hard</option>
-        </select>
-    </label>
-
-    <div class="field-row">
-        <input type="checkbox" @bind="allowCheats" disabled="@busy" />
-        <span>
-            Allow cheats
-            <span class="check-detail">
-                Turns on the operator command set for anyone the permissions file
-                promotes.
-            </span>
-        </span>
+    @* T334. A world file instead of a generated world: a .mcworld exported from
+       Minecraft, or a ZIP backup from this panel. It is uploaded when it is chosen,
+       so what it holds is shown before anything is created. *@
+    <div class="view-switch world-source" role="group" aria-label="Where the world comes from">
+        <button type="button" class="@(fromFile ? null : "active")" aria-pressed="@(!fromFile)"
+                disabled="@(busy || NoPackage || uploading)" @onclick="() => ChooseWorldFile(false)">
+            New world
+        </button>
+        <button type="button" class="@(fromFile ? "active" : null)" aria-pressed="@fromFile"
+                disabled="@(busy || NoPackage || uploading)" @onclick="() => ChooseWorldFile(true)">
+            World file
+        </button>
     </div>
 
-    <div class="field-row">
-        <input type="checkbox" @bind="allowList" disabled="@busy" />
-        <span>
-            Enforce the allowlist
-            <span class="check-detail">
-                Off means anyone who can reach the port can join. The list itself is
-                edited on the instance's Players tab.
-            </span>
-        </span>
-    </div>
+    @if (fromFile)
+    {
+        <div class="provision-controls">
+            @* Keyed so a stopped or refused file can be chosen again: a picker still
+               holding its name fires no change for the same file. *@
+            <InputFile @key="pickerKey" OnChange="UploadAsync" accept=".mcworld,.zip" aria-label="World file"
+                       disabled="@(busy || NoPackage || uploading)" />
+        </div>
+        <p class="check-detail">
+            A <code>.mcworld</code> exported from Minecraft, or a ZIP backup from this panel,
+            up to @ByteSize.Format(WorldFileImport.MaxUploadBytes). It is uploaded when you
+            choose it; nothing is created until you press Create instance.
+        </p>
 
-    <div class="field-row">
-        <input type="checkbox" @bind="emitTelemetry" disabled="@busy" />
-        <span>
-            Send telemetry to Mojang
+        @if (uploading)
+        {
+            <div class="world-upload" role="status">
+                <progress max="100" value="@UploadPercent"></progress>
+                <span>
+                    Uploading @uploadName: @ByteSize.Format(uploaded) of @ByteSize.Format(uploadSize)
+                </span>
+                <button type="button" class="btn btn-sm btn-secondary" @onclick="StopUpload">Stop</button>
+            </div>
+        }
+        else if (uploadError is { } failed)
+        {
+            <p class="console-fault">@failed</p>
+        }
+        else if (worldFile is { } file)
+        {
+            <p class="@(file.CanUse ? "check-detail" : "console-fault")">@file.Describe()</p>
+
+            @if (file.CanUse && file.ConfigFiles.Count > 0)
+            {
+                <div class="field-row">
+                    <input type="checkbox" @bind="useConfig" disabled="@busy" />
+                    <span>
+                        Also use its configuration
+                        <span class="check-detail">
+                            Its settings, allowlist and permissions, as the server it came from
+                            had them. This server keeps its own name and port. Off, this server
+                            keeps the settings on this form, and the world is loaded either way.
+                        </span>
+                    </span>
+                </div>
+            }
+        }
+    }
+    else
+    {
+        <label class="field">
+            <span>Seed</span>
+            <input class="form-control" @bind="seed" disabled="@(busy || NoPackage)"
+                   placeholder="Leave blank for a random world" />
             <span class="check-detail">
-                Bedrock ships no line for this and prints a notice on every startup
-                until one exists, so the wrapper writes your answer either way.
+                Only read when the world is first generated. Changing it later does
+                nothing to a world that already exists.
             </span>
-        </span>
-    </div>
+        </label>
+    }
+
+    @if (FileSettings)
+    {
+        @* Not shown disabled: a disabled field would still show this form's value, and the
+           server gets the file's. *@
+        <p class="check-detail world-file-settings">
+            Its network protocol, game mode, difficulty, cheats, allowlist and telemetry come
+            from the world file's <code>server.properties</code>. Each can be changed on the
+            server's Server properties tab once it exists.
+        </p>
+    }
+    else
+    {
+        <label class="field">
+            <span>Game mode</span>
+            <select class="form-select" @bind="gamemode" disabled="@(busy || NoPackage)">
+                <option value="survival">Survival</option>
+                <option value="creative">Creative</option>
+                <option value="adventure">Adventure</option>
+            </select>
+        </label>
+
+        <label class="field">
+            <span>Difficulty</span>
+            <select class="form-select" @bind="difficulty" disabled="@(busy || NoPackage)">
+                <option value="peaceful">Peaceful</option>
+                <option value="easy">Easy</option>
+                <option value="normal">Normal</option>
+                <option value="hard">Hard</option>
+            </select>
+        </label>
+
+        <div class="field-row">
+            <input type="checkbox" @bind="allowCheats" disabled="@(busy || NoPackage)" />
+            <span>
+                Allow cheats
+                <span class="check-detail">
+                    Turns on the operator command set for anyone the permissions file
+                    promotes. @ServerProperties.CheatsLockAchievements
+                </span>
+            </span>
+        </div>
+
+        <div class="field-row">
+            <input type="checkbox" @bind="allowList" disabled="@(busy || NoPackage)" />
+            <span>
+                Enforce the allowlist
+                <span class="check-detail">
+                    Off means anyone who can reach the port can join. The list itself is
+                    edited on the instance's Players tab.
+                </span>
+            </span>
+        </div>
+    }
+
+    @if (!NoPackage)
+    {
+        @* D93: on by default for a new server, and only when a package is being
+           installed, since the pack goes into the world before its first start. *@
+        <div class="field-row">
+            <input type="checkbox" @bind="companion" disabled="@busy" />
+            <span>
+                Switch on the companion pack
+                <span class="check-detail">
+                    It counts deaths and keeps where each player last was.
+                    @ScriptOutput.CompanionSwitchOnNote
+                </span>
+            </span>
+        </div>
+    }
+
+    @if (!FileSettings)
+    {
+        <div class="field-row">
+            <input type="checkbox" @bind="emitTelemetry" disabled="@(busy || NoPackage)" />
+            <span>
+                Send telemetry to Mojang
+                <span class="check-detail">
+                    Bedrock ships no line for this and prints a notice on every startup
+                    until one exists, so the wrapper writes your answer either way.
+                </span>
+            </span>
+        </div>
+    }
 
     @if (Registry.All.Count > 1 || (Registry.All.Count == 1 && port != 19132))
     {
@@ -145,7 +409,7 @@
 
     <div class="provision-controls">
         <button class="btn btn-primary" @onclick="CreateAsync"
-                disabled="@(busy || string.IsNullOrWhiteSpace(name))">
+                disabled="@(busy || NoPackage || string.IsNullOrWhiteSpace(name) || WaitingOnAWorldFile)">
             @(busy ? "Creating…" : "Create instance")
         </button>
         <button class="btn btn-secondary" @onclick="OnCancelled" disabled="@busy">Cancel</button>
@@ -164,9 +428,15 @@
     private string folder = string.Empty;
     private string? package;
     private int port;
+    private ServerTransport transport = ServerTransports.Default;
     private bool autoStart = true;
     private bool busy;
     private string? error;
+
+    private bool fetching;
+    private bool askEula;
+    private string? fetched;
+    private string? fetchFailure;
 
     private string seed = string.Empty;
     private string gamemode = "survival";
@@ -179,11 +449,149 @@
     /// wrapper's to assume.
     private bool emitTelemetry = true;
 
-    protected override void OnInitialized()
+    // ON1. The port and play window are suggested until somebody types in them.
+    private bool portTyped;
+    private string udpPorts = string.Empty;
+    private bool udpPortsTyped;
+    private IReadOnlyList<string> portWarnings = [];
+    private string? publicAddress;
+
+    /// Ticked by default for a new server (D93).
+    private bool companion = true;
+
+    // T334. The world file: chosen, uploaded, read.
+    private bool fromFile;
+    private bool uploading;
+    private string? uploadName;
+    private long uploadSize;
+    private long uploaded;
+    private string? uploadPath;
+    private string? uploadError;
+    private CancellationTokenSource? uploadStop;
+    private WorldFile? worldFile;
+    private bool useConfig;
+    private int pickerKey;
+
+    protected override async Task OnInitializedAsync()
     {
         available = Packages.List();
         package = available.FirstOrDefault()?.FileName;
-        port = Registry.SuggestPort();
+        SuggestPorts();
+        ReadPublicAddress();
+
+        if (available.Count > 0)
+        {
+            return;
+        }
+
+        // T330. An empty store gets a first build: with nothing to install from, no
+        // first server could be made. Until the EULA is accepted the answer is a question
+        // rather than a download (D102).
+        await FetchFirstBuildAsync(Bds.EnsureFirstBuildAsync());
+    }
+
+    /// <summary>
+    /// The first free port for this transport, and under NetherNet the window that goes
+    /// with it, for whichever of the two nobody has typed in; then what is in their way.
+    /// </summary>
+    private void SuggestPorts()
+    {
+        var claims = Ports.Claims();
+
+        if (!portTyped)
+        {
+            port = NewServerPorts.Next(claims, transport, pinWindow: transport == ServerTransport.NetherNet)
+                ?? ServerPorts.DefaultPort;
+        }
+
+        SuggestWindow();
+        CheckPorts(claims);
+    }
+
+    private void SuggestWindow()
+    {
+        if (!udpPortsTyped)
+        {
+            udpPorts = NewServerPorts.SuggestWindow(port, publicAddress) ?? string.Empty;
+        }
+    }
+
+    private void PortTyped()
+    {
+        portTyped = true;
+        SuggestWindow();
+        CheckPorts(Ports.Claims());
+    }
+
+    private void UdpPortsTyped()
+    {
+        udpPortsTyped = true;
+        CheckPorts(Ports.Claims());
+    }
+
+    /// <summary>What the ports this server would bind run into. An unreadable window is said by the create.</summary>
+    private void CheckPorts(IReadOnlyList<PortClaim> claims) =>
+        portWarnings = NewServerPorts.Warnings(claims, transport, port, Window);
+
+    /// <summary>The window as it will be written: only under NetherNet, and only when the form shows it.</summary>
+    private ServerUdpPorts? Window =>
+        transport == ServerTransport.NetherNet && !FileSettings ? ServerUdpPorts.Parse(udpPorts) : null;
+
+    /// <remarks>
+    /// Not awaited, for the Status tab's reason: the lookup waits on a third party,
+    /// and the form is usable without it. The window gains the address when it lands.
+    /// </remarks>
+    private void ReadPublicAddress() =>
+        _ = InvokeAsync(async () =>
+        {
+            var (address, _) = await PublicAddress.GetAsync();
+
+            if (address == publicAddress)
+            {
+                return;
+            }
+
+            publicAddress = address;
+            SuggestWindow();
+            StateHasChanged();
+        }).ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+
+    private Task AcceptEulaAsync() => FetchFirstBuildAsync(Bds.AcceptEulaAndFetchFirstBuildAsync());
+
+    /// <summary>
+    /// Shows a first build's fetch: the download while it runs, then the build or why
+    /// there is none.
+    /// </summary>
+    /// <remarks>
+    /// The downloading state is shown only for a fetch still running on return, so an
+    /// answer the service gives at once (a question, checking turned off) never flashes
+    /// it.
+    /// </remarks>
+    private async Task FetchFirstBuildAsync(Task<FirstBuildResult> pending)
+    {
+        askEula = false;
+        fetchFailure = null;
+        fetching = !pending.IsCompleted;
+
+        var first = await pending;
+        fetching = false;
+
+        available = Packages.List();
+        package = available.FirstOrDefault()?.FileName;
+        askEula = first.NeedsEula;
+
+        if (first.Failed)
+        {
+            fetchFailure = first.Sentence;
+        }
+        else
+        {
+            fetched = first.Sentence;
+        }
     }
 
     /// <summary>
@@ -197,9 +605,114 @@
                 string.IsNullOrWhiteSpace(name) ? "your-server" : name,
                 "your-server"));
 
+    /// <summary>
+    /// Whether this form can produce a server at all.
+    /// </summary>
+    /// <remarks>
+    /// Read from the bound value rather than from the list behind it, so it asks
+    /// exactly the question the consequence asks: a null package is what makes
+    /// <c>freshInstall</c> false in <c>InstanceRegistry</c>, which is what leaves
+    /// the folder empty and every answer on this form unwritten (`T205`).
+    /// </remarks>
+    private bool NoPackage => string.IsNullOrEmpty(package);
+
+    /// <summary>Whether the world file's own server.properties supplies this server's settings.</summary>
+    private bool FileSettings =>
+        fromFile && useConfig && worldFile is { CanUse: true } file
+        && file.ConfigFiles.Contains(ServerProperties.FileName);
+
+    /// <summary>A world file was asked for and there is none ready to use.</summary>
+    private bool WaitingOnAWorldFile => fromFile && (uploading || worldFile is not { CanUse: true });
+
+    private int UploadPercent => uploadSize > 0 ? (int)(uploaded * 100 / uploadSize) : 0;
+
+    private void ChooseWorldFile(bool file)
+    {
+        fromFile = file;
+    }
+
+    private async Task UploadAsync(InputFileChangeEventArgs args)
+    {
+        DiscardUpload();
+
+        var file = args.File;
+
+        if (file.Size > WorldFileImport.MaxUploadBytes)
+        {
+            uploadError = $"{file.Name} is larger than {ByteSize.Format(WorldFileImport.MaxUploadBytes)}, "
+                + "the most a world file may be.";
+            return;
+        }
+
+        uploading = true;
+        uploadName = file.Name;
+        uploadSize = file.Size;
+        uploaded = 0;
+        uploadStop = new CancellationTokenSource();
+
+        // Posted back to this component's context. A render per percent rather than per
+        // megabyte, which on a large world is thousands of renders over the circuit.
+        var progress = new Progress<long>(bytes =>
+        {
+            var before = UploadPercent;
+            uploaded = bytes;
+
+            if (UploadPercent != before)
+            {
+                StateHasChanged();
+            }
+        });
+
+        try
+        {
+            await using var stream = file.OpenReadStream(WorldFileImport.MaxUploadBytes, uploadStop.Token);
+            uploadPath = await Import.SaveUploadAsync(stream, progress, uploadStop.Token);
+            worldFile = Import.Read(uploadPath, file.Name);
+
+            if (!worldFile.CanUse)
+            {
+                // Nothing can be made from it, so it is not kept; the refusal stays on the form.
+                Import.Discard(uploadPath);
+                uploadPath = null;
+                pickerKey++;
+            }
+            else if (string.IsNullOrWhiteSpace(name) && worldFile.WorldName is { } called)
+            {
+                name = called;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            uploadError = $"The upload of {file.Name} was stopped.";
+            pickerKey++;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            uploadError = $"{file.Name} could not be uploaded: {ex.Message}";
+            pickerKey++;
+        }
+        finally
+        {
+            uploading = false;
+            uploadStop.Dispose();
+            uploadStop = null;
+        }
+    }
+
+    private void StopUpload() => uploadStop?.Cancel();
+
+    private void DiscardUpload()
+    {
+        Import.Discard(uploadPath);
+        uploadPath = null;
+        worldFile = null;
+        uploadError = null;
+        useConfig = false;
+    }
+
     private async Task CreateAsync()
     {
-        if (busy || string.IsNullOrWhiteSpace(name))
+        if (busy || NoPackage || string.IsNullOrWhiteSpace(name) || WaitingOnAWorldFile)
         {
             return;
         }
@@ -209,7 +722,7 @@
 
         try
         {
-            var created = await Registry.CreateAsync(new NewInstanceRequest(
+            var request = new NewInstanceRequest(
                 name,
                 string.IsNullOrEmpty(package) ? null : package,
                 port,
@@ -218,13 +731,31 @@
                 StartNow: autoStart,
                 World: new NewWorldSettings
                 {
-                    Seed = seed,
+                    // A world file brings its own terrain, and the seed is read only when
+                    // one is generated.
+                    Seed = fromFile ? string.Empty : seed,
                     Gamemode = gamemode,
                     Difficulty = difficulty,
                     AllowCheats = allowCheats,
                     AllowList = allowList,
                     EmitTelemetry = emitTelemetry,
-                }));
+                },
+                Transport: transport,
+                CompanionPack: companion,
+                UdpPorts: Window is not null ? udpPorts : null);
+
+            if (fromFile && uploadPath is { } upload && worldFile is { } file)
+            {
+                var result = await Import.CreateAsync(new WorldImportRequest(
+                    request, upload, file.FileName, UseConfig: useConfig && file.ConfigFiles.Count > 0));
+
+                // Used by the server that now exists, and gone from disk with it.
+                uploadPath = null;
+                await OnCreated.InvokeAsync(Registry.Get(result.InstanceId));
+                return;
+            }
+
+            var created = await Registry.CreateAsync(request);
 
             await OnCreated.InvokeAsync(created);
         }
@@ -235,6 +766,20 @@
         finally
         {
             busy = false;
+        }
+    }
+
+    /// <remarks>
+    /// An upload nobody used goes with the form. Not while a server is being made from it:
+    /// the import reads it until the server exists, and deletes it then.
+    /// </remarks>
+    public void Dispose()
+    {
+        uploadStop?.Cancel();
+
+        if (!busy)
+        {
+            Import.Discard(uploadPath);
         }
     }
 }

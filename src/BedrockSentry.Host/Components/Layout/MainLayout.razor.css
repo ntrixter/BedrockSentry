@@ -6,6 +6,11 @@
 
 main {
     flex: 1;
+    /* A flex item is at least as wide as its content's minimum unless told otherwise,
+       so a fixed-width table widened this column past the window and the whole page
+       scrolled sideways beside the sidebar (T325). At zero the column keeps to the
+       window, and a wide table scrolls inside its own .table-wrap. */
+    min-width: 0;
 }
 
 .sidebar {

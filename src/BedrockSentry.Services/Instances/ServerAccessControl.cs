@@ -95,17 +95,21 @@ public sealed class ServerAccessControl
             await supervisor.SendCommandAsync(Quote("allowlist add", name), cancellationToken)
                 .ConfigureAwait(false);
 
-            var confirmed = await ConfirmAsync(
+            var confirmation = await ConfirmAsync(
                     () => AllowlistFile.Load(path).Contains(name), cancellationToken)
                 .ConfigureAwait(false);
 
             return new AccessChange(
                 true,
-                confirmed,
-                confirmed
+                confirmation.Confirmed,
+                confirmation.Confirmed
                     ? $"{name} added to the allowlist."
-                    : $"'allowlist add' was sent, but {name} has not appeared in "
-                      + $"{AllowlistFile.FileName} — check the console for what the server said.");
+                    : Unconfirmed(
+                        confirmation,
+                        "allowlist add",
+                        AllowlistFile.FileName,
+                        $"'allowlist add' was sent, but {name} has not appeared in "
+                        + $"{AllowlistFile.FileName} — check the console for what the server said."));
         }
 
         var file = AllowlistFile.Load(path);
@@ -135,19 +139,26 @@ public sealed class ServerAccessControl
             await supervisor.SendCommandAsync(Quote("allowlist remove", name), cancellationToken)
                 .ConfigureAwait(false);
 
-            var confirmed = await ConfirmAsync(
+            var confirmation = await ConfirmAsync(
                     () => !AllowlistFile.Load(path).Contains(name), cancellationToken)
                 .ConfigureAwait(false);
 
             return new AccessChange(
                 true,
-                confirmed,
-                confirmed
+                confirmation.Confirmed,
+                confirmation.Confirmed
                     ? RemovalDetail(name, clearing)
-                    // Unconfirmed means the entry is still there, so nothing was
-                    // cleared yet and saying otherwise would be a second lie.
-                    : $"'allowlist remove' was sent, but {name} is still in "
-                      + $"{AllowlistFile.FileName} — check the console for what the server said.");
+                    : Unconfirmed(
+                        confirmation,
+                        "allowlist remove",
+                        AllowlistFile.FileName,
+                        // Read for the whole budget and the entry never went, so
+                        // it is still there and nothing was cleared - saying
+                        // otherwise would be a second wrong sentence. This arm
+                        // used to be the ONLY arm, which is how `T203` reported a
+                        // removal that had succeeded as one that had failed.
+                        $"'allowlist remove' was sent, but {name} is still in "
+                        + $"{AllowlistFile.FileName} — check the console for what the server said."));
         }
 
         var file = AllowlistFile.Load(path);
@@ -185,17 +196,21 @@ public sealed class ServerAccessControl
             await supervisor.SendCommandAsync(Quote(verb, gamertag), cancellationToken)
                 .ConfigureAwait(false);
 
-            var confirmed = await ConfirmAsync(
+            var confirmation = await ConfirmAsync(
                     () => PermissionsFile.Load(path).TierOf(xuid) == wanted, cancellationToken)
                 .ConfigureAwait(false);
 
             return new AccessChange(
                 true,
-                confirmed,
-                confirmed
+                confirmation.Confirmed,
+                confirmation.Confirmed
                     ? $"{gamertag} is now {wanted}."
-                    : $"'{verb}' was sent, but {PermissionsFile.FileName} has not changed — "
-                      + "a player who is not online may be refused; check the console.");
+                    : Unconfirmed(
+                        confirmation,
+                        verb,
+                        PermissionsFile.FileName,
+                        $"'{verb}' was sent, but {PermissionsFile.FileName} has not changed — "
+                        + "a player who is not online may be refused; check the console."));
         }
 
         var file = PermissionsFile.Load(path);
@@ -244,9 +259,64 @@ public sealed class ServerAccessControl
     private static string Quote(string command, string argument) =>
         $"{command} \"{argument}\"";
 
-    private async Task<bool> ConfirmAsync(Func<bool> condition, CancellationToken cancellationToken)
+    /// <summary>How a confirmation poll ended. Three states, not two.</summary>
+    /// <param name="Confirmed">The file agrees.</param>
+    /// <param name="Unreadable">
+    /// Why the file could not be read, when it could not be read at any point in
+    /// the whole budget. Null when it was read cleanly and the change simply
+    /// never appeared.
+    /// </param>
+    /// <remarks>
+    /// This was a <c>bool</c>, and `T203` is what a type with too few states
+    /// does: <em>confirmed</em> and <em>the change never appeared</em> cannot
+    /// express <em>the file could not be read</em>, so an unreadable file was
+    /// reported as an unchanged one - a specific claim about content, made by
+    /// code that had not managed to read any content at all.
+    /// </remarks>
+    private sealed record Confirmation(bool Confirmed, string? Unreadable)
+    {
+        public static readonly Confirmation Yes = new(true, null);
+        public static readonly Confirmation NotSeen = new(false, null);
+
+        public static Confirmation CouldNotRead(string why) => new(false, why);
+    }
+
+    /// <summary>
+    /// What to say when a console command's effect could not be confirmed.
+    /// </summary>
+    /// <remarks>
+    /// One sentence per state rather than one sentence for both. The
+    /// <paramref name="notSeen"/> wording is specific about the file's contents
+    /// and is only true when the file was actually read; the unreadable arm says
+    /// what happened instead, and does not claim the change failed - on the path
+    /// that produced `T203` it had in fact succeeded.
+    /// </remarks>
+    private static string Unconfirmed(
+        Confirmation confirmation, string sent, string fileName, string notSeen) =>
+        confirmation.Unreadable is { } why
+            ? $"'{sent}' was sent, but {fileName} could not be read to confirm it: {why} "
+              + "The change may well have been made — check the console, and the file itself."
+            : notSeen;
+
+    /// <summary>
+    /// Polls until <paramref name="condition"/> holds, the budget runs out, or
+    /// the file turns out not to be readable at all.
+    /// </summary>
+    /// <remarks>
+    /// The catch below is right about a torn read and was wrong about what a
+    /// repeated one means. BDS rewrites these files open-write-close, so a poll
+    /// landing inside that window sees a locked or half-written file - a moment,
+    /// and the next poll reads the settled one. But a file that is <em>still</em>
+    /// unreadable when the budget runs out is not a moment, it is the settled
+    /// state, and the old code could not say so (`T203`). Hence the clean-read
+    /// reset: whatever threw before a successful read really was a moment, and
+    /// only the tail of failures survives into the answer.
+    /// </remarks>
+    private async Task<Confirmation> ConfirmAsync(
+        Func<bool> condition, CancellationToken cancellationToken)
     {
         var deadline = _time.GetUtcNow() + _confirmWithin;
+        string? unreadable = null;
 
         while (_time.GetUtcNow() < deadline)
         {
@@ -254,21 +324,20 @@ public sealed class ServerAccessControl
             {
                 if (condition())
                 {
-                    return true;
+                    return Confirmation.Yes;
                 }
+
+                // A clean read: anything that threw earlier was BDS mid-rewrite.
+                unreadable = null;
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException)
             {
-                // Mid-rewrite by BDS. The next poll reads the settled file.
-            }
-            catch (System.Text.Json.JsonException)
-            {
-                // Same: a half-written JSON file is a moment, not a state.
+                unreadable = ex.Message;
             }
 
             await Task.Delay(PollEvery, _time, cancellationToken).ConfigureAwait(false);
         }
 
-        return false;
+        return unreadable is null ? Confirmation.NotSeen : Confirmation.CouldNotRead(unreadable);
     }
 }

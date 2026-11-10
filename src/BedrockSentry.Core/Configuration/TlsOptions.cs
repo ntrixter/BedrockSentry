@@ -56,9 +56,13 @@ public sealed class TlsOptions
     public string? Thumbprint { get; set; }
 
     /// <summary>
-    /// Extra DNS names to place in the self-signed certificate's SAN, on top of
-    /// the machine name, <c>localhost</c>, <c>127.0.0.1</c>, and <c>::1</c>.
+    /// Extra names and addresses to place in the self-signed certificate's SAN, on top
+    /// of the machine name, <c>localhost</c>, <c>127.0.0.1</c>, and <c>::1</c>. An
+    /// entry that parses as an IP address is written as an address.
     /// </summary>
+    /// <remarks>
+    /// A stored certificate that lacks one is replaced at the next start (<c>T324</c>).
+    /// </remarks>
     public IList<string> AdditionalSubjectAltNames { get; set; } = [];
 
     /// <summary>Lifetime of a generated self-signed certificate, in days.</summary>

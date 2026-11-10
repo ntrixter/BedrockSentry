@@ -10,11 +10,17 @@ namespace BedrockSentry.Services.Instances;
 /// then falls through can put back exactly what it took down.
 /// </param>
 /// <param name="Failed">Instance ids that would not stop cleanly.</param>
+/// <param name="CalledOff">
+/// The countdown was called off before the stops began, so nothing stopped (<c>D100</c>).
+/// </param>
 public sealed record ManagedShutdownResult(
     IReadOnlyList<string> Stopped,
-    IReadOnlyList<string> Failed)
+    IReadOnlyList<string> Failed,
+    bool CalledOff = false)
 {
     public static readonly ManagedShutdownResult Nothing = new([], []);
+
+    public static readonly ManagedShutdownResult CalledOffBeforeTheStop = new([], [], CalledOff: true);
 
     public int Drained => Stopped.Count;
 }
@@ -36,8 +42,12 @@ public interface IManagedServerShutdown
     /// <param name="cancellationToken">
     /// Shortens the countdown; never abandons the stop. See the implementation.
     /// </param>
+    /// <param name="countdown">
+    /// Lets the caller call the countdown off, leaving every server running (<c>D100</c>).
+    /// </param>
     Task<ManagedShutdownResult> DrainAsync(
-        StopReason reason, TimeSpan warning, CancellationToken cancellationToken = default);
+        StopReason reason, TimeSpan warning, CancellationToken cancellationToken = default,
+        DrainCountdown? countdown = null);
 
     /// <summary>Starts instances a drain stopped, for an outage that then fell through.</summary>
     Task RestoreAsync(IReadOnlyList<string> instanceIds, CancellationToken cancellationToken = default);
@@ -55,13 +65,18 @@ public sealed class ManagedServerShutdown : IManagedServerShutdown
         InstanceRegistry registry,
         ShutdownBackups backups,
         TimeProvider time,
-        ILogger<ManagedServerShutdown> log)
+        ILogger<ManagedServerShutdown> log,
+        ServersToStartAgain? startAgain = null)
     {
         _registry = registry;
         _backups = backups;
         _time = time;
         _log = log;
+        _startAgain = startAgain;
     }
+
+    /// <summary>Where the servers a drain stopped are kept for the start after the update (milestone 13.5).</summary>
+    private readonly ServersToStartAgain? _startAgain;
 
     /// <remarks>
     /// <b>The countdown runs here, not inside the stop.</b> The obvious
@@ -85,9 +100,13 @@ public sealed class ManagedServerShutdown : IManagedServerShutdown
     /// rather than abandoning servers half-warned. Cancelling is how a host
     /// shutdown says it has run out of patience for the courtesy, and it still
     /// gets the graceful stop underneath.
+    ///
+    /// Calling off is the other ending, and only through <paramref name="countdown"/>:
+    /// the servers keep running and players are told (<c>D100</c>).
     /// </remarks>
     public async Task<ManagedShutdownResult> DrainAsync(
-        StopReason reason, TimeSpan warning, CancellationToken cancellationToken = default)
+        StopReason reason, TimeSpan warning, CancellationToken cancellationToken = default,
+        DrainCountdown? countdown = null)
     {
         var running = _registry.All
             .Where(s => s.Status.State is not (InstanceState.Stopped or InstanceState.Faulted))
@@ -102,7 +121,24 @@ public sealed class ManagedServerShutdown : IManagedServerShutdown
             "Draining {Count} instance(s) for a {Reason}: {Warning}s warning",
             running.Count, reason, warning.TotalSeconds);
 
-        await CountDownAsync(running, reason, warning, cancellationToken).ConfigureAwait(false);
+        using (var waiting = countdown is null
+                   ? null
+                   : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, countdown.Token))
+        {
+            await CountDownAsync(running, reason, warning, waiting?.Token ?? cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (countdown is not null && !countdown.TryBeginStopping())
+        {
+            _log.LogInformation("The countdown was called off; {Count} instance(s) stay up", running.Count);
+
+            await Task
+                .WhenAll(running.Select(s => SayAsync(s, CountdownMessage.CalledOff())))
+                .ConfigureAwait(false);
+
+            return ManagedShutdownResult.CalledOffBeforeTheStop;
+        }
 
         var failed = new List<string>();
         var stopped = new List<string>();
@@ -148,12 +184,19 @@ public sealed class ManagedServerShutdown : IManagedServerShutdown
             }
         })).ConfigureAwait(false);
 
+        // Before the caller hands over to the update, so the wrapper that starts
+        // after it, new build or rolled back, starts these again.
+        _startAgain?.Record(stopped);
+
         return new ManagedShutdownResult(stopped, failed);
     }
 
     public async Task RestoreAsync(
         IReadOnlyList<string> instanceIds, CancellationToken cancellationToken = default)
     {
+        // Started here, so the next wrapper start has nothing to start again for them.
+        _startAgain?.Forget(instanceIds);
+
         foreach (var id in instanceIds)
         {
             try
@@ -217,9 +260,9 @@ public sealed class ManagedServerShutdown : IManagedServerShutdown
         catch (OperationCanceledException)
         {
             // Somebody has run out of patience for the courtesy — a host
-            // shutdown, most likely. The servers still get their graceful stop;
-            // they just get it now.
-            _log.LogInformation("The player countdown was cut short; stopping now");
+            // shutdown, most likely, and the servers get their graceful stop now —
+            // or the countdown was called off, which DrainAsync reads next.
+            _log.LogInformation("The player countdown was cut short");
         }
     }
 

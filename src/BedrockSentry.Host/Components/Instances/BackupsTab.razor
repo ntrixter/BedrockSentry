@@ -2,42 +2,502 @@
    which strategies run (docs/design.md § 8). *@
 
 @using BedrockSentry.Core.Backups
+@using BedrockSentry.Core.Diagnostics
+@using BedrockSentry.Core.Packages
 @using BedrockSentry.Core.Security
+@using BedrockSentry.Core.Structures
+@using BedrockSentry.Core.Sync
 @using BedrockSentry.Services.Backups
 @using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Packages
+@using BedrockSentry.Services.Sync
 @using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.JSInterop
 
 @inject BackupOrchestrator Orchestrator
 @inject BackupHistory History
+@inject BackupArtifactStore Artifacts
 @inject InstanceRegistry Registry
 @inject WorldRestorer Restorer
+@inject WorldRestoreRuns Restores
+@inject BackupImporter Importer
+@inject WorldFileImport Uploads
+@inject RestoreAsNewServer Copier
+@inject PortInspector Ports
+@inject AreaRestore AreaRestores
+@inject ServerPackageStore Packages
+@inject ServerVersionLog Versions
+@inject IJSRuntime JS
 
-<h3>Back up now</h3>
+@{
+    var due = NextDue;
+    var standing = Standing;
+    var saved = Supervisor.Definition.Backup;
 
-<p class="lead">
-    @if (Supervisor.Status.State == Core.Instances.InstanceState.Running)
-    {
-        <text>
-            The server keeps running: saves are paused for the length of the copy —
-            seconds, not minutes — and resumed whatever happens. Players stay on.
-        </text>
-    }
-    else
-    {
-        <text>
-            The server is stopped, so its files are static and the backup reads them
-            directly — no console exchange involved.
-        </text>
-    }
-</p>
+    // The SAVED state, for the cards: they are a statement about the server.
+    // The settings sheet asks the same rule of the FORM below, because a control
+    // that only came alive after Save would read as broken (T151 clause 6 — one
+    // rule, two callers who want it answered about different things).
+    var savedFormat = BackupFormatSummary.StateOf(saved, Commands.Allowed);
+    var rows = BackupTimeline.Build(history, archives);
+    var shown = rows.Where(r => BackupTimeline.Matches(r, filter)).ToList();
+    var lockedCount = archives.Count(a => StateOf(a.Name).Locked);
+}
 
-<div class="provision-controls">
+@* The four facts an administrator opens this tab for, above the switch so they
+   are on screen whichever view is showing. Each one is rendered HERE and nowhere
+   else below: a card that repeats a sentence from the section under it is two
+   statements of one rule, which is how this codebase's panels have come to
+   contradict themselves before (`T126`, `T145`).
+
+   A card's value line is `.card-headline` and never `.check-state` — that is a
+   0.6rem round state dot for an empty span, and putting prose in one collapsed
+   three paragraphs to a 0.6rem box with the sentence under them laid out on top
+   of the overflow (`T262`). `PanelMarkupTests` pins it now. *@
+<div class="status-grid">
+    <div class="status-card">
+        <h2>Last backup</h2>
+
+        @if (standing.NewestTakenUtc is { } taken)
+        {
+            <div class="card-value">
+                <p class="card-headline">
+                    @UptimeFormatter.Format(DateTimeOffset.UtcNow - taken) ago
+                </p>
+                <span class="@(standing.NeedsAttention ? "state-badge state-warning" : "state-badge state-running")">
+                    @BackupStandingText.Headline(standing.State)
+                </span>
+            </div>
+            <p class="check-detail">
+                Taken @ClockText.TimeOnDay(taken.ToLocalTime()).
+            </p>
+        }
+        else
+        {
+            @* No moment to lead with, so the state IS the value. The badge is
+               dropped rather than repeated beside it. *@
+            <p class="card-headline @(standing.NeedsAttention ? "card-headline-fault" : null)">
+                @BackupStandingText.Headline(standing.State)
+            </p>
+        }
+
+        <p class="check-detail">@BackupStandingText.Detail(standing.State, savedFormat)</p>
+    </div>
+
+    <div class="status-card">
+        <h2>Kept on disk</h2>
+
+        @if (standing.RestorableCount == 0)
+        {
+            <p class="card-headline">Nothing</p>
+            <p class="check-detail">There is nothing here a restore could put back.</p>
+        }
+        else
+        {
+            <p class="card-headline">
+                @standing.RestorableCount @(standing.RestorableCount == 1 ? "backup" : "backups")
+            </p>
+
+            @* D55/D66. The figure is the size of the files, not the space they
+               cost: on a volume running Windows Server Data Deduplication a folder
+               copy of an unchanged world collapses almost completely, and this
+               total would have somebody sizing a disk from a number the disk does
+               not charge them. *@
+            <p class="check-detail">
+                @ByteSize.Format(standing.RestorableBytes)@(lockedCount > 0
+                    ? $", {lockedCount} marked Keep" : null) — the size of the files
+                themselves, which is more than they occupy on a deduplicating volume.
+            </p>
+        }
+    </div>
+
+    <div class="status-card">
+        <h2>Next run</h2>
+
+        @* T248. What is going to happen without anybody asking, which the tab
+           could not say at all: the schedule settings state the schedule, and a
+           schedule is not the same fact as whether anything will run.
+
+           BOTH LINES AND THE COLOUR COME FROM `Core`. This was a switch here,
+           which the suite cannot read, and its `_ =>` arm would have absorbed a
+           new state silently. It also knew nothing about the formats, so an
+           instance with every event ticked and no format enabled was told it was
+           "still backed up on the events ticked under Settings". *@
+        @{
+            var next = NextBackupText.For(due, savedFormat, DateTimeOffset.UtcNow);
+        }
+
+        <p class="card-headline @(next.IsFault ? "card-headline-fault" : null)">
+            @next.Headline
+        </p>
+
+        <p class="check-detail">@next.Detail</p>
+    </div>
+
+    <div class="status-card">
+        <h2>Backup type</h2>
+
+        @* What a backup of this server IS, from the SAVED settings rather than
+           from the sheet below — the sheet may be half-edited, and this card is a
+           statement about the server rather than about the form. The save bar
+           says what is unsaved.
+
+           The fault colour is a predicate on the state, not a comparison of the
+           headline to a string literal: that was the same words in two files, so
+           rewording the headline would have taken the colour away with nothing
+           failing. *@
+        <p class="card-headline @(BackupFormatSummary.IsFault(savedFormat) ? "card-headline-fault" : null)">
+            @BackupFormatSummary.Headline(savedFormat)
+        </p>
+
+        @* One line per fact. Folded into a sentence, two formats read as
+           "keeping the newest 1 of the archives and every one of the copies",
+           which parses only if you already know which noun goes with which. *@
+        @foreach (var line in BackupFormatSummary.Lines(saved, savedFormat))
+        {
+            <p class="check-detail">@line</p>
+        }
+    </div>
+</div>
+
+@* `D111`. The restore panels open here, under the four cards and above Back up now,
+   rather than under the list a row can be far down; the page scrolls up to the
+   controls. Once a restore starts, its steps show in the strip under them. *@
+<div class="backups-panels">
+@if (restoreCandidate is not null)
+{
+    <div class="danger-panel">
+        <h3>Restore @Path.GetFileName(restoreCandidate)</h3>
+        <p>
+            Replaces <strong>@Supervisor.Definition.Name</strong>'s world with this backup.
+            @(Supervisor.Status.State == Core.Instances.InstanceState.Running
+                ? "The server stops, restores and starts again. Players online are disconnected."
+                : "The server is stopped, so it happens now.")
+        </p>
+
+        @* The undo sentence comes from SafetyBackupRule rather than being written
+           here (`T168`), and is recomputed as the configuration checkbox moves,
+           because the checkbox decides whether anything is overwritten. A refusal is read
+           off a predicate in `Core` rather than by listing states here (`T244`). *@
+        @* `D89`. A warning, never a refusal; the sentence comes from Core. *@
+        @if (BackupOrigin.Warning(candidateContents.Origin, Supervisor.InstanceId, Supervisor.Definition.Name) is { } fromAnother)
+        {
+            <p class="prop-check warn">@fromAnother</p>
+        }
+
+        @* `T392` clause 2: a link in the server's folder is named, ahead of the
+           unreadable-world sentence RedirectionGuard's refusal would otherwise give. *@
+        @if (restoreLink is { } link)
+        {
+            <p class="prop-check warn">@link</p>
+        }
+        else
+        {
+            <p class="@(SafetyBackupRule.Refuses(safetyNeed) ? "prop-check warn" : "check-detail")">
+                @SafetyBackupRule.Promise(safetyNeed)
+            </p>
+        }
+
+        @* `T251`. A backup that cannot be opened renders no tickbox and no count,
+           which is what one carrying no configuration renders, so the state is said
+           out loud; the sentence and the predicate both come from `Core`. *@
+        @if (!candidateContents.CanRestore)
+        {
+            <p class="prop-check warn">@candidateContents.Refusal(Path.GetFileName(restoreCandidate))</p>
+        }
+
+        @if (candidateContents.OffersConfig)
+        {
+            <label class="field-row">
+                <input type="checkbox" checked="@restoreConfig"
+                       @onchange="ConfigBoxChanged"
+                       disabled="@restoring" />
+                <span>
+                    Also restore <code>server.properties</code>, the allowlist and permissions
+                    (@candidateContents.ConfigFiles file@(candidateContents.ConfigFiles == 1 ? "" : "s"))
+                </span>
+            </label>
+            <p class="check-detail">
+                Off by default. This server keeps its own name and ports.
+            </p>
+        }
+
+        @* `D97`. Offered only when the backup carries add-ons, and ticked each time
+           the panel opens: a faithful restore is the default. *@
+        @if (candidateContents.OffersAddons)
+        {
+            <label class="field-row">
+                <input type="checkbox" checked="@restoreAddons"
+                       @onchange="e => restoreAddons = (bool?)e.Value == true"
+                       disabled="@restoring" />
+                <span>
+                    Restore this backup's add-ons
+                    (@candidateContents.AddonFiles file@(candidateContents.AddonFiles == 1 ? "" : "s"))
+                </span>
+            </label>
+            <p class="check-detail">Untick to keep the current ones.</p>
+        }
+        else if (candidateContents.CanRestore)
+        {
+            <p class="check-detail">This backup has no add-ons; the server keeps its own.</p>
+        }
+
+        @* Off only when an administrator has hand-edited the config, and the
+           waiver is shown here as well as logged at startup (`T172`). *@
+        @if (Confirm.PasswordRequired)
+        {
+            <label class="field">
+                <span>@Confirm.FieldLabel</span>
+                <input class="form-control" type="@Confirm.FieldType" autocomplete="@Confirm.FieldAutocomplete"
+                       value="@restorePassword"
+                       @oninput="e => restorePassword = e.Value?.ToString() ?? string.Empty"
+                       disabled="@restoring" />
+            </label>
+        }
+        else
+        {
+            <p class="prop-check warn">@DestructiveConfirmPolicy.Waiver</p>
+        }
+
+        @if (restoreError is not null)
+        {
+            <p class="console-fault">@restoreError</p>
+        }
+
+        <div class="provision-controls">
+            <button class="btn btn-danger" @onclick="ConfirmRestoreAsync"
+                    disabled="@(restoring || !RestoreIsPossible)">
+                @(restoring ? "Starting…" : "Restore")
+            </button>
+            <button class="btn btn-secondary" @onclick="CancelRestore" disabled="@restoring">Cancel</button>
+        </div>
+    </div>
+}
+
+@if (copyCandidate is not null)
+{
+    @* D40. A provision panel rather than a danger one, and NO password gate:
+       this creates a server and destroys nothing — the server the backup came
+       from is not stopped, read or written. DestructiveConfirmPolicy exists for
+       the operations that destroy something, and asking for a password here
+       would teach people to type it at something harmless. *@
+    <div class="provision-panel" style="max-width:36rem">
+        <h3>Restore @Path.GetFileName(copyCandidate) as a new server</h3>
+
+        <p>
+            A new server is made and this backup's world goes into it.
+            <strong>@Supervisor.Definition.Name</strong> is not stopped, not read and
+            not changed — which is the whole difference between this and
+            <strong>Restore</strong>.
+        </p>
+
+        <label class="field">
+            <span>Name</span>
+            <input class="form-control" @bind="copyName" @bind:event="oninput"
+                   disabled="@(copying || !copyChoice.CanCreate)" />
+        </label>
+
+        <label class="field">
+            <span>Server version</span>
+            <select class="form-select" @bind="copyPackage"
+                    disabled="@(copying || !copyChoice.CanCreate)">
+                <option value="">Choose a build</option>
+                @foreach (var candidate in packages)
+                {
+                    <option value="@candidate.FileName">@candidate.Label</option>
+                }
+            </select>
+            @* D41, as the operator changed it 2026-10-16: the newest build in the
+               store is picked, and the build the backup was taken on is a button
+               when the store has it. The sentence names that build, or how to get
+               it, and comes from Core, where a test can reach it. *@
+            <span class="@(copyChoice.Unsettled ? "prop-check warn" : "check-detail")">
+                @copyChoice.Explanation(Supervisor.Definition.Name, Packages.Directory, copyPackage)
+            </span>
+            @if (copyChoice.OwnBuild is { } ownBuild && copyPackage != ownBuild)
+            {
+                <button type="button" class="btn btn-sm btn-secondary align-self-start" disabled="@copying"
+                        @onclick="() => copyPackage = ownBuild">
+                    Use Bedrock @copyChoice.RecordedVersion
+                </button>
+            }
+        </label>
+
+        <label class="field">
+            <span>Port</span>
+            <input class="form-control" type="number" @bind="copyPort"
+                   disabled="@(copying || !copyChoice.CanCreate)" />
+            <span class="check-detail">
+                Its own, not the original's — two servers cannot share one, so a copy
+                left on the same number would refuse to start while that server runs.
+            </span>
+        </label>
+
+        <label class="field">
+            <span>Folder</span>
+            <input class="form-control" @bind="copyFolder"
+                   disabled="@(copying || !copyChoice.CanCreate)"
+                   placeholder="Leave blank for the default" />
+            <span class="check-detail">
+                A full path puts the copy on whichever volume you like. A world and
+                its backup are the same size, so the default volume may not be where
+                you want a second one.
+            </span>
+        </label>
+
+        @* `T251` again, and the cost clause differs: nothing is stopped here, so
+           what a late refusal would leave behind is a server that looks made and
+           is empty. Refusal() takes the arm rather than this page picking a
+           sentence. *@
+        @if (!copyContents.CanRestore)
+        {
+            <p class="prop-check warn">
+                @copyContents.Refusal(Path.GetFileName(copyCandidate), asNewServer: true)
+            </p>
+        }
+
+        @if (copyContents.OffersConfig)
+        {
+            <div class="field-row">
+                <input type="checkbox" @bind="copyConfig" disabled="@copying" />
+                <span>
+                    Also copy this server's configuration
+                    (@copyContents.ConfigFiles file@(copyContents.ConfigFiles == 1 ? "" : "s") —
+                    <code>server.properties</code>, the allowlist and permissions)
+                    <span class="check-detail">
+                        D42: the copy is a faithful copy, so the allowlist and
+                        permissions come across exactly. Its name and port do not —
+                        those are the two the original is still using.
+                    </span>
+                </span>
+            </div>
+        }
+
+        @* `D97`. Ticked each time, for the in-place dialog's reason. *@
+        @if (copyContents.OffersAddons)
+        {
+            <div class="field-row">
+                <input type="checkbox" @bind="copyAddons" disabled="@copying" />
+                <span>
+                    Copy the add-ons saved with this world
+                    (@copyContents.AddonFiles file@(copyContents.AddonFiles == 1 ? "" : "s") —
+                    its behaviour and resource packs and the lists that switch them on)
+                    <span class="check-detail">
+                        Untick to give the new server this world without them.
+                    </span>
+                </span>
+            </div>
+        }
+
+        @if (copyError is not null)
+        {
+            <p class="console-fault">@copyError</p>
+        }
+
+        <div class="provision-controls">
+            <button class="btn btn-primary" @onclick="ConfirmCopyAsync"
+                    disabled="@(copying || !CopyIsPossible)">
+                @(copying ? "Creating…" : "Create this server")
+            </button>
+            <button class="btn btn-secondary" @onclick="CancelCopy" disabled="@copying">
+                Cancel
+            </button>
+        </div>
+    </div>
+}
+
+@* `D108`, on the surface the cards below use. `D111`: the area can go onto another
+   server, which is then the one that restarts. *@
+@if (areaCandidate is not null)
+{
+    var areaPlan = AreaPlan;
+
+    <div class="backup-card backup-card-wide area-restore">
+        <h2>Restore an area from @areaCandidate.Name</h2>
+        <p>@AreaRestoreText.PanelLead(AreaTargetName)</p>
+
+        <label class="field">
+            <span>Put it back on</span>
+            <select class="form-select" value="@areaTargetId" disabled="@areaStarting"
+                    @onchange="e => areaTargetId = e.Value?.ToString() ?? Supervisor.InstanceId">
+                <option value="@Supervisor.InstanceId">@Supervisor.Definition.Name (this server)</option>
+                @foreach (var other in AreaTargets)
+                {
+                    <option value="@other.InstanceId">@other.Definition.Name</option>
+                }
+            </select>
+        </label>
+
+        <AreaPicker Areas="Supervisor.Definition.Sync.KeptAreas" Group="area-kind" Disabled="areaStarting"
+                    TargetChanged="t => areaTarget = t" />
+
+        @if (areaPlan.CanRestore)
+        {
+            <p class="check-detail">@AreaRestoreText.Size(areaPlan)</p>
+        }
+        else
+        {
+            @foreach (var problem in areaPlan.Problems)
+            {
+                <p class="prop-check warn">@problem</p>
+            }
+        }
+
+        @if (areaError is not null)
+        {
+            <p class="console-fault">@areaError</p>
+        }
+
+        <div class="provision-controls">
+            <button class="btn btn-danger" @onclick="ConfirmAreaRestoreAsync"
+                    disabled="@(areaStarting || !AreaRestoreIsPossible)">
+                @(areaStarting ? "Starting…" : "Restore this area")
+            </button>
+            <button class="btn btn-secondary" @onclick="CancelAreaRestore" disabled="@areaStarting">Cancel</button>
+        </div>
+    </div>
+}
+
+@if (areaElsewhere is { } elsewhere)
+{
+    <p class="check-detail" role="status">@elsewhere</p>
+}
+</div>
+
+@* Taking one now is true of both views, so it sits above the switch with the
+   cards. One row rather than a heading over a paragraph over a control: the
+   heading and the lead had pushed the table below the fold. *@
+<div class="backup-action">
+    @* Waits while a job claims the server, such as a sync; the orchestrator
+       refuses it meanwhile either way (BackupClaimRule). Waits too while a backup
+       runs, such as a scheduled one, which the strip under the controls shows
+       (D113): the orchestrator refuses a second rather than queueing it. *@
+    <button class="btn btn-primary" @onclick="RunNowAsync"
+            disabled="@(running || Orchestrator.Runs.IsRunning(Supervisor.InstanceId) || Supervisor.Status.ClaimedFor is not null)"
+            title="@(Supervisor.Status.ClaimedFor is { } purpose ? Core.Instances.ClaimText.ButtonsWait(purpose) : null)">
+        @(running || Orchestrator.Runs.IsRunning(Supervisor.InstanceId) ? "Backing up…" : "Back up now")
+    </button>
+
     <input class="form-control" placeholder="Optional note, kept with this backup"
            value="@note" @oninput="e => note = e.Value?.ToString() ?? string.Empty"
-           disabled="@running" style="max-width: 28rem" />
-    <button class="btn btn-primary" @onclick="RunNowAsync" disabled="@running">
-        @(running ? "Backing up…" : "Back up now")
-    </button>
+           disabled="@running" />
+
+    <span class="check-detail">
+        @if (Supervisor.Status.State == Core.Instances.InstanceState.Running)
+        {
+            <text>
+                Saves pause for the copy — seconds, not minutes — and resume whatever
+                happens. Players stay on.
+            </text>
+        }
+        else
+        {
+            <text>
+                The server is stopped, so its files are static and the backup reads
+                them directly — no console exchange involved.
+            </text>
+        }
+    </span>
 </div>
 
 @if (runError is not null)
@@ -45,494 +505,1002 @@
     <p class="console-fault">@runError</p>
 }
 
-<h3>Strategies</h3>
-
-<p class="lead">
-    Any combination runs together against the same snapshot; each result is
-    recorded on its own.
-</p>
-
-<div class="prop">
-    <div class="prop-head">
-        <label class="field-row" style="margin:0">
-            <input type="checkbox" checked="@zipEnabled"
-                   @onchange="e => zipEnabled = (bool?)e.Value ?? false" disabled="@saving" />
-            <span><strong>ZIP archive</strong></span>
-        </label>
-    </div>
-    <p class="prop-doc">
-        A zip per backup under the wrapper's own data folder, containing exactly the
-        snapshot — files are cut at the lengths the server declares, because the live
-        files keep growing while saves are held and the extra bytes belong to the next
-        save, not this one.
-    </p>
-
-    @if (zipEnabled)
-    {
-        <div class="provision-controls">
-            <label class="field" style="margin:0">
-                <span>Compression</span>
-                <select class="form-select" @bind="compression" disabled="@saving">
-                    <option value="@ZipCompression.None">None — fastest, friendliest to dedup tools</option>
-                    <option value="@ZipCompression.Balanced">Balanced</option>
-                    <option value="@ZipCompression.Maximum">Maximum — smallest, slowest</option>
-                </select>
-            </label>
-
-            <label class="field" style="margin:0">
-                <span>Keep</span>
-                <select class="form-select" @bind="retentionMode" disabled="@saving">
-                    <option value="@BackupRetentionMode.KeepAll">Every archive</option>
-                    <option value="@BackupRetentionMode.Count">The newest N</option>
-                    <option value="@BackupRetentionMode.Days">The last N days</option>
-                </select>
-            </label>
-
-            @if (retentionMode != BackupRetentionMode.KeepAll)
+@* A switch between two views of one tab rather than between tabs, which is why
+   it is a segmented control and not a second tab strip. Component state rather
+   than a route: it is a lens on one server's page, not a place. *@
+<div class="view-bar">
+    <nav class="view-switch" aria-label="Backups views">
+        <button type="button" class="@(view == BackupsView.Working ? "active" : null)"
+                aria-current="@(view == BackupsView.Working ? "page" : null)"
+                @onclick="() => view = BackupsView.Working">
+            Backups
+            @if (rows.Count > 0)
             {
-                <label class="field" style="margin:0">
-                    <span>@(retentionMode == BackupRetentionMode.Count ? "Archives" : "Days")</span>
-                    <input class="form-control" type="number" min="1" style="width:6rem"
-                           @bind="retentionValue" disabled="@saving" />
-                </label>
+                <span class="view-count">@rows.Count</span>
             }
-        </div>
-    }
-</div>
-
-<div class="prop">
-    <div class="prop-head">
-        <label class="field-row" style="margin:0">
-            <input type="checkbox" checked="@vssEnabled"
-                   @onchange="e => vssEnabled = (bool?)e.Value ?? false" disabled="@saving" />
-            <span><strong>Volume Shadow Copy</strong></span>
-        </label>
-    </div>
-    <p class="prop-doc">
-        A folder per backup, copied out of a Windows point-in-time snapshot of the
-        volume. The same files as the ZIP strategy and cut to the same lengths — what
-        it buys is that nothing on the disk can move while the copy runs, and a file
-        another process is holding open can still be read. Slower to start, faster to
-        finish, and it leaves the world uncompressed rather than in an archive.
-    </p>
-    <p class="prop-doc">
-        <strong>Needs the backup privilege.</strong> Taking a shadow copy is an
-        administrative operation; if the service account cannot, every backup on this
-        strategy fails. The <a href="status">Readiness</a> panel checks that and the
-        Volume Shadow Copy service before you find out on a schedule.
-    </p>
-
-    @if (vssEnabled)
-    {
-        <div class="provision-controls">
-            <label class="field" style="margin:0">
-                <span>Keep</span>
-                <select class="form-select" @bind="vssRetentionMode" disabled="@saving">
-                    <option value="@BackupRetentionMode.KeepAll">Every snapshot</option>
-                    <option value="@BackupRetentionMode.Count">The newest N</option>
-                    <option value="@BackupRetentionMode.Days">The last N days</option>
-                </select>
-            </label>
-
-            @if (vssRetentionMode != BackupRetentionMode.KeepAll)
+        </button>
+        <button type="button" class="@(view == BackupsView.Settings ? "active" : null)"
+                aria-current="@(view == BackupsView.Settings ? "page" : null)"
+                @onclick="() => view = BackupsView.Settings">
+            Settings
+            @if (Dirty)
             {
-                <label class="field" style="margin:0">
-                    <span>@(vssRetentionMode == BackupRetentionMode.Count ? "Snapshots" : "Days")</span>
-                    <input class="form-control" type="number" min="1" style="width:6rem"
-                           @bind="vssRetentionValue" disabled="@saving" />
-                </label>
+                @* A dot rather than a word, and the word is given to a screen
+                   reader instead of being left to the colour alone. *@
+                <span class="view-dot" aria-label="unsaved changes"></span>
             }
-        </div>
-    }
-</div>
+        </button>
+    </nav>
 
-<div class="prop">
-    <div class="prop-head">
-        <label class="field-row" style="margin:0">
-            <input type="checkbox" checked="@commandEnabled"
-                   @onchange="e => commandEnabled = (bool?)e.Value ?? false"
-                   disabled="@(saving || !Commands.Allowed)" />
-            <span><strong>Custom command</strong></span>
-        </label>
-    </div>
+    <span class="view-bar-spacer"></span>
 
-    @* D45. The box stays visible and says why rather than vanishing: a control
-       that disappears reads as a bug and gets reported as one, while one that
-       explains itself teaches the operator something about their own install. *@
-    @if (!Commands.Allowed)
+    @if (view == BackupsView.Working)
     {
-        <p class="prop-check warn">@CustomCommandPolicy.Waiver</p>
+        <span class="check-detail">Every run, and whether its files are still here</span>
 
-        @if (commandEnabled)
+        @* In the enum's order, which is the order the chips are drawn (`D110`). *@
+        @foreach (var chip in Enum.GetValues<BackupTimelineFilter>())
         {
-            @* A ticked-but-disabled box reads as "on". Somebody upgrading into the
-               gate has to be told in the present tense that their backups are
-               currently doing less than this panel appears to say. *@
-            <p class="prop-check warn">
-                This server has a command configured and it is <strong>not running</strong>.
-                It starts again as soon as the setting above is turned on — nothing here needs
-                changing and nothing has been discarded.
+            <button type="button" class="filter-chip @(filter == chip ? "active" : null)"
+                    aria-pressed="@(filter == chip ? "true" : "false")"
+                    @onclick="() => filter = chip">
+                @chip
+                <span class="view-count">@BackupTimeline.Count(rows, chip)</span>
+            </button>
+        }
+
+        @* `D110`. One backup made elsewhere, into this server's list. *@
+        <button type="button" class="btn btn-sm btn-secondary" aria-expanded="@(importOpen ? "true" : "false")"
+                disabled="@(importing || uploading)" @onclick="ToggleImport">
+            Import…
+        </button>
+    }
+    else
+    {
+        <span class="check-detail">
+            Applies to <strong>@Supervisor.Definition.Name</strong> only — each server has
+            its own backups and its own settings.
+        </span>
+    }
+</div>
+
+@if (view == BackupsView.Working)
+{
+@* `D110`. Above the list it adds to, on the surface the area restore uses. Every refusal
+   is shown before anything is written, and nothing is written until Import. *@
+@if (importOpen)
+{
+    <section class="backup-card backup-card-wide backup-import" aria-label="Import a backup">
+        <h3>Import a backup</h3>
+
+        <div class="view-switch world-source" role="group" aria-label="Where the backup is">
+            <button type="button" class="@(importFromFolder ? null : "active")" aria-pressed="@(!importFromFolder)"
+                    disabled="@(importing || uploading)" @onclick="() => ChooseImportSource(folder: false)">
+                Upload a file
+            </button>
+            <button type="button" class="@(importFromFolder ? "active" : null)" aria-pressed="@importFromFolder"
+                    disabled="@(importing || uploading)" @onclick="() => ChooseImportSource(folder: true)">
+                Folder on this server
+            </button>
+        </div>
+
+        @if (importFromFolder)
+        {
+            <div class="provision-controls">
+                <input class="form-control" @bind="importFolder" @bind:event="oninput"
+                       placeholder="D:\Backups\2024-03-11" aria-label="Folder path" disabled="@importing" />
+                <button type="button" class="btn btn-sm btn-secondary"
+                        disabled="@(importing || string.IsNullOrWhiteSpace(importFolder))" @onclick="CheckFolder">
+                    Check
+                </button>
+            </div>
+            <p class="check-detail">
+                A folder holding a server's <code>worlds</code> folder, or a folder backup from this
+                panel. It is copied; the folder itself is only read. The service must be able to
+                read it: your own folders usually are not, so upload a <code>.zip</code> of it instead.
             </p>
         }
-    }
-    <p class="prop-doc">
-        Your own script or command, run while the snapshot is held. It gets the
-        context as environment variables — <code>BEDROCKSENTRY_WORLDS_DIR</code>,
-        <code>BEDROCKSENTRY_ARTIFACT_DIR</code> and friends — and
-        <code>BEDROCKSENTRY_MANIFEST_FILE</code> points at a <code>path:bytes</code>
-        list. Honour those byte counts when copying: the live files run longer than
-        the snapshot while saves are held.
-    </p>
+        else
+        {
+            <div class="provision-controls">
+                @* Keyed so a refused file can be chosen again: a picker still holding its
+                   name fires no change for the same file. *@
+                <InputFile @key="importPickerKey" OnChange="UploadImportAsync" accept=".zip,.mcworld"
+                           aria-label="Backup file" disabled="@(importing || uploading)" />
+            </div>
+            <p class="check-detail">
+                A <code>.zip</code> of a server's folder or from this panel, or a <code>.mcworld</code>,
+                up to @ByteSize.Format(WorldFileImport.MaxUploadBytes). One file at a time.
+            </p>
+        }
 
-    @if (commandEnabled)
-    {
-        <p class="prop-doc">
-            <strong>On a running server, <code>copy</code>, <code>xcopy</code>,
-            <code>robocopy</code> and <code>Copy-Item</code> will fail</strong> on
-            <code>worlds\…\db\*.log</code>. The server holds its current write-ahead
-            log open for writing, and those tools ask for read access that Windows
-            will not grant alongside it. The wrapper's own ZIP strategy opens
-            differently to get around this; a script has to do the same, or run only
-            while the server is stopped.
-        </p>
-    }
+        @if (uploading)
+        {
+            <div class="world-upload" role="status">
+                <progress max="100" value="@UploadPercent"></progress>
+                <span>Uploading @uploadName: @ByteSize.Format(uploaded) of @ByteSize.Format(uploadSize)</span>
+                <button type="button" class="btn btn-sm btn-secondary" @onclick="() => uploadStop?.Cancel()">Stop</button>
+            </div>
+        }
 
-    @if (commandEnabled)
-    {
-        <input class="form-control" placeholder="backup.cmd, or any shell command line"
-               value="@command" @oninput="e => command = e.Value?.ToString() ?? string.Empty"
-               disabled="@(saving || !Commands.Allowed)" />
-    }
-</div>
+        @if (importError is { } importFailed)
+        {
+            <p class="console-fault">@importFailed</p>
+        }
 
-<h3>Schedule</h3>
+        @if (importPreview is { } preview)
+        {
+            @if (!preview.CanImport)
+            {
+                <p class="console-fault">@preview.Refusal</p>
+            }
+            else
+            {
+                <dl class="import-summary">
+                    <dt>Layout</dt><dd>@preview.LayoutText()</dd>
+                    <dt>World</dt><dd>@preview.WorldsText()</dd>
+                    <dt>Config</dt>
+                    <dd>@(preview.ConfigFiles.Count > 0 ? string.Join(", ", preview.ConfigFiles) : "None")</dd>
+                    <dt>BDS version</dt><dd>@(preview.BdsVersion ?? "Not recorded")</dd>
+                    <dt>Taken from</dt><dd>@(preview.Origin?.Name ?? "Not recorded")</dd>
+                    <dt>Taken</dt>
+                    <dd>@ClockText.Day(preview.TakenUtc.ToLocalTime()), @ClockText.Time(preview.TakenUtc.ToLocalTime())</dd>
+                    <dt>Type</dt><dd><span class="format-chip">@preview.Kind</span></dd>
+                    <dt>Size</dt><dd>@preview.SizeText()</dd>
+                    @if (preview.LeftOut.Count > 0)
+                    {
+                        <dt>Left out</dt>
+                        <dd>@string.Join(", ", preview.LeftOut) — a backup never carries these.</dd>
+                    }
+                </dl>
 
-<div class="provision-controls">
-    <label class="field" style="margin:0">
-        <span>Run automatically</span>
-        <select class="form-select" @bind="scheduleMode" disabled="@saving">
-            <option value="@Core.Instances.RestartScheduleMode.None">Never — manual only</option>
-            <option value="@Core.Instances.RestartScheduleMode.EveryNMinutes">Every N minutes</option>
-            <option value="@Core.Instances.RestartScheduleMode.EveryNHours">Every N hours</option>
-            <option value="@Core.Instances.RestartScheduleMode.DailyAt">Daily at a set time</option>
-        </select>
-    </label>
+                <label class="form-label" for="import-note">Note (optional)</label>
+                <input id="import-note" class="form-control" @bind="importNote" maxlength="200"
+                       placeholder="Kept with this backup" disabled="@importing" />
 
-    @if (scheduleMode == Core.Instances.RestartScheduleMode.EveryNMinutes)
-    {
-        <label class="field" style="margin:0">
-            <span>Minutes</span>
-            <input class="form-control" type="number" min="1" style="width:6rem"
-                   @bind="scheduleMinutes" disabled="@saving" />
-        </label>
-    }
-    else if (scheduleMode == Core.Instances.RestartScheduleMode.EveryNHours)
-    {
-        <label class="field" style="margin:0">
-            <span>Hours</span>
-            <input class="form-control" type="number" min="1" style="width:6rem"
-                   @bind="scheduleHours" disabled="@saving" />
-        </label>
-    }
-    else if (scheduleMode == Core.Instances.RestartScheduleMode.DailyAt)
-    {
-        <label class="field" style="margin:0">
-            <span>At (local time)</span>
-            <input class="form-control" type="time" style="width:9rem"
-                   @bind="scheduleTime" disabled="@saving" />
-        </label>
-    }
-</div>
+                <p class="check-detail">
+                    It is listed under the time it was taken, as <strong>Imported</strong>, and marked
+                    Keep so retention never removes it.
+                </p>
+            }
+        }
 
-@if (scheduleMode != Core.Instances.RestartScheduleMode.None)
-{
-    <p class="check-detail">
-        A scheduled backup is skipped when nobody has played since the last one —
-        a world nobody touched has nothing new worth archiving. Manual backups
-        always run.
-    </p>
+        <div class="provision-controls">
+            <button type="button" class="btn btn-primary"
+                    disabled="@(importing || uploading || importPreview is not { CanImport: true })"
+                    @onclick="ImportAsync">
+                @(importing ? "Importing…" : "Import this backup")
+            </button>
+            <button type="button" class="btn btn-secondary" disabled="@importing" @onclick="CloseImport">
+                Cancel
+            </button>
+        </div>
+    </section>
 }
 
-<label class="field-row">
-    <input type="checkbox" checked="@backupOnRestart"
-           @onchange="e => backupOnRestart = (bool?)e.Value ?? false" disabled="@saving" />
-    <span>
-        Back up during scheduled restarts
-        <span class="check-detail">
-            Taken in the stop-start gap while the files are static — no save-pause
-            involved, and the restart continues even if the backup fails.
-        </span>
-    </span>
-</label>
-
-<label class="field-row">
-    <input type="checkbox" checked="@backupOnServerUpdate"
-           @onchange="e => backupOnServerUpdate = (bool?)e.Value ?? false" disabled="@saving" />
-    <span>
-        Back up before a Bedrock update
-        <span class="check-detail">
-            Taken in the same gap, before the new build's files go in. The update
-            keeps your world either way — this is for the case where the new build
-            takes against it.
-        </span>
-    </span>
-</label>
-
-<label class="field-row">
-    <input type="checkbox" checked="@backupOnWrapperUpdate"
-           @onchange="e => backupOnWrapperUpdate = (bool?)e.Value ?? false" disabled="@saving" />
-    <span>
-        Back up before BedrockSentry updates itself
-        <span class="check-detail">
-            Independent of the other two on purpose: the wrapper updating is a
-            different event from the server updating, and an install with several
-            servers may not want every one of them backed up for it.
-        </span>
-    </span>
-</label>
-
-<h3>Back up when players come and go</h3>
-
-<p class="lead">
-    A schedule either runs on an empty server or misses the session that mattered.
-    These fire on the event instead, which is what "capture what somebody built
-    before they logged off" actually needs.
-</p>
-
-<label class="field-row">
-    <input type="checkbox" checked="@backupOnJoin"
-           @onchange="e => backupOnJoin = (bool?)e.Value ?? false" disabled="@saving" />
-    <span>
-        When a player joins
-        <span class="check-detail">
-            Captures the world as they found it, before anyone changes anything.
-        </span>
-    </span>
-</label>
-
-<label class="field-row">
-    <input type="checkbox" checked="@backupOnLeave"
-           @onchange="e => backupOnLeave = (bool?)e.Value ?? false" disabled="@saving" />
-    <span>
-        When a player leaves
-        <span class="check-detail">
-            The more useful of the two — their session's work is on disk by then.
-        </span>
-    </span>
-</label>
-
-@if (backupOnJoin || backupOnLeave)
+@if (importSummary is { } imported)
 {
-    <div class="provision-controls">
-        <label class="field" style="margin:0">
-            <span>No more often than every</span>
-            <input class="form-control" type="number" min="0" style="width:6rem"
-                   @bind="activityGapMinutes" disabled="@saving" />
-        </label>
-        <span class="check-detail" style="align-self:center">minutes</span>
+    <p class="check-detail" role="status">@imported</p>
+}
+
+@* ONE table, because a run and a file are two views of one event and listing
+   them separately made an administrator reconcile them by eye. They genuinely
+   disagree in both directions — a run's files are pruned on a different rule
+   from the history's, and a file can outlive the record that wrote it — so the
+   join is `BackupTimeline` in `Services`, where a test can reach it, rather
+   than a LINQ expression in this file (`T145`). *@
+@if (rows.Count == 0)
+{
+    <p class="empty-state">No backups of this server yet, and no runs recorded.</p>
+}
+else if (shown.Count == 0)
+{
+    <p class="empty-state">
+        Nothing under <strong>@filter</strong>. There @(rows.Count == 1 ? "is" : "are")
+        @rows.Count @(rows.Count == 1 ? "row" : "rows") under <strong>All</strong>.
+    </p>
+}
+else
+{
+    <div class="table-wrap">
+        @* The defaults are sized for the table's 60rem floor, which is where any
+           narrower window puts it (`T275`). Each is its widest one-line content
+           plus the cell's padding there: a time such as "12:05 PM" with its date, a
+           format chip, a size such as "999.9 MB", and the widest row stage —
+           Restore, Restore as new, An area…, Cancel. Below those, each broke across two lines,
+           the chip mid-word. Result takes what is left, because it carries the
+           sentence and wraps it regardless. A width somebody has dragged is stored
+           in the browser and outranks these.
+
+           ONE <col> PER <th>, and `A_resizable_table_declares_one_col_per_column`
+           pins it: under a fixed layout the columns are assigned in order, so a
+           missing one shifts every width after it onto the wrong column. That is
+           invisible in a diff and invisible to every other check here. And the six
+           add up to the whole, which
+           `A_resizable_tables_default_widths_add_up_to_the_whole` pins: past 100% a
+           fixed layout scales every column back, so each is narrower than written. *@
+        <table id="backup-timeline" class="table-resizable">
+            <colgroup>
+                <col style="width: 12%" />
+                <col style="width: 17%" />
+                <col style="width: 20%" />
+                <col style="width: 11%" />
+                <col style="width: 11%" />
+                <col style="width: 29%" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Taken</th>
+                    <th>What started it</th>
+                    <th>Result</th>
+                    <th>Type</th>
+                    <th class="num">Size</th>
+                    <th class="actions">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in shown)
+                {
+                    var local = row.AtUtc.ToLocalTime();
+
+                    <tr>
+                        <td class="num">
+                            @ClockText.Time(local)
+                            <span class="check-detail" style="display:block">
+                                @ClockText.Day(local)
+                            </span>
+                        </td>
+
+                        <td>
+                            @if (row.Record is { } record)
+                            {
+                                @record.Reason
+
+                                @* A row with no file still has whatever was typed
+                                   beside "Back up now", and the block below can only
+                                   reach a note through the file. Without this a failed
+                                   run's note is on no surface at all. *@
+                                @if (row.Artifact is null
+                                     && record.Note is { Length: > 0 } runNote)
+                                {
+                                    <div class="check-detail">“@runNote”</div>
+                                }
+                            }
+                            else
+                            {
+                                <span class="check-detail">Not in this history</span>
+                            }
+
+                            @if (row.Artifact is { } noted)
+                            {
+                                var state = StateOf(noted.Name);
+
+                                @if (editingNoteFor == noted.Name)
+                                {
+                                    <div class="field-row" style="margin:0">
+                                        <input class="form-control" @bind="noteDraft" disabled="@savingNote"
+                                               placeholder="Why this one matters" />
+                                        <button class="btn btn-sm btn-primary" disabled="@savingNote"
+                                                @onclick="() => SaveNoteAsync(noted.Name)">Save</button>
+                                        <button class="btn btn-sm btn-secondary" disabled="@savingNote"
+                                                @onclick="() => editingNoteFor = null">Cancel</button>
+                                    </div>
+                                }
+                                else if (BackupArtifactState.DisplayNote(state.Note, NoteFor(noted.FullName))
+                                         is { Length: > 0 } shownNote)
+                                {
+                                    <div class="check-detail">“@shownNote”</div>
+                                }
+                            }
+
+                            @* Which file or folder it is in the backups folder, so a row
+                               can be matched to what is on disk. Kept on a pruned row too,
+                               where it names what retention removed. In this column because
+                               the first two are the only ones the pinned Actions column never
+                               covers while the frame is narrower than the table (`T321`,
+                               `T325`). *@
+                            @if (row.DiskName is { } diskName)
+                            {
+                                <div class="backup-disk-name">@diskName</div>
+                            }
+                        </td>
+
+                        <td>
+                            @* The row's own verdict, not the run's (`T282`): with both
+                               formats on, one can fail while the other works, and the
+                               run's "Failed" read onto the good copy would flag it. *@
+                            @if (row.Record is { } assessed && row.Outcome() is { } outcome)
+                            {
+                                <span class="@outcome.Severity.BadgeClass()">@outcome.Label</span>
+                                @* An import took no time here: it was taken elsewhere (`D110`). *@
+                                @if (!assessed.Skipped && !assessed.IsImported)
+                                {
+                                    @* The old table gave this its own column. Kept
+                                       because a backup taking minutes rather than
+                                       seconds is how somebody notices a volume going
+                                       bad, and nothing else on the page says it. *@
+                                    <span class="check-detail">in @Took(assessed)</span>
+                                }
+                                @if (outcome.Detail is { Length: > 0 } detail)
+                                {
+                                    <div class="check-detail">@detail</div>
+                                }
+                            }
+                            else
+                            {
+                                @* Deliberately not a verdict. Nothing assessed this
+                                   file, and rendering it as Ok would be the false
+                                   clear rather than the absence (`T202`). *@
+                                <span class="state-badge">No record</span>
+                                <div class="check-detail">
+                                    The file is here; the run that wrote it is older than the
+                                    history this server keeps.
+                                </div>
+                            }
+                        </td>
+
+                        <td>
+                            @* Named even when the file is gone, from the strategy that
+                               wrote it: two rows of one run whose files were both pruned
+                               would otherwise read identically. Size and the empty
+                               Actions cell are what say the file is no longer here. *@
+                            @if (row.Kind is { } kind)
+                            {
+                                <span class="format-chip">@kind</span>
+                                @if (row.Artifact is { } kept && StateOf(kept.Name).Locked)
+                                {
+                                    <span class="state-badge state-running">keep</span>
+                                }
+                            }
+                            else
+                            {
+                                <span class="check-detail">—</span>
+                            }
+                        </td>
+
+                        <td class="num">
+                            @if (row.Artifact is { } sized)
+                            {
+                                @ByteSize.Format(sized.SizeBytes)
+                            }
+                            else
+                            {
+                                <span class="check-detail">—</span>
+                            }
+                        </td>
+
+                        <td>
+                            @* One backup per row (`T282`). A run with both formats on
+                               is two rows, so this cell never stacks a second set of
+                               buttons under the first. *@
+                            @if (row.Artifact is { } artifact)
+                            {
+                                @* An action that needs a second thought asks for it HERE, by
+                                   replacing the buttons rather than opening a panel that has to
+                                   name the archive again. The three arms come from predicates in
+                                   `Core` rather than from a chain written here: the suite cannot
+                                   reach this file, and a stage matching none of them renders an
+                                   empty cell while one matching two renders Delete beside
+                                   Restore as new (`T252`). *@
+                                var stage = StageOf(artifact);
+
+                                @* Against the right edge at rest and the left edge while
+                                   asking, and which one is `Core`'s answer rather than a
+                                   comparison written here (`T282`). The move is what
+                                   says the row changed, and it takes the answers out
+                                   from under a double-click's second press. *@
+                                <div class="backup-row-actions @(BackupRowControls.IsAsking(stage) ? "asking" : null)">
+                                    @if (BackupRowControls.ShowsActions(stage))
+                                    {
+                                        <button class="btn btn-sm btn-quiet"
+                                                @onclick="() => BeginNote(artifact.Name)"
+                                                disabled="@(savingNote || editingNoteFor is not null)">
+                                            Note
+                                        </button>
+                                        <button class="btn btn-sm btn-quiet"
+                                                @onclick="() => ToggleLockAsync(artifact.Name)"
+                                                disabled="@savingNote">
+                                            @(StateOf(artifact.Name).Locked ? "Release" : "Keep")
+                                        </button>
+
+                                        @* One Restore at rest, not two. `D40`'s copy is the same
+                                           decision asked of a different target, so it belongs
+                                           behind the same press rather than beside it as a second
+                                           button nobody reads until they need it. *@
+                                        <button class="btn btn-sm btn-quiet"
+                                                @onclick="() => StageRestore(artifact)"
+                                                disabled="@(running || RestoreBusy || copying || deleting)">
+                                            Restore
+                                        </button>
+
+                                        @* `D110`. Icon-only like the bin, so the archive's name
+                                           is in the aria-label. *@
+                                        <button class="btn btn-sm btn-download"
+                                                @onclick="() => StageDownload(artifact)"
+                                                title="Download this backup"
+                                                aria-label="@($"Download {artifact.Name}")">
+                                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                                                 stroke-width="1.5" stroke-linecap="round"
+                                                 stroke-linejoin="round" aria-hidden="true"
+                                                 focusable="false">
+                                                <path d="M8 2.5v8" />
+                                                <path d="M4.5 7.5L8 11l3.5-3.5" />
+                                                <path d="M3 13.5h10" />
+                                            </svg>
+                                        </button>
+
+                                        @* Last on the row, after the options rather than among
+                                           them: the pointer never crosses the one control that
+                                           destroys something on its way to one that does not.
+                                           Icon-only, so the name of the archive is in the
+                                           aria-label — there is no text node here to fall back
+                                           on — and it names the archive rather than saying
+                                           "Delete", because a row of identical labels tells a
+                                           screen reader nothing about which row it is on.
+
+                                           Also held while a note is being edited, which Restore
+                                           is not. Restore leaves the archive's name in place;
+                                           this removes it, and the note editor's Save writes by
+                                           name — so saving after a delete would recreate the
+                                           exact orphan entry the deleter had just cleared. *@
+                                        <button class="btn btn-sm btn-delete"
+                                                @onclick="() => StageDelete(artifact)"
+                                                disabled="@(running || RestoreBusy || copying || deleting
+                                                            || savingNote || editingNoteFor is not null)"
+                                                title="Delete this backup"
+                                                aria-label="@($"Delete {artifact.Name}")">
+                                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                                             stroke-width="1.5" stroke-linecap="round"
+                                             stroke-linejoin="round" aria-hidden="true"
+                                             focusable="false">
+                                            <path d="M2.5 4h11" />
+                                            <path d="M6.5 4V2.5h3V4" />
+                                            <path d="M12.4 4l-.6 9.1a1 1 0 0 1-1 .9H5.2a1 1 0 0 1-1-.9L3.6 4" />
+                                            <path d="M6.6 6.8v4.4" />
+                                            <path d="M9.4 6.8v4.4" />
+                                        </svg>
+                                        </button>
+                                    }
+                                    else if (BackupRowControls.ShowsDeleteConfirm(stage))
+                                    {
+                                        @* The are-you-sure, and nothing else. An administrator
+                                           knows what delete means, and the row says which archive
+                                           this is about. *@
+                                        <button class="btn btn-sm btn-quiet-danger"
+                                                @onclick="ConfirmDeleteAsync" disabled="@deleting"
+                                                aria-label="@($"Confirm deleting {artifact.Name}")">
+                                            @(deleting ? "Deleting…" : "Delete")
+                                        </button>
+                                        <button class="btn btn-sm btn-quiet"
+                                                @onclick="ClearStage" disabled="@deleting">
+                                            Cancel
+                                        </button>
+                                    }
+                                    else if (BackupRowControls.ShowsDownloadChoice(stage))
+                                    {
+                                        @* Links rather than buttons: the browser saves the file,
+                                           and `download` keeps the panel's router off them. *@
+                                        <a class="btn btn-sm btn-quiet" download
+                                           href="@BackupExporter.UrlFor(Supervisor.InstanceId, artifact.Name, BackupDownloadFormat.Zip)"
+                                           title="The server's folder: unzip it, add bedrock_server.exe, and it runs"
+                                           aria-label="@($"Download {artifact.Name} as a .zip of the server's folder")">
+                                            .zip
+                                        </a>
+                                        <a class="btn btn-sm btn-quiet" download
+                                           href="@BackupExporter.UrlFor(Supervisor.InstanceId, artifact.Name, BackupDownloadFormat.McWorld)"
+                                           title="The world only, for Minecraft to import"
+                                           aria-label="@($"Download {artifact.Name} as a .mcworld of its world")">
+                                            .mcworld
+                                        </a>
+                                        <button class="btn btn-sm btn-quiet" @onclick="ClearStage">
+                                            Cancel
+                                        </button>
+                                    }
+                                    else if (BackupRowControls.ShowsRestoreChoice(stage))
+                                    {
+                                        <button class="btn btn-sm btn-quiet"
+                                                @onclick="() => BeginRestore(artifact.FullName)"
+                                                aria-label="@($"Restore {artifact.Name} over this server's world")">
+                                            Restore
+                                        </button>
+                                        <button class="btn btn-sm btn-quiet"
+                                                @onclick="() => BeginCopy(artifact)"
+                                                aria-label="@($"Restore {artifact.Name} as a new server")">
+                                            Restore as new
+                                        </button>
+
+                                        @* `D108`. One area of this server's world, put back from
+                                           this backup; the rest of the world is left as it is. *@
+                                        <button class="btn btn-sm btn-quiet"
+                                                @onclick="() => BeginAreaRestore(artifact)"
+                                                aria-label="@($"Restore an area of this server's world from {artifact.Name}")">
+                                            An area…
+                                        </button>
+                                        <button class="btn btn-sm btn-quiet" @onclick="ClearStage">
+                                            Cancel
+                                        </button>
+                                    }
+                                </div>
+                            }
+                            else if (row.Record is { } run && removable.Any(r => BackupHistoryRetention.SameRun(r, run)))
+                            {
+                                @* `D98`. A run that left nothing on disk can be taken out of the
+                                   history, asked here the way Delete asks. A run with a backup
+                                   still on disk keeps its row, or that file would lose its verdict
+                                   and its note. Both rows of a two-format run go together, since
+                                   they are one run. *@
+                                var stage = removingRun is { } staged && BackupHistoryRetention.SameRun(staged, run)
+                                    ? BackupRowStage.ConfirmRemoveFromHistory
+                                    : BackupRowStage.Actions;
+
+                                <div class="backup-row-actions @(BackupRowControls.IsAsking(stage) ? "asking" : null)">
+                                    @if (BackupRowControls.ShowsRemoveFromHistoryConfirm(stage))
+                                    {
+                                        <button class="btn btn-sm btn-quiet-danger" disabled="@removingBusy"
+                                                @onclick="ConfirmRemoveRunAsync">
+                                            @(removingBusy ? "Removing…" : "Remove from history")
+                                        </button>
+                                        <button class="btn btn-sm btn-quiet" disabled="@removingBusy"
+                                                @onclick="() => removingRun = null">
+                                            Cancel
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <button class="btn btn-sm btn-quiet" disabled="@(removingRun is not null)"
+                                                @onclick="() => removingRun = run">
+                                            Remove
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@* Two styles, because two of the four outcomes are not good news and one of them
+   is data destroyed. A folder copy that half deleted reaches the page rather than
+   only the log, which is `D67`'s rule — a warning nobody reads is how a gutted
+   backup went on presenting as a restorable one (`T229`). *@
+@if (deleteSummary is not null)
+{
+    <p class="@(deleteSummaryNeedsAttention ? "console-fault" : "check-detail")">@deleteSummary</p>
+}
+
+@if (copySummary is not null)
+{
+    <p class="check-detail">@copySummary</p>
+}
+}
+else
+{
+<div class="backup-settings">
+    <div class="backup-settings-column">
+        <div class="backup-card">
+            <h2>Backup type</h2>
+            <p class="backup-card-lead">
+                What a backup of this server <em>is</em>. Both can be on at once: they
+                run together against the same held snapshot and produce two copies of
+                the same instant, each recorded on its own.
+            </p>
+
+            <div class="backup-setting">
+                <input type="checkbox" id="fmt-zip" checked="@zipEnabled"
+                       @onchange="e => zipEnabled = (bool?)e.Value ?? false" disabled="@saving" />
+                <div class="backup-setting-body">
+                    <label class="backup-setting-label" for="fmt-zip">ZIP archive</label>
+                    <p>
+                        One compressed file per backup, holding exactly the snapshot —
+                        files are cut at the lengths the server declares, because the live
+                        files keep growing while saves are held and the extra bytes belong
+                        to the next save, not this one.
+                    </p>
+
+                    @if (zipEnabled)
+                    {
+                        <div class="backup-inline">
+                            <label for="fmt-compression">Compression</label>
+                            <select id="fmt-compression" class="form-select"
+                                    @bind="compression" disabled="@saving">
+                                <option value="@ZipCompression.None">None — fastest, friendliest to dedup tools</option>
+                                <option value="@ZipCompression.Balanced">Balanced</option>
+                                <option value="@ZipCompression.Maximum">Maximum — smallest, slowest</option>
+                            </select>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="backup-setting">
+                <input type="checkbox" id="fmt-folder" checked="@folderEnabled"
+                       @onchange="e => folderEnabled = (bool?)e.Value ?? false" disabled="@saving" />
+                <div class="backup-setting-body">
+                    <label class="backup-setting-label" for="fmt-folder">Folder copy</label>
+                    <p>
+                        One folder per backup, holding the world uncompressed, one file per
+                        file and cut to the same lengths. It restores by copying and can be
+                        read without any tooling.
+                    </p>
+                    <details>
+                        <summary class="check-detail">When this is the better one</summary>
+                        <p>
+                            On a volume running Windows Server Data Deduplication. Unchanged
+                            world files are byte-identical from one backup to the next and
+                            collapse completely, which compression prevents — so a folder copy
+                            can cost far less than a zip even though it looks larger.
+                        </p>
+                    </details>
+                </div>
+            </div>
+
+            <div class="backup-setting-group">
+                <span class="backup-group-label">How the backup reads the world files</span>
+
+                <div class="backup-setting backup-setting-flush">
+                <input type="checkbox" id="fmt-vss" checked="@useShadowCopy"
+                       @onchange="e => useShadowCopy = (bool?)e.Value ?? false" disabled="@saving" />
+                <div class="backup-setting-body">
+                    <label class="backup-setting-label" for="fmt-vss">Take a volume shadow copy first</label>
+                    <p>
+                        Not a third format — it applies to <em>both</em> of the formats above
+                        and one snapshot serves them both. Saves are then held only long
+                        enough to take the snapshot instead of for the whole copy, and a file
+                        another process is holding open can still be read.
+                    </p>
+                    <details>
+                        <summary class="check-detail">What it costs, and what it needs</summary>
+                        <p>
+                            <strong>Disk.</strong> Every backup still costs its full size on
+                            disk, whichever format wrote it — a shadow copy buys time, not
+                            space. The snapshot is released as soon as the copy is done.
+                        </p>
+                        <p>
+                            <strong>Privilege.</strong> Taking one is an administrative
+                            operation. Without it the backup still runs, from the live world,
+                            and says so on its row — saves are then held for the whole copy,
+                            which is the cost this setting exists to avoid. The
+                            <a href="status">Readiness</a> panel checks the privilege and the
+                            Volume Shadow Copy service before you find out on a schedule.
+                        </p>
+                    </details>
+                </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="backup-card">
+            <h2>Retention</h2>
+            <p class="backup-card-lead">
+                How many backups of this server are kept before the oldest is pruned.
+                A backup marked <strong>Keep</strong> is never pruned, whatever this says.
+            </p>
+
+            @if (!zipEnabled && !folderEnabled)
+            {
+                <div class="backup-setting">
+                    <div class="backup-setting-body">
+                        <p>No backups are being written, so none are being pruned.</p>
+                    </div>
+                </div>
+            }
+
+            @if (zipEnabled)
+            {
+                <div class="backup-setting">
+                    <div class="backup-setting-body">
+                        <span class="backup-group-label">ZIP archives</span>
+                        <div class="backup-inline">
+                            <select class="form-select" aria-label="Which ZIP archives to keep"
+                                    @bind="retentionMode" disabled="@saving">
+                                <option value="@BackupRetentionMode.KeepAll">Every archive</option>
+                                <option value="@BackupRetentionMode.Count">The newest N</option>
+                                <option value="@BackupRetentionMode.Days">The last N days</option>
+                            </select>
+
+                            @if (retentionMode != BackupRetentionMode.KeepAll)
+                            {
+                                <input class="form-control" type="number" min="1"
+                                       aria-label="How many ZIP archives to keep"
+                                       @bind="retentionValue" disabled="@saving" />
+                                <label>@(retentionMode == BackupRetentionMode.Count ? "archives" : "days")</label>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @if (folderEnabled)
+            {
+                <div class="backup-setting">
+                    <div class="backup-setting-body">
+                        <span class="backup-group-label">Folder copies</span>
+                        <div class="backup-inline">
+                            <select class="form-select" aria-label="Which folder copies to keep"
+                                    @bind="folderRetentionMode" disabled="@saving">
+                                <option value="@BackupRetentionMode.KeepAll">Every copy</option>
+                                <option value="@BackupRetentionMode.Count">The newest N</option>
+                                <option value="@BackupRetentionMode.Days">The last N days</option>
+                            </select>
+
+                            @if (folderRetentionMode != BackupRetentionMode.KeepAll)
+                            {
+                                <input class="form-control" type="number" min="1"
+                                       aria-label="How many folder copies to keep"
+                                       @bind="folderRetentionValue" disabled="@saving" />
+                                <label>@(folderRetentionMode == BackupRetentionMode.Count ? "copies" : "days")</label>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @* `D98`. The history's own retention, which applies whatever formats are on:
+               a skipped or failed run is a row too. *@
+            <div class="backup-setting">
+                <div class="backup-setting-body">
+                    <span class="backup-group-label">History rows</span>
+                    <div class="backup-inline">
+                        <input class="form-control" type="number" min="0"
+                               aria-label="How many days of history rows to keep"
+                               @bind="historyKeepDays" disabled="@saving" />
+                        <label>days</label>
+                    </div>
+                    <p class="check-detail">
+                        A row for a run with nothing left on disk goes once it is older than this;
+                        0 keeps every row. A row whose backup is still here, and the newest
+                        successful backup, always stay.
+                    </p>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <p class="check-detail">
-        The gap is what makes this a trigger rather than a way to leave saves
-        paused: a player on a poor connection can join and drop a dozen times in a
-        minute, and each of those would otherwise pause a live server to copy a
-        world. Manual and scheduled backups ignore it.
-    </p>
-}
+    @* The schedule and the triggers decide WHEN a backup is asked for, not
+       whether one can be written. With no format and no usable custom command
+       every one of these fires and produces nothing, so the card goes inert
+       rather than collecting settings that cannot take effect.
+
+       Asked of the FORM, not of the saved settings: ticking a format above has
+       to bring these back straight away, or the control reads as broken until
+       somebody happens to press Save. Same rule, different subject (`T151`
+       clause 6).
+
+       It stays visible and says why. A card that vanished would read as a bug
+       and get reported as one, which is `D45`'s reasoning about the custom
+       command box one card down. *@
+    @{
+        var triggersInert =
+            BackupFormatSummary.StateOf(Edited(), Commands.Allowed)
+                == BackupFormatSummary.BackupFormatState.Disabled;
+    }
+
+    <div class="backup-card @(triggersInert ? "backup-card-inert" : null)">
+        <h2>When it runs</h2>
+
+        @if (triggersInert)
+        {
+            <p class="prop-check warn">@BackupFormatSummary.InertNotice(Edited(), Commands.Allowed)</p>
+        }
+        <p class="backup-card-lead">
+            A scheduled run is skipped if nobody has played since the last one. Asking
+            on the Backups view always runs.
+        </p>
+
+        <div class="backup-setting">
+            <div class="backup-setting-body">
+                <span class="backup-group-label">On a schedule</span>
+                <div class="backup-inline">
+                    <select class="form-select" aria-label="On a schedule"
+                            @bind="scheduleMode" disabled="@(saving || triggersInert)">
+                        <option value="@Core.Instances.RestartScheduleMode.None">Never — manual only</option>
+                        <option value="@Core.Instances.RestartScheduleMode.EveryNMinutes">Every N minutes</option>
+                        <option value="@Core.Instances.RestartScheduleMode.EveryNHours">Every N hours</option>
+                        <option value="@Core.Instances.RestartScheduleMode.DailyAt">Daily at a set time</option>
+                    </select>
+
+                    @if (scheduleMode == Core.Instances.RestartScheduleMode.EveryNMinutes)
+                    {
+                        <input class="form-control" type="number" min="1" aria-label="Minutes between backups"
+                               @bind="scheduleMinutes" disabled="@(saving || triggersInert)" />
+                        <label>minutes</label>
+                    }
+                    else if (scheduleMode == Core.Instances.RestartScheduleMode.EveryNHours)
+                    {
+                        <input class="form-control" type="number" min="1" aria-label="Hours between backups"
+                               @bind="scheduleHours" disabled="@(saving || triggersInert)" />
+                        <label>hours</label>
+                    }
+                    else if (scheduleMode == Core.Instances.RestartScheduleMode.DailyAt)
+                    {
+                        <input class="form-control" type="time" style="width:9rem"
+                               aria-label="Time of day, local" @bind="scheduleTime" disabled="@(saving || triggersInert)" />
+                        <label>local time</label>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="backup-setting">
+            <div class="backup-setting-body">
+                <span class="backup-group-label">And on these events</span>
+
+                <label class="backup-check">
+                    <input type="checkbox" checked="@backupOnLeave"
+                           @onchange="e => backupOnLeave = (bool?)e.Value ?? false" disabled="@(saving || triggersInert)" />
+                    <span>
+                        A player leaves
+                        <span class="check-detail">— their session's work is on disk by then</span>
+                    </span>
+                </label>
+
+                <label class="backup-check">
+                    <input type="checkbox" checked="@backupOnJoin"
+                           @onchange="e => backupOnJoin = (bool?)e.Value ?? false" disabled="@(saving || triggersInert)" />
+                    <span>
+                        A player joins
+                        <span class="check-detail">— the world as they found it</span>
+                    </span>
+                </label>
+
+                <label class="backup-check">
+                    <input type="checkbox" checked="@backupOnRestart"
+                           @onchange="e => backupOnRestart = (bool?)e.Value ?? false" disabled="@(saving || triggersInert)" />
+                    <span>
+                        A scheduled restart
+                        <span class="check-detail">— taken in the stop-start gap, no save-pause</span>
+                    </span>
+                </label>
+
+                <label class="backup-check">
+                    <input type="checkbox" checked="@backupOnServerUpdate"
+                           @onchange="e => backupOnServerUpdate = (bool?)e.Value ?? false" disabled="@(saving || triggersInert)" />
+                    <span>
+                        A Bedrock update
+                        <span class="check-detail">— before the new build's files go in</span>
+                    </span>
+                </label>
+
+                <label class="backup-check">
+                    <input type="checkbox" checked="@backupOnWrapperUpdate"
+                           @onchange="e => backupOnWrapperUpdate = (bool?)e.Value ?? false" disabled="@(saving || triggersInert)" />
+                    <span>
+                        BedrockSentry updates itself
+                        <span class="check-detail">— independent of the two above, because an
+                        install with several servers may not want every one backed up for it</span>
+                    </span>
+                </label>
+            </div>
+        </div>
+
+        @if (backupOnJoin || backupOnLeave)
+        {
+            <div class="backup-setting">
+                <div class="backup-setting-body">
+                    <div class="backup-inline">
+                        <label for="activity-gap">Player events, no more often than every</label>
+                        <input id="activity-gap" class="form-control" type="number" min="0"
+                               @bind="activityGapMinutes" disabled="@(saving || triggersInert)" />
+                        <label>minutes</label>
+                    </div>
+                    <details>
+                        <summary class="check-detail">Why there is a gap at all</summary>
+                        <p>
+                            A player on a poor connection can join and drop a dozen times in a
+                            minute, and each of those would otherwise pause a live server to copy
+                            a world. Manual and scheduled backups ignore the gap.
+                        </p>
+                    </details>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@* D45. The box stays visible and says why rather than vanishing: a control that
+   disappears reads as a bug and gets reported as one, while one that explains
+   itself teaches the operator something about their own install. Its own card
+   below the two columns because it is additive — it is not a format, and the
+   wrapper cannot restore what it writes. *@
+<div class="backup-card backup-card-wide">
+    <div class="backup-setting backup-setting-flush">
+        <input type="checkbox" id="fmt-command" checked="@commandEnabled"
+               @onchange="e => commandEnabled = (bool?)e.Value ?? false"
+               disabled="@(saving || !Commands.Allowed)" />
+        <div class="backup-setting-body">
+            <div class="card-value">
+                <label class="backup-setting-label" for="fmt-command">Run a custom command</label>
+                @if (!Commands.Allowed)
+                {
+                    <span class="state-badge state-warning">disabled</span>
+                }
+            </div>
+
+            @if (!Commands.Allowed)
+            {
+                <p class="prop-check warn">@CustomCommandPolicy.Waiver</p>
+
+                @if (commandEnabled)
+                {
+                    @* A ticked-but-disabled box reads as "on". Somebody upgrading into
+                       the gate has to be told in the present tense that their backups
+                       are currently doing less than this panel appears to say. *@
+                    <p class="prop-check warn">
+                        This server has a command configured and it is <strong>not running</strong>.
+                        It starts again as soon as the setting above is turned on — nothing here
+                        needs changing and nothing has been discarded.
+                    </p>
+                }
+            }
+
+            <p>
+                Your own script or command, run while the snapshot is held. It gets the
+                context as environment variables — <code>BEDROCKSENTRY_WORLDS_DIR</code>,
+                <code>BEDROCKSENTRY_ARTIFACT_DIR</code> and friends — and
+                <code>BEDROCKSENTRY_MANIFEST_FILE</code> points at a <code>path:bytes</code>
+                list. Honour those byte counts when copying: the live files run longer than
+                the snapshot while saves are held.
+            </p>
+
+            @if (commandEnabled)
+            {
+                <p>
+                    <strong>On a running server, <code>copy</code>, <code>xcopy</code>,
+                    <code>robocopy</code> and <code>Copy-Item</code> will fail</strong> on
+                    <code>worlds\…\db\*.log</code>. The server holds its current write-ahead
+                    log open for writing, and those tools ask for read access that Windows
+                    will not grant alongside it. The wrapper's own ZIP strategy opens
+                    differently to get around this; a script has to do the same, or run only
+                    while the server is stopped.
+                </p>
+
+                <div class="backup-inline">
+                    <input class="form-control command-line"
+                           placeholder="backup.cmd, or any shell command line"
+                           value="@command" @oninput="e => command = e.Value?.ToString() ?? string.Empty"
+                           disabled="@(saving || !Commands.Allowed)" />
+                </div>
+            }
+        </div>
+    </div>
+</div>
 
 @if (saveError is not null)
 {
     <p class="console-fault">@saveError</p>
 }
 
-<div class="provision-controls">
-    <button class="btn btn-primary" @onclick="SaveSettingsAsync" disabled="@(saving || !Dirty)">
-        @(saving ? "Saving…" : "Save backup settings")
-    </button>
-    @if (savedFlash)
+@* Everything on this sheet applies on Save, so the bar says what is outstanding
+   rather than leaving somebody to remember. Discard re-seeds every field from the
+   saved definition through the same method the first load uses — two ways of
+   reading one record is how they come to disagree. *@
+<div class="save-bar">
+    @if (Dirty)
+    {
+        <span>Unsaved changes</span>
+        <span class="check-detail">The next backup still uses the saved settings.</span>
+    }
+    else if (savedFlash)
     {
         <span class="check-detail">Saved — the next backup uses these.</span>
     }
+    else
+    {
+        <span class="check-detail">Nothing to save.</span>
+    }
+
+    <span class="save-bar-spacer"></span>
+
+    <button class="btn btn-secondary" @onclick="DiscardChanges" disabled="@(saving || !Dirty)">
+        Discard
+    </button>
+    <button class="btn btn-primary" @onclick="SaveSettingsAsync" disabled="@(saving || !Dirty)">
+        @(saving ? "Saving…" : "Save")
+    </button>
 </div>
-
-<h3>Restore</h3>
-
-@if (archives.Count == 0)
-{
-    <p class="empty-state">
-        No restorable backups of this server yet — take one with the ZIP or the
-        snapshot strategy on. Custom-command backups appear in the history below for
-        reference, but the wrapper does not know their format and cannot restore them.
-    </p>
-}
-else
-{
-    @* The guarantee is deliberately not repeated here (`T168`). This paragraph is
-       shown before an archive is chosen, so it cannot know whether the configuration
-       box will be ticked — and that box is what decides whether a safety backup can
-       cover what is overwritten. Stating it twice is how one copy came to be wrong;
-       the dialog states it once, from SafetyBackupRule, when the answer is known. *@
-    <p class="lead">
-        Restoring replaces the world with the archive's contents. The server is
-        stopped first if it is running and starts again afterwards. Anything being
-        overwritten is copied to a safety backup first, listed here with the rest — so
-        undoing a restore is usually just restoring that one. Each archive's own
-        dialog says what applies to it.
-    </p>
-
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th>Backup</th>
-                    <th>Taken</th>
-                    <th class="num">Size</th>
-                    <th>Note</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var archive in archives)
-                {
-                    <tr>
-                        <td>
-                            <code>@archive.Name</code>
-                            <span class="roster-gamertag">@archive.Kind</span>
-                        </td>
-                        <td class="num">@archive.TakenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
-                        <td class="num">@($"{archive.SizeBytes / 1024.0 / 1024.0:0.0} MB")</td>
-                        <td>@NoteFor(archive.FullName)</td>
-                        <td>
-                            <button class="btn btn-sm btn-secondary"
-                                    @onclick="() => BeginRestore(archive.FullName)"
-                                    disabled="@(running || restoring)">
-                                Restore
-                            </button>
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    </div>
-
-    @if (restoreCandidate is not null)
-    {
-        <div class="danger-panel">
-            <h3>Restore @Path.GetFileName(restoreCandidate)</h3>
-            <p>
-                The current world of <strong>@Supervisor.Definition.Name</strong> will be
-                replaced with this archive's contents.
-                @(Supervisor.Status.State == Core.Instances.InstanceState.Running
-                    ? "The server will stop, restore, and start again — players online will be disconnected."
-                    : "The server is stopped, so this applies immediately.")
-            </p>
-
-            @* The undo sentence comes from SafetyBackupRule rather than being written
-               here (`T168`). This used to read "A safety backup is taken first either
-               way", which is a guarantee, and on an instance with configuration and an
-               empty world it was not one. Recomputed as the configuration box moves,
-               because the box is what decides whether anything is overwritten. *@
-            <p class="@(safetyNeed == SafetyBackupNeed.ImpossibleForConfig ? "prop-check warn" : "check-detail")">
-                @SafetyBackupRule.Promise(safetyNeed)
-            </p>
-
-            @if (candidateConfigFiles > 0)
-            {
-                <label class="field-row">
-                    <input type="checkbox" checked="@restoreConfig"
-                           @onchange="ConfigBoxChanged"
-                           disabled="@restoring" />
-                    <span>
-                        Also restore this server's configuration
-                        (@candidateConfigFiles file@(candidateConfigFiles == 1 ? "" : "s") —
-                        <code>server.properties</code>, the allowlist and permissions)
-                    </span>
-                </label>
-                <p class="check-detail">
-                    Off by default on purpose. An old <code>server.properties</code> can move the
-                    port, which is the one change that makes a server unreachable rather than
-                    merely wrong. Leave it unticked to restore the world alone.
-                </p>
-            }
-
-            @* Off only when an administrator has hand-edited the config, and the
-               waiver is shown here as well as logged at startup (`T172`). *@
-            @if (Confirm.PasswordRequired)
-            {
-                <label class="field">
-                    <span>Confirm with your BedrockSentry password</span>
-                    <input class="form-control" type="password" autocomplete="current-password"
-                           value="@restorePassword"
-                           @oninput="e => restorePassword = e.Value?.ToString() ?? string.Empty"
-                           disabled="@restoring" />
-                </label>
-            }
-            else
-            {
-                <p class="prop-check warn">@DestructiveConfirmPolicy.Waiver</p>
-            }
-
-            @if (restoreError is not null)
-            {
-                <p class="console-fault">@restoreError</p>
-            }
-
-            <div class="provision-controls">
-                <button class="btn btn-danger" @onclick="ConfirmRestoreAsync"
-                        disabled="@(restoring || !RestoreIsPossible)">
-                    @(restoring ? "Restoring…" : "Restore this archive")
-                </button>
-                <button class="btn btn-secondary" @onclick="CancelRestore" disabled="@restoring">Cancel</button>
-            </div>
-        </div>
-    }
-
-    @if (restoreSummary is not null)
-    {
-        <p class="check-detail">@restoreSummary</p>
-    }
-}
-
-<h3>History</h3>
-
-@if (history.Count == 0)
-{
-    <p class="empty-state">No backups of this server yet.</p>
-}
-else
-{
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th>When</th>
-                    <th>Why</th>
-                    <th>Outcome</th>
-                    <th class="num">Took</th>
-                    <th>Note</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var record in history)
-                {
-                    <tr>
-                        <td class="num">@record.StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
-                        <td>@record.Reason</td>
-                        <td>
-                            @{ var outcome = record.Outcome(); }
-                            <span class="@outcome.Severity.BadgeClass()">@outcome.Label</span>
-                            @if (outcome.Detail is { Length: > 0 } detail)
-                            {
-                                <div class="check-detail">@detail</div>
-                            }
-                        </td>
-                        <td class="num">@Took(record)</td>
-                        <td>@record.Note</td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    </div>
 }
 
 @code {
@@ -561,27 +1529,82 @@ else
     private CustomCommandPolicy Commands { get; set; } = default!;
     private bool restoring;
     private string? restoreError;
-    private string? restoreSummary;
 
     // Deliberately reset to false every time the panel opens rather than
     // remembered: putting an old server.properties back can move the port,
     // which is the one change that makes a server unreachable rather than
     // merely wrong, so it should be a decision taken per restore.
     private bool restoreConfig;
-    private int candidateConfigFiles;
+
+    // `D97`. Reset to true each time the panel opens, the opposite default to the
+    // configuration's: putting a world's own add-ons back with it is what a
+    // restore is, and keeping the server's is the exception somebody asks for.
+    private bool restoreAddons = true;
+    private BackupContents candidateContents = BackupContents.Empty;
     private SafetyBackupNeed safetyNeed = SafetyBackupNeed.Required;
+
+    /// <summary>Why a link in the server's folder refuses the restore, or null.</summary>
+    private string? restoreLink;
+
+    // `D40`. Its own fields rather than the restore dialog's, although the two ask
+    // some of the same questions: opening either closes the other, so a shared
+    // field would be clobbered by whichever was opened last, and the answers have
+    // different lifetimes even where they have the same value (`T151` clause 6).
+    // ONE staged row at a time, held here rather than per row: two rows mid-question
+    // is two archives asking the same thing in the same column, and the reader
+    // answers for whichever they were looking at. The whole record rather than a
+    // path, because the deleter needs to know which format wrote it — that is what
+    // decides whether a failure left the artifact intact or destroyed.
+    private RestorableBackup? stagedBackup;
+    private BackupRowStage stagedAs = BackupRowStage.Actions;
+
+    private bool deleting;
+    private string? deleteSummary;
+    private bool deleteSummaryNeedsAttention;
+
+    [Inject]
+    private BackupDeleter Deleter { get; set; } = default!;
+
+    private string? copyCandidate;
+    private string copyName = string.Empty;
+    private string? copyPackage;
+    private int copyPort;
+    private string copyFolder = string.Empty;
+    private bool copyConfig;
+    private bool copyAddons = true;
+    private BackupContents copyContents = BackupContents.Empty;
+    private bool copying;
+    private string? copyError;
+    private string? copySummary;
+    private RestoreBuildChoice copyChoice;
+    private IReadOnlyList<ServerPackage> packages = [];
 
     private string note = string.Empty;
     private bool running;
     private string? runError;
 
     private bool zipEnabled;
-    private bool vssEnabled;
-    private BackupRetentionMode vssRetentionMode;
-    private int vssRetentionValue = 10;
+    private bool folderEnabled;
+    private bool useShadowCopy;
+    private BackupRetentionMode folderRetentionMode;
+    private int folderRetentionValue = 10;
+    private int historyKeepDays = BackupHistorySettings.DefaultKeepDays;
+
+    // `D98`. The runs whose rows may be removed, read with the history, and the one
+    // whose Remove is asking for a second press.
+    private IReadOnlyList<BackupRecord> removable = [];
+    private BackupRecord? removingRun;
+    private bool removingBusy;
     private ZipCompression compression;
     private BackupRetentionMode retentionMode;
     private int retentionValue;
+
+    // What the settings held when the tab was seeded, kept so a save can write it
+    // back unchanged while the input is hidden (`D76`). Not the same thing as the
+    // fields above, which carry the CLAMPED seed — that clamp is exactly what was
+    // reaching the config unasked.
+    private int storedZipRetentionValue;
+    private int storedFolderRetentionValue;
     private bool commandEnabled;
     private string command = string.Empty;
     private Core.Instances.RestartScheduleMode scheduleMode;
@@ -625,12 +1648,21 @@ else
         {
             Enabled = zipEnabled,
             Compression = compression,
-            Retention = new() { Mode = retentionMode, Value = retentionValue },
+
+            // Through Core rather than composed here, so the two formats cannot
+            // drift and the rule is somewhere a test can reach it (`D76`).
+            Retention = BackupRetentionPlan.AsSaved(
+                retentionMode, retentionValue, storedZipRetentionValue),
         },
-        Vss = new()
+        Folder = new()
         {
-            Enabled = vssEnabled,
-            Retention = new() { Mode = vssRetentionMode, Value = vssRetentionValue },
+            Enabled = folderEnabled,
+            Retention = BackupRetentionPlan.AsSaved(
+                folderRetentionMode, folderRetentionValue, storedFolderRetentionValue),
+        },
+        Acquisition = new()
+        {
+            UseShadowCopy = useShadowCopy,
         },
         CustomCommand = new()
         {
@@ -660,6 +1692,10 @@ else
             OnServerUpdate = backupOnServerUpdate,
             OnWrapperUpdate = backupOnWrapperUpdate,
         },
+        History = new()
+        {
+            KeepDays = Math.Max(0, historyKeepDays),
+        },
     };
 
     /// <summary>
@@ -684,15 +1720,79 @@ else
         if (seededFor != Supervisor.InstanceId)
         {
             seededFor = Supervisor.InstanceId;
+            SeedFromDefinition();
+        }
 
+        // Deliberately outside the guard: a scheduled backup, or one started from
+        // another browser tab, should appear in the table while this page is
+        // open. It reads history and lists archives only — no editor state.
+        await LoadHistoryAsync();
+    }
+
+    /// <summary>
+    /// Hands the timeline's columns to the script that makes them draggable.
+    /// </summary>
+    /// <remarks>
+    /// <para>Every render, not only the first. The table is behind
+    /// <c>@if (view == BackupsView.Working)</c> and a filter chip rebuilds it, so a
+    /// first-render-only call attaches to a table that is often not on the page yet
+    /// and never runs again when it arrives. <c>attach</c> is written to be safe to
+    /// call repeatedly: it re-applies the stored widths and adds its grips once.</para>
+    ///
+    /// <para>The key is per install rather than per instance, so widths chosen on
+    /// one server's Backups tab are the widths every server's has. The columns are
+    /// the same six whichever instance is open, and a person who widened
+    /// <em>Result</em> did so because of how they read the table.</para>
+    ///
+    /// <para><c>JSDisconnectedException</c> is the ordinary end of a circuit — a
+    /// closed tab, a navigation — and it arrives here because this runs after every
+    /// render. It is caught rather than logged: nothing is wrong, and the widths of
+    /// a table nobody is looking at do not matter.</para>
+    /// </remarks>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "bedrockSentryColumns.attach", "backup-timeline", "bedrocksentry.columns.backups");
+
+            // `D111`. A panel opened from a row far down the list is brought into view,
+            // and so are the controls and their strip once a restore starts.
+            if (scrollTo is { } selector)
+            {
+                scrollTo = null;
+                await JS.InvokeVoidAsync("bedrockSentryScrollTo", selector);
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+    }
+
+    /// <summary>Put every field on the settings sheet back to what is saved.</summary>
+    /// <remarks>
+    /// One method rather than a copy in the first load and another behind Discard.
+    /// Two readings of one record is how they come to disagree, and the copy
+    /// nobody exercises is the one that goes stale (`T126`).
+    /// </remarks>
+    private void SeedFromDefinition()
+    {
+        {
             var settings = Supervisor.Definition.Backup;
             zipEnabled = settings.Zip.Enabled;
-            vssEnabled = settings.Vss.Enabled;
-            vssRetentionMode = settings.Vss.Retention.Mode;
-            vssRetentionValue = Math.Max(1, settings.Vss.Retention.Value);
+            folderEnabled = settings.Folder.Enabled;
+            useShadowCopy = settings.Acquisition.UseShadowCopy;
+            folderRetentionMode = settings.Folder.Retention.Mode;
+            folderRetentionValue = Math.Max(1, settings.Folder.Retention.Value);
             compression = settings.Zip.Compression;
             retentionMode = settings.Zip.Retention.Mode;
             retentionValue = Math.Max(1, settings.Zip.Retention.Value);
+
+            // Unclamped, and that is the whole of `D76`: the clamps above make the
+            // INPUT sane, and this is what a save writes back while there is no
+            // input to have made sane.
+            storedZipRetentionValue = settings.Zip.Retention.Value;
+            storedFolderRetentionValue = settings.Folder.Retention.Value;
             commandEnabled = settings.CustomCommand.Enabled;
             command = settings.CustomCommand.Command;
             scheduleMode = settings.Schedule.Mode;
@@ -705,12 +1805,16 @@ else
             backupOnRestart = settings.OnShutdown.OnScheduledRestart;
             backupOnServerUpdate = settings.OnShutdown.OnServerUpdate;
             backupOnWrapperUpdate = settings.OnShutdown.OnWrapperUpdate;
+            historyKeepDays = Math.Max(0, settings.History.KeepDays);
         }
+    }
 
-        // Deliberately outside the guard: a scheduled backup, or one started from
-        // another browser tab, should appear in the table while this page is
-        // open. It reads history and lists archives only — no editor state.
-        await LoadHistoryAsync();
+    /// <summary>Throw away the unsaved edits on the settings sheet.</summary>
+    private void DiscardChanges()
+    {
+        SeedFromDefinition();
+        savedFlash = false;
+        saveError = null;
     }
 
     private async Task LoadHistoryAsync()
@@ -721,7 +1825,105 @@ else
         // one happen and did it work".
         history = records.Reverse().ToList();
         archives = Restorer.ListBackups(Supervisor.InstanceId);
+        removable = History.Removable(Supervisor.InstanceId, records);
+
+        // Read with the history rather than lazily, so a lock set in another tab
+        // shows up on the same refresh the archive list does (`D68`).
+        artifactStates = await Artifacts.ReadAsync(Supervisor.InstanceId);
+
+        // The anchor BackupScheduler measures an interval from: the last
+        // attempt's finish, or now when there has never been one. Read from the
+        // same records for the same reason the rule is shared — a card measuring
+        // from "the last SUCCESSFUL backup" would quietly disagree with a
+        // scheduler that measures from the last ATTEMPT (`T248`).
+        scheduleAnchor = NextBackup.AnchorFrom(records, DateTimeOffset.UtcNow);
     }
+
+    private DateTimeOffset scheduleAnchor = DateTimeOffset.UtcNow;
+
+    /// <summary>Takes the staged run out of the history (`D98`).</summary>
+    /// <remarks>
+    /// The history decides again whether it may go, so a backup that appeared on disk
+    /// since the row was drawn keeps its row.
+    /// </remarks>
+    private async Task ConfirmRemoveRunAsync()
+    {
+        if (removingRun is not { } run || removingBusy)
+        {
+            return;
+        }
+
+        removingBusy = true;
+
+        try
+        {
+            await History.RemoveAsync(Supervisor.InstanceId, run);
+        }
+        finally
+        {
+            removingBusy = false;
+            removingRun = null;
+            await LoadHistoryAsync();
+        }
+    }
+
+    /// <summary>
+    /// When this instance is next due to be backed up without anybody asking.
+    /// </summary>
+    /// <remarks>
+    /// Recomputed per render rather than cached, so the countdown is not stale
+    /// the moment a schedule is saved on this very tab. <c>NextBackup</c> is the
+    /// scheduler's own rule, so the two cannot come to disagree about the moment
+    /// this renders (`T248`).
+    /// </remarks>
+    private NextBackup NextDue =>
+        NextBackup.For(Supervisor.Definition.Backup, scheduleAnchor, DateTimeOffset.UtcNow);
+
+    /// <summary>Which rows of the timeline the chips are asking for.</summary>
+    /// <remarks>
+    /// Component state and not a route, for the switch's reason: it narrows one
+    /// list rather than moving anywhere. The rule itself is
+    /// <see cref="BackupTimeline.Matches"/> so a chip and the count beside it
+    /// cannot come to mean different things.
+    /// </remarks>
+    private BackupTimelineFilter filter = BackupTimelineFilter.Restorable;
+
+    /// <summary>Which of the tab's two views is showing.</summary>
+    /// <remarks>
+    /// The working view is the default because it is why somebody opens this
+    /// tab: what has been backed up and how to put one back. Settings are
+    /// changed once and then left, and they were what a reader had to scroll
+    /// past to reach the history.
+    /// </remarks>
+    private enum BackupsView
+    {
+        Working,
+        Settings,
+    }
+
+    private BackupsView view = BackupsView.Working;
+
+    /// <summary>
+    /// Where this server stands: whether anything can be put back, and whether
+    /// the machinery making backups is working.
+    /// </summary>
+    /// <remarks>
+    /// <para>The two halves come from different places on purpose. What is
+    /// restorable is read off the disk, because a restore puts back a
+    /// <em>file</em>; whether backups are working is read from the history,
+    /// because a file cannot say why the run after it failed. Deriving either
+    /// from the other is what lets a green history render over an empty
+    /// folder.</para>
+    ///
+    /// <para>The newest date is <c>BackupStanding.NewestTaken</c>'s: the newest
+    /// file this server took, leaving imports out, in any order the picker hands
+    /// it. <c>BackupStandingTests</c> pins the arms.</para>
+    /// </remarks>
+    private BackupStanding Standing => BackupStanding.For(
+        history,
+        KeptOnDisk.Of(archives).Count,
+        BackupStanding.NewestTaken(archives.Select(a => (a.FullName, a.TakenUtc)), history),
+        KeptOnDisk.Of(archives).Bytes);
 
     /// The note travels with the history record, not the file — find the record
     /// whose zip this is. A hand-placed archive simply has none.
@@ -735,6 +1937,64 @@ else
     /// stamped to the second. Exact match still goes first, so a name collision
     /// between two folders cannot beat a path that genuinely matches.
     /// </remarks>
+    // ---- D68: per-artifact notes and locks --------------------------------
+
+    private IReadOnlyDictionary<string, BackupArtifactState> artifactStates =
+        new Dictionary<string, BackupArtifactState>(StringComparer.OrdinalIgnoreCase);
+
+    private string? editingNoteFor;
+    private string noteDraft = string.Empty;
+    private bool savingNote;
+
+    private BackupArtifactState StateOf(string name) =>
+        artifactStates.TryGetValue(name, out var state) ? state : new BackupArtifactState();
+
+    private void BeginNote(string name)
+    {
+        editingNoteFor = name;
+        noteDraft = StateOf(name).Note ?? string.Empty;
+    }
+
+    private async Task SaveNoteAsync(string name)
+    {
+        savingNote = true;
+
+        try
+        {
+            await Artifacts.SetAsync(
+                Supervisor.InstanceId, name, StateOf(name) with { Note = noteDraft });
+
+            artifactStates = await Artifacts.ReadAsync(Supervisor.InstanceId);
+            editingNoteFor = null;
+        }
+        finally
+        {
+            savingNote = false;
+        }
+    }
+
+    /// A lock is one click and no confirmation, both ways. It is reversible, it
+    /// destroys nothing, and the only thing it changes is whether retention may
+    /// reach this artifact — so a dialog here would be friction against the safe
+    /// direction.
+    private async Task ToggleLockAsync(string name)
+    {
+        savingNote = true;
+
+        try
+        {
+            var state = StateOf(name);
+            await Artifacts.SetAsync(
+                Supervisor.InstanceId, name, state with { Locked = !state.Locked });
+
+            artifactStates = await Artifacts.ReadAsync(Supervisor.InstanceId);
+        }
+        finally
+        {
+            savingNote = false;
+        }
+    }
+
     private string? NoteFor(string archivePath)
     {
         var candidates = history
@@ -761,13 +2021,19 @@ else
 
     private void BeginRestore(string archivePath)
     {
+        copyCandidate = null;
+        ClearStage();
         restoreCandidate = archivePath;
         restorePassword = string.Empty;
         restoreError = null;
-        restoreSummary = null;
         restoreConfig = false;
-        candidateConfigFiles = Restorer.CountConfigFiles(archivePath);
+        restoreAddons = true;
+        areaCandidate = null;
+        areaElsewhere = null;
+        candidateContents = Restorer.ReadContents(archivePath);
         safetyNeed = Restorer.NeedFor(Supervisor, restoreConfig);
+        restoreLink = Restorer.LinkRefusal(Supervisor);
+        scrollTo = ".backups-panels";
     }
 
     /// <summary>
@@ -781,14 +2047,198 @@ else
         safetyNeed = Restorer.NeedFor(Supervisor, restoreConfig);
     }
 
+    /// <summary>
+    /// Opens the copy dialog for one backup, and works out which build it offers.
+    /// </summary>
+    /// <remarks>
+    /// The build question is asked per backup rather than per instance, because its
+    /// answer depends on when THIS backup was taken: the same instance and the same
+    /// version log give a different state for an archive from before its last
+    /// Bedrock update and one from after (`D41`).
+    /// </remarks>
+    private void BeginCopy(RestorableBackup backup)
+    {
+        restoreCandidate = null;
+        areaCandidate = null;
+        areaElsewhere = null;
+        scrollTo = ".backups-panels";
+        ClearStage();
+        copyCandidate = backup.FullName;
+        copyError = null;
+        copySummary = null;
+        copyConfig = false;
+        copyAddons = true;
+        copyFolder = string.Empty;
+        copyName = $"{Supervisor.Definition.Name} copy";
+        copyPort = Ports.SuggestPort();
+        copyContents = Restorer.ReadContents(backup.FullName);
+        packages = Packages.List();
+
+        var recorded = Versions.Read(Supervisor.InstanceId);
+
+        copyChoice = RestoreBuildChoice.For(
+            packages,
+            recorded is null
+                ? null
+                : new RecordedBuild(recorded.Version, recorded.IsAnUpdate, recorded.FirstSeenUtc),
+            backup.TakenUtc,
+            copyContents.BdsVersion);
+
+        copyPackage = copyChoice.Preselected ?? string.Empty;
+    }
+
+    private void CancelCopy()
+    {
+        copyCandidate = null;
+        copyError = null;
+    }
+
+    private async Task ConfirmCopyAsync()
+    {
+        if (copying || copyCandidate is null || !CopyIsPossible)
+        {
+            return;
+        }
+
+        copying = true;
+        copyError = null;
+
+        try
+        {
+            var result = await Copier.RestoreAsync(Supervisor, new RestoreAsNewRequest(
+                copyCandidate,
+                copyName.Trim(),
+                copyPackage!,
+                copyPort,
+                string.IsNullOrWhiteSpace(copyFolder) ? null : copyFolder.Trim(),
+                copyConfig,
+                copyAddons));
+
+            // One statement of the sentence, in Services where a test can reach it.
+            // It is shown whether or not the world went in, because by the time it
+            // could fail the server exists and saying nothing about it would be the
+            // worse of the two failures (`T229`).
+            copySummary = result.Summary();
+            copyCandidate = null;
+        }
+        catch (Exception ex)
+        {
+            copyError = ex.Message;
+        }
+        finally
+        {
+            copying = false;
+        }
+    }
+
+    /// <summary>
+    /// Whether the copy button can act — asked by the attribute and the handler
+    /// both, because a disabled button is a hint and the handler is the rule.
+    /// </summary>
+    private bool CopyIsPossible =>
+        copyContents.CanRestore
+        && copyChoice.CanCreate
+        && !string.IsNullOrWhiteSpace(copyName)
+        && !string.IsNullOrEmpty(copyPackage);
+
+    /// <summary>Confirming a restore, or one running in the background (`D111`).</summary>
+    private bool RestoreBusy => restoring || Restores.IsRunning(Supervisor.InstanceId);
+
+    /// <summary>What the next render scrolls to: the panels when one opens, the controls when a restore starts.</summary>
+    private string? scrollTo;
+
+    // `D108`: one area restored from one backup.
+    private RestorableBackup? areaCandidate;
+
+    // `D111`: the server the area goes onto, this one unless another is chosen.
+    private string areaTargetId = string.Empty;
+
+    /// <summary>Said here when the area went onto another server, whose own page shows its steps.</summary>
+    private string? areaElsewhere;
+
+    /// <summary>The other servers an area can go onto, by name.</summary>
+    private IEnumerable<InstanceSupervisor> AreaTargets => Registry.All
+        .Where(s => s.InstanceId != Supervisor.InstanceId && !s.Definition.Retired)
+        .OrderBy(s => s.Definition.Name, StringComparer.CurrentCultureIgnoreCase);
+
+    private string AreaTargetName =>
+        Registry.TryGet(areaTargetId, out var target) ? target.Definition.Name : Supervisor.Definition.Name;
+
+    private AreaRestoreTarget areaTarget = AreaRestoreTarget.Named(string.Empty);
+    private string? areaError;
+    private bool areaStarting;
+
+    private AreaRestorePlan AreaPlan => AreaRestorePlan.For(areaTarget, Supervisor.Definition.Sync.KeptAreas);
+
+    /// <summary>Asked by the button and the handler both: a disabled button is a hint, the handler the rule.</summary>
+    /// <remarks>
+    /// No password, as the operator chose on 2026-10-09: a restore of one area takes a safety
+    /// backup of the whole world first, and <c>restorearea</c> in game asks for none either.
+    /// </remarks>
+    private bool AreaRestoreIsPossible => AreaPlan.CanRestore;
+
+    private void BeginAreaRestore(RestorableBackup backup)
+    {
+        restoreCandidate = null;
+        copyCandidate = null;
+        ClearStage();
+        areaCandidate = backup;
+        areaTargetId = Supervisor.InstanceId;
+        areaElsewhere = null;
+        scrollTo = ".backups-panels";
+        areaError = null;
+    }
+
+    private void CancelAreaRestore()
+    {
+        areaCandidate = null;
+        areaError = null;
+    }
+
+    private async Task ConfirmAreaRestoreAsync()
+    {
+        if (areaStarting || areaCandidate is null || !AreaRestoreIsPossible)
+        {
+            return;
+        }
+
+        areaStarting = true;
+        areaError = null;
+
+        try
+        {
+            var target = Registry.TryGet(areaTargetId, out var chosen) ? chosen : Supervisor;
+
+            await AreaRestores.StartAsync(target.InstanceId, areaTarget, areaCandidate.Name, from: Supervisor.InstanceId);
+
+            areaElsewhere = target == Supervisor
+                ? null
+                : AreaRestoreText.RunsElsewhere(target.Definition.Name);
+            areaCandidate = null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            areaError = ex.Message;
+        }
+        finally
+        {
+            areaStarting = false;
+        }
+    }
+
     private void CancelRestore()
     {
         restoreCandidate = null;
         restorePassword = string.Empty;
         restoreError = null;
         restoreConfig = false;
+        restoreAddons = true;
     }
 
+    /// <summary>
+    /// Checks the password, then starts the restore in the background and closes the panel:
+    /// its steps and how it ended show in the strip under the server's controls (`D111`).
+    /// </summary>
     private async Task ConfirmRestoreAsync()
     {
         if (restoring || restoreCandidate is null || !RestoreIsPossible)
@@ -801,21 +2251,17 @@ else
 
         try
         {
-            if (!await PasswordIsRightAsync())
+            if (await RefusalAsync(restorePassword) is { } refusal)
             {
-                restoreError = "That password is not right.";
+                restoreError = refusal;
                 return;
             }
 
-            var result = await Restorer.RestoreAsync(Supervisor, restoreCandidate, restoreConfig);
-
-            // One statement of the sentence, in Services where a test can reach
-            // it (`T151`). This page cannot be seen by the suite at all.
-            restoreSummary = result.Summary();
-
+            Restores.Start(Supervisor, restoreCandidate, restoreConfig, restoreAddons);
             restoreCandidate = null;
+            scrollTo = ".instance-bar";
         }
-        catch (Exception ex)
+        catch (InvalidOperationException ex)
         {
             restoreError = ex.Message;
         }
@@ -823,7 +2269,6 @@ else
         {
             restoring = false;
             restorePassword = string.Empty;
-            await LoadHistoryAsync();
         }
     }
 
@@ -836,7 +2281,10 @@ else
     // button is where somebody finds out before committing, and the restorer is what
     // makes it true for any caller, including an HTTP POST that never saw this page.
     private bool RestoreIsPossible =>
-        safetyNeed is not SafetyBackupNeed.ImpossibleForConfig
+        !Restores.IsRunning(Supervisor.InstanceId)
+        && candidateContents.CanRestore
+        && !SafetyBackupRule.Refuses(safetyNeed)
+        && restoreLink is null
         && Confirm.MayConfirm(restorePassword);
 
     /// <remarks>
@@ -844,11 +2292,258 @@ else
     /// <c>DestructiveConfirmPolicy</c>; this page used to carry its own copy of both the
     /// button predicate and the early return.
     /// </remarks>
-    private async Task<bool> PasswordIsRightAsync()
+    private async Task<string?> RefusalAsync(string typed)
     {
         var state = AuthenticationState is null ? null : await AuthenticationState;
 
-        return Confirm.Accepts(state?.User.Identity?.Name, restorePassword);
+        return await Confirm.RefusalAsync(state?.User.Identity?.Name, typed);
+    }
+
+    /// <summary>Which controls one artifact's cell is showing.</summary>
+    /// <remarks>
+    /// Compared on the full path rather than the name: a run with both formats on
+    /// writes two artifacts whose names differ only by extension, and both are rows
+    /// in the same table.
+    /// </remarks>
+    private BackupRowStage StageOf(RestorableBackup artifact) =>
+        stagedBackup is not null
+        && string.Equals(stagedBackup.FullName, artifact.FullName, StringComparison.OrdinalIgnoreCase)
+            ? stagedAs
+            : BackupRowStage.Actions;
+
+    /// <remarks>
+    /// Staging closes the two panels, the way opening either of them used to close
+    /// the other: a panel describing one archive under a row asking about another is
+    /// two answers to one question.
+    /// </remarks>
+    private void Stage(RestorableBackup archive, BackupRowStage stage)
+    {
+        restoreCandidate = null;
+        copyCandidate = null;
+        stagedBackup = archive;
+        stagedAs = stage;
+        deleteSummary = null;
+    }
+
+    private void StageDelete(RestorableBackup archive) => Stage(archive, BackupRowStage.ConfirmDelete);
+
+    private void StageRestore(RestorableBackup archive) => Stage(archive, BackupRowStage.ChooseRestore);
+
+    private void StageDownload(RestorableBackup archive) => Stage(archive, BackupRowStage.ChooseDownload);
+
+    // ---- `D110`: import one backup ---------------------------------------------
+
+    private bool importOpen;
+    private bool importFromFolder;
+    private bool importing;
+    private bool uploading;
+    private string? importFolder;
+    private string? importNote;
+    private string? importUpload;
+    private string? importError;
+    private string? importSummary;
+    private BackupImportPreview? importPreview;
+    private int importPickerKey;
+    private string? uploadName;
+    private long uploadSize;
+    private long uploaded;
+    private CancellationTokenSource? uploadStop;
+
+    private int UploadPercent => uploadSize <= 0 ? 0 : (int)(uploaded * 100 / uploadSize);
+
+    private void ToggleImport()
+    {
+        if (importOpen)
+        {
+            CloseImport();
+            return;
+        }
+
+        importOpen = true;
+        importSummary = null;
+    }
+
+    private void ChooseImportSource(bool folder)
+    {
+        DiscardImportUpload();
+        importFromFolder = folder;
+    }
+
+    private void CloseImport()
+    {
+        DiscardImportUpload();
+        importOpen = false;
+        importFolder = null;
+        importNote = null;
+    }
+
+    /// <param name="clearPicker">
+    /// Also empty the file picker. Not when a new file was just chosen in it: it would read
+    /// "No file chosen" beside that file's summary.
+    /// </param>
+    private void DiscardImportUpload(bool clearPicker = true)
+    {
+        Uploads.Discard(importUpload);
+        importUpload = null;
+        importPreview = null;
+        importError = null;
+
+        if (clearPicker)
+        {
+            importPickerKey++;
+        }
+    }
+
+    private void CheckFolder()
+    {
+        importError = null;
+        importPreview = string.IsNullOrWhiteSpace(importFolder) ? null : Importer.ReadFolder(importFolder.Trim());
+    }
+
+    private async Task UploadImportAsync(InputFileChangeEventArgs args)
+    {
+        DiscardImportUpload(clearPicker: false);
+
+        var file = args.File;
+
+        if (file.Size > WorldFileImport.MaxUploadBytes)
+        {
+            importError = $"{file.Name} is larger than {ByteSize.Format(WorldFileImport.MaxUploadBytes)}, "
+                + "the most a backup may be.";
+            return;
+        }
+
+        uploading = true;
+        uploadName = file.Name;
+        uploadSize = file.Size;
+        uploaded = 0;
+        uploadStop = new CancellationTokenSource();
+
+        // A render per percent rather than per megabyte, which on a large world is
+        // thousands of renders over the circuit.
+        var progress = new Progress<long>(bytes =>
+        {
+            var before = UploadPercent;
+            uploaded = bytes;
+
+            if (UploadPercent != before)
+            {
+                StateHasChanged();
+            }
+        });
+
+        try
+        {
+            await using var stream = file.OpenReadStream(WorldFileImport.MaxUploadBytes, uploadStop.Token);
+            importUpload = await Uploads.SaveUploadAsync(stream, progress, uploadStop.Token);
+            importPreview = Importer.ReadUpload(importUpload, file.Name);
+            importUploadName = file.Name;
+
+            if (!importPreview.CanImport)
+            {
+                // Nothing can be made of it, so it is not kept; the refusal stays shown.
+                Uploads.Discard(importUpload);
+                importUpload = null;
+                importPickerKey++;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            importError = $"The upload of {file.Name} was stopped.";
+            importPickerKey++;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            importError = $"{file.Name} could not be uploaded: {ex.Message}";
+            importPickerKey++;
+        }
+        finally
+        {
+            uploading = false;
+            uploadStop.Dispose();
+            uploadStop = null;
+        }
+    }
+
+    private string? importUploadName;
+
+    private async Task ImportAsync()
+    {
+        if (importing || importPreview is not { CanImport: true })
+        {
+            return;
+        }
+
+        importing = true;
+        importError = null;
+
+        try
+        {
+            var result = importFromFolder
+                ? await Importer.ImportFolderAsync(Supervisor.InstanceId, importFolder!.Trim(), importNote)
+                : await Importer.ImportUploadAsync(
+                    Supervisor.InstanceId, importUpload!, importUploadName!, importNote);
+
+            // The upload is consumed by the import.
+            importUpload = null;
+            importSummary = result.Summary();
+            CloseImport();
+            filter = BackupTimelineFilter.Restorable;
+            await LoadHistoryAsync();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException
+                                       or InvalidDataException)
+        {
+            importError = ex.Message;
+        }
+        finally
+        {
+            importing = false;
+        }
+    }
+
+    private void ClearStage()
+    {
+        stagedBackup = null;
+        stagedAs = BackupRowStage.Actions;
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (deleting || stagedBackup is null || stagedAs != BackupRowStage.ConfirmDelete)
+        {
+            return;
+        }
+
+        deleting = true;
+
+        try
+        {
+            var outcome = await Deleter.DeleteAsync(Supervisor.InstanceId, stagedBackup);
+
+            // One statement of the sentence, composed in `Core` where a test can
+            // reach it. Four outcomes, and the two that are not good news are told
+            // apart here rather than all four reading as a completed delete.
+            deleteSummary = outcome.Summary();
+            deleteSummaryNeedsAttention = outcome.NeedsAttention;
+        }
+        catch (Exception ex)
+        {
+            // Into the same line, in the same style as a refusal. A second field for
+            // a thrown failure would be a fourth place this page says a delete did
+            // not happen, and the reader wants one.
+            deleteSummary = ex.Message;
+            deleteSummaryNeedsAttention = true;
+        }
+        finally
+        {
+            deleting = false;
+            ClearStage();
+
+            // Always, including after a failure: a part-deleted folder has to leave
+            // the restore picker, and the picker is rebuilt from disk here.
+            await LoadHistoryAsync();
+        }
     }
 
     private async Task RunNowAsync()
@@ -896,7 +2591,20 @@ else
         {
             // The same object Dirty compared against, so what was saved and what
             // counted as a change can never be two different lists of fields.
-            await Registry.SetBackupSettingsAsync(Supervisor.InstanceId, Edited());
+            var saved = Edited();
+            await Registry.SetBackupSettingsAsync(Supervisor.InstanceId, saved);
+
+            // T216. The stored values are seeded once per instance id and were
+            // never re-read, so a SECOND save in one page visit passed the
+            // page-load number back to AsSaved and reverted whatever the first
+            // save had written. D76 taught the form to write what it shows; what
+            // it shows for a value it is not rendering is whatever it was last
+            // told, and nothing was re-telling it.
+            //
+            // From the object that was saved rather than from the fields, so the
+            // two cannot describe different saves.
+            storedZipRetentionValue = saved.Zip.Retention.Value;
+            storedFolderRetentionValue = saved.Folder.Retention.Value;
 
             savedFlash = true;
         }
@@ -923,3 +2631,4 @@ else
         return $"{(int)span.TotalMinutes}m {span.Seconds}s";
     }
 }
+

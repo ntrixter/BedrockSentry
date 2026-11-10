@@ -1,3 +1,5 @@
+using BedrockSentry.Core.Diagnostics;
+
 namespace BedrockSentry.Core.Instances;
 
 /// <summary>
@@ -31,10 +33,16 @@ namespace BedrockSentry.Core.Instances;
 /// here with no way back. Left off, the folder outlives the instance and
 /// nothing will ever list or prune it (<c>D39</c>).
 /// </param>
+/// <param name="RemoveFirewallRules">
+/// Remove the inbound firewall rules the panel's Apply fix added for this server
+/// (<c>T400</c>). A rule outliving its server holds a port open for whatever binds
+/// it next.
+/// </param>
 public sealed record RemoveInstanceRequest(
     bool DeleteFiles,
     bool ForgetPlayers,
-    bool DeleteBackups = false);
+    bool DeleteBackups = false,
+    bool RemoveFirewallRules = false);
 
 /// <summary>
 /// What happened to one directory a removal was asked to delete.
@@ -134,7 +142,8 @@ public sealed record InstanceRemovalOutcome(
     string? BackupsFailedBecause = null,
     DirectoryRemoval Transcripts = DirectoryRemoval.NotAsked,
     string? TranscriptsFailedBecause = null,
-    string? TranscriptDirectory = null)
+    string? TranscriptDirectory = null,
+    SystemCheckFix? FirewallRules = null)
 {
     /// <summary>
     /// True when something the operator asked to delete is partly gone

@@ -10,52 +10,65 @@ useful thing to know than a guess at a month.
 
 ## Built and running
 
-Everything here has been installed and exercised on a real Windows machine against Bedrock
-Dedicated Server builds from 1.26.36.1 through 1.26.45.1. See the README for the standing
-caveat about what "verified" does and does not mean.
+Installed and exercised on a real Windows machine against Bedrock Dedicated Server builds from
+1.26.36.1 through 1.26.61.1. See the README for what "verified" does and does not mean.
 
-- **The service and the panel.** Runs as a Windows Service, serves a browser control panel
-  over HTTPS behind a login, ships as a self-contained installer, and updates itself with a
-  health gate that rolls back a build which will not start.
+- **The service and the panel.** A Windows Service serving a browser panel over HTTPS behind a
+  login, a self-contained installer, and self-update with a health gate that rolls back a build
+  which will not start.
 - **Server supervision.** One or more `bedrock_server.exe` instances, each with a live console,
-  a crash watchdog with a measured backoff ladder, rolling transcripts, and a graceful drain
-  that warns players before any stop.
-- **Players.** Sessions recorded off the console — who is on, who has been, playtime — with one
-  profile per player across every server, and allowlist and operator editing per server with
-  each server's own files as the source of truth.
-- **Backups.** ZIP, Volume Shadow Copy, or a custom command, on a schedule or on demand, with
-  restore, retention, notes, and each server's configuration carried inside the archive.
-- **Bedrock updates.** Watches Mojang's feed, downloads, warns players on a countdown, applies,
-  and rolls back a build that will not start. Pinning, Preview, and manual install of any build
-  already downloaded.
-- **Settings and status.** Export and import with credentials and certificate secrets excluded,
-  a status page with memory, CPU and last backup, and a readiness panel that checks the Volume
-  Shadow Copy service, the account the service runs as, and whether each server's ports are free.
+  a crash watchdog, rolling transcripts, and a graceful drain that warns players before any stop.
+- **Players.** Sessions, playtime and one profile per player across every server, with allowlist
+  and operator editing per server in each server's own files.
+- **Backups.** ZIP archive or folder copy, optionally from a Volume Shadow Copy, or a custom
+  command, on a schedule or on demand, with restore, retention and notes.
+- **Bedrock updates.** Watches Mojang's feed, warns players on a countdown, applies, and rolls
+  back a build that will not start. Pinning, Preview, and manual install of a downloaded build.
+- **Settings and status.** Export and import without credentials or certificate secrets, a status
+  page, and a readiness panel that checks the host.
+- **Add-ons.** A shared library and a tab per server that switches packs on and off, orders them,
+  edits their settings and says why an enabled pack does nothing.
+
+---
+
+## Built, partly verified on Windows
+
+- **The privilege broker.** The panel's service runs under its own virtual account instead of
+  LocalSystem. A second service, the broker, runs as LocalSystem and does the administrative
+  work from a fixed, enumerated list: firewall rules, Defender exclusions, the loopback
+  exemption, shadow copies and self-update. There is no general "run this command" operation.
+  Each Bedrock server runs at low integrity, out of reach of the panel's secrets.
+- **NetherNet by default.** New servers use NetherNet with a pinned play window; firewall rules
+  follow a server's ports and name, and a reachability check per server offers a fix.
+- **An authenticator-app sign-in step**, off by default, also asked before destructive steps.
+- **The companion behavior pack.** Ships with BedrockSentry and reports through the server's
+  console: deaths per player per server, and where each player was when they left or when a
+  planned stop took the server down.
+- **Player faces** beside each name, from GeyserMC or set by hand.
+- **Creative sister servers.** A creative server takes a survival server's newest backup and
+  keeps chosen areas of its own, set from the panel or with the companion pack's `syncarea`
+  command and outlined in game. The sync from the panel is verified; the in-game command and
+  outlines are not yet.
+
+## Built, not yet verified on Windows
+
+- **The companion pack's operator commands** (`listcord`, `syncarea`) and area outlines in game.
+- **The Storage table's drive type and deduplication columns**, and its low-space warning.
 
 ---
 
 ## Next
 
-### The companion behavior pack
-
-**The one that unblocks the most.** Bedrock's dedicated server prints no player chat to its
-console, so there is no vanilla path by which a message typed in game reaches the wrapper. A
-small behavior pack relaying events through the content log is the only way, and three separate
-features are waiting behind it.
-
-First use is death tracking: a full death message rather than a bare location, and a death
-counter per player **per server**, which is the number that actually means something.
-
 ### In-game chat commands
 
-Depends entirely on the pack above. A permissioned command system — parse, check permission,
-execute, reply — built as something other front ends can plug into rather than as a one-off,
-because two more are planned.
+Needs game chat to reach the wrapper first. Bedrock's dedicated server prints no player chat to
+its console, and the one script event that carries chat is in Mojang's pre-release scripting
+API, which a world has to switch on as an experiment. So the companion pack does not relay chat,
+and how chat will reach the wrapper is still being decided.
 
-### Add-on manager
-
-A file picker or folder scan for behavior and resource packs, manifest validation, and
-enable/disable toggles per server.
+The command system itself will be a permissioned one — parse, check permission, execute,
+reply — built as something other front ends can plug into rather than as a one-off, because
+two more are planned.
 
 ### Telegram and Discord
 
@@ -72,17 +85,10 @@ neither starts before that exists.
 The panel's wording is uneven, and some of it reads to whoever wrote it rather than to whoever
 is using it. Not a redesign — the shape is right.
 
-### Splitting privilege
+### Windows acceptance of the newer work
 
-Today the whole service runs as LocalSystem, because a handful of things genuinely need
-administrator rights: taking a Volume Shadow Copy, reading firewall state, checking Defender
-exclusions. That is more privilege than a service exposing a web panel should hold.
-
-The plan is to split it in two: a small privileged service exposing a **fixed, enumerated** set
-of operations, and the main service — the one serving the panel — running as an ordinary account
-and asking for them over a local channel. There will never be a general "run this command"
-operation; that absence is the whole point, and it is why the code that needs privilege is
-already written behind interfaces rather than inline.
+Finishing the Windows checks of everything in the two sections above, and the self-update drills
+against the two-service install.
 
 ### Hardening and the first stable tag
 

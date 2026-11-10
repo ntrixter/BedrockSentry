@@ -61,19 +61,19 @@ public sealed class PermissionsFile
     public static string PathFor(string instanceDirectory) =>
         Path.Combine(instanceDirectory, FileName);
 
-    public static PermissionsFile Load(string path)
-    {
-        if (!File.Exists(path))
-        {
-            return new PermissionsFile([]);
-        }
-
-        var parsed = JsonNode.Parse(File.ReadAllText(path));
-
-        return parsed is JsonArray entries
-            ? new PermissionsFile(entries)
-            : throw new JsonException($"{Path.GetFileName(path)} does not contain a JSON array.");
-    }
+    /// <summary>
+    /// Loads the file. Missing, <c>[]</c> and the JSON literal <c>null</c> all
+    /// mean an empty list; anything else throws. See <see cref="BdsAccessList"/>
+    /// for why the third spelling is the server's own and not damage.
+    /// </summary>
+    /// <remarks>
+    /// This reader was a copy of <see cref="AllowlistFile"/>'s and therefore
+    /// carried the same defect. `T203` was measured on the allowlist; nothing
+    /// measured it here, and deopping the last operator on a running server is
+    /// the same shape. Found by grepping for the reader rather than for the
+    /// symptom, which is the only way the second copy turns up.
+    /// </remarks>
+    public static PermissionsFile Load(string path) => new(BdsAccessList.ReadOrEmpty(path));
 
     public IReadOnlyList<PermissionEntry> Entries =>
         _entries

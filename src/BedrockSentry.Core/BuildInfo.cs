@@ -24,7 +24,7 @@ namespace BedrockSentry.Core;
 /// </remarks>
 public static class BuildInfo
 {
-    private static readonly Lazy<(string Version, string Sha, string Channel)> Parsed = new(Load);
+    private static readonly Lazy<(string Version, string Sha, string Channel, int Epoch, string Branch)> Parsed = new(Load);
 
     /// <summary>Semantic version, without build metadata. E.g. <c>0.3.0-build.57</c>.</summary>
     public static string Version => Parsed.Value.Version;
@@ -40,8 +40,30 @@ public static class BuildInfo
     public static string ShortSha =>
         CommitSha.Length >= 7 ? CommitSha[..7] : CommitSha;
 
-    /// <summary>Release channel this build came from: <c>prod</c>, <c>build</c>, or <c>local</c>.</summary>
+    /// <summary>Release channel this build came from: <c>stable</c>, <c>build</c>, or <c>local</c>.</summary>
     public static string Channel => Parsed.Value.Channel;
+
+    /// <summary>
+    /// The install epoch this build was cut at (<c>D114</c>): <c>0</c> unless a build
+    /// needed a reinstall rather than an update to reach.
+    /// </summary>
+    public static int InstallEpoch => Parsed.Value.Epoch;
+
+    /// <summary>
+    /// The git branch the build came from, e.g. <c>dev</c>, or empty when the build
+    /// could not tell (a detached checkout, no git). Display only: nothing compares it.
+    /// </summary>
+    public static string Branch => Parsed.Value.Branch;
+
+    /// <summary>
+    /// What the panel shows for the running build: <c>dev \ 0.3.0-local+123245c</c>,
+    /// or the identity alone when the branch is unknown.
+    /// </summary>
+    public static string Display => FormatDisplay(Branch, Identity);
+
+    /// <summary>Joins a branch and an identity the way <see cref="Display"/> shows them.</summary>
+    public static string FormatDisplay(string? branch, string identity) =>
+        string.IsNullOrWhiteSpace(branch) ? identity : $"{branch.Trim()} \\ {identity}";
 
     /// <summary>
     /// Composite build identity, e.g. <c>0.3.0-build.57+f0cb4a6</c>. Used as the
@@ -89,7 +111,15 @@ public static class BuildInfo
             : (informational, string.Empty);
     }
 
-    private static (string, string, string) Load()
+    /// <summary>
+    /// Reads the <c>InstallEpoch</c> assembly metadata. Missing or unreadable is <c>0</c>,
+    /// which every build cut before the value existed was.
+    /// </summary>
+    public static int ParseInstallEpoch(string? value) =>
+        int.TryParse(value, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var epoch) ? epoch : 0;
+
+    private static (string, string, string, int, string) Load()
     {
         var asm = Assembly.GetEntryAssembly() ?? typeof(BuildInfo).Assembly;
 
@@ -103,6 +133,12 @@ public static class BuildInfo
         var channel = asm.GetCustomAttributes<AssemblyMetadataAttribute>()
             .FirstOrDefault(a => a.Key == "Channel")?.Value ?? "local";
 
-        return (version, sha, channel);
+        var epoch = ParseInstallEpoch(asm.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "InstallEpoch")?.Value);
+
+        var branch = asm.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "Branch")?.Value ?? string.Empty;
+
+        return (version, sha, channel, epoch, branch);
     }
 }

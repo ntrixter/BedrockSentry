@@ -64,13 +64,15 @@ public sealed class BdsUpdateSettingsStore(ISentryPaths paths, ILogger<BdsUpdate
     }
 
     /// <summary>One phrase for a log line or a page, in the administrator's terms.</summary>
+    /// <remarks>
+    /// The schedule's own words wherever it runs (<see cref="RestartSchedule.Describe"/>),
+    /// rather than a copy of them the twelve-hour clock (<c>T304</c>) would have to reach
+    /// twice. Only the no-schedule answer differs, and on purpose.
+    /// </remarks>
     public static string Describe(RestartSchedule schedule) => schedule.Mode switch
     {
-        RestartScheduleMode.EveryNHours when schedule.IntervalHours == 1 => "every hour",
-        RestartScheduleMode.EveryNHours => $"every {schedule.IntervalHours} hours",
-        RestartScheduleMode.EveryNMinutes when schedule.IntervalMinutes == 1 => "every minute",
-        RestartScheduleMode.EveryNMinutes => $"every {schedule.IntervalMinutes} minutes",
-        RestartScheduleMode.DailyAt => $"daily at {schedule.TimeOfDay:HH\\:mm}",
+        RestartScheduleMode.EveryNHours or RestartScheduleMode.EveryNMinutes or RestartScheduleMode.DailyAt =>
+            schedule.Describe(),
 
         // Not "never": the check on service startup still runs, and so does the
         // button. Saying never would be wrong in the way that matters.

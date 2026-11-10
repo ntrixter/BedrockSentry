@@ -44,10 +44,24 @@
 
 [CmdletBinding()]
 param(
-    [string] $ScriptDirectory = (Join-Path $PSScriptRoot '')
+    [string] $ScriptDirectory
 )
 
 $ErrorActionPreference = 'Stop'
+
+# $PSScriptRoot IS EMPTY INSIDE A param() DEFAULT under Windows PowerShell 5.1
+# invoked as `powershell.exe -File`, so resolving the root there binds an empty
+# string and Split-Path/Join-Path throw before the script does any work at all
+# (T199). It is populated normally in the BODY on both engines, which is why
+# Assert-Anonymous.ps1 - the one script that resolves it below its param block -
+# was the only one of the four that ran. Resolve here, not up there.
+#
+# The failure is narrower than "a 5.1 difference": 5.1 AND -File. The call
+# operator works on the same engine, and `shell: pwsh` in CI works, so nothing
+# automated saw it for as long as it existed. private-checks.yml now runs each
+# script through `powershell.exe -File` with no arguments, which is the only
+# invocation that reproduces it.
+if (-not $ScriptDirectory) { $ScriptDirectory = Join-Path $PSScriptRoot '' }
 
 # Provider dynamic parameters: real, but invisible to Get-Command on both
 # engines, so "unknown here" says nothing about the version. Give every entry a

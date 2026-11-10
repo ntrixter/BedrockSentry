@@ -47,6 +47,13 @@ public enum DomainCheckResult
 }
 
 /// <summary>What the host is, and whether it is about to become a problem.</summary>
+/// <param name="RebootReasons">
+/// What Windows has pending that can restart the machine by itself, in the order
+/// <see cref="RebootNotice.Signals"/> lists them; empty when nothing is.
+/// </param>
+/// <param name="RebootUnreadable">
+/// Why a signal could not be read, or null when every one was (<see cref="RebootNotice.Read"/>).
+/// </param>
 public sealed record HostSystem(
     string OperatingSystem,
     int ProcessorCount,
@@ -55,17 +62,15 @@ public sealed record HostSystem(
     TimeSpan Uptime,
     DateTimeOffset LocalTime,
     string TimeZone,
-    IReadOnlyList<RebootSignal> RebootSignals)
-{
-    /// <summary>
-    /// What the pending work actually means — not a <c>bool</c>, because two of the
-    /// three signals can restart the machine and one cannot (<c>T188</c>).
-    /// </summary>
-    public RebootUrgency RebootUrgency => RebootNotice.UrgencyOf(RebootSignals);
+    IReadOnlyList<string> RebootReasons,
+    string? RebootUnreadable = null);
 
-    /// <summary>The reasons, in the order they were found.</summary>
-    public IReadOnlyList<string> RebootReasons =>
-        [.. RebootSignals.Select(s => s.Reason)];
+/// <summary>How much room a volume has left, by its share free (<see cref="VolumeUsage.FreeLevel"/>).</summary>
+public enum FreeSpaceLevel
+{
+    Ok,
+    Low,
+    Critical,
 }
 
 /// <summary>Space on one volume the wrapper keeps something on.</summary>
@@ -79,7 +84,52 @@ public sealed record VolumeUsage(
     string RootPath,
     long TotalBytes,
     long FreeBytes,
-    VolumeDeduplication Deduplication)
+    VolumeDeduplication Deduplication,
+    DriveMedia Media = DriveMedia.Unknown)
 {
+    /// <summary>
+    /// Below this share free the Free cell turns amber and a line under the table
+    /// names the volume. A server, a backup or a deduplication job that runs a
+    /// volume out of space fails, and the volume may hold none of the backups.
+    /// </summary>
+    public const double LowFreeFraction = 0.15;
+
+    /// <summary>
+    /// Below this share free the cell turns red. Windows marks a drive low at 10%
+    /// free in File Explorer, so the panel agrees with what the administrator sees there.
+    /// </summary>
+    public const double CriticalFreeFraction = 0.10;
+
+    public double FreeFraction => TotalBytes > 0 ? (double)FreeBytes / TotalBytes : 1d;
+
+    public FreeSpaceLevel FreeLevel =>
+        TotalBytes <= 0 ? FreeSpaceLevel.Ok
+        : FreeFraction < CriticalFreeFraction ? FreeSpaceLevel.Critical
+        : FreeFraction < LowFreeFraction ? FreeSpaceLevel.Low
+        : FreeSpaceLevel.Ok;
+
+    /// <summary>The line under the table for a volume running low, or null.</summary>
+    public string? FreeWarning => FreeLevel switch
+    {
+        FreeSpaceLevel.Critical =>
+            $"{RootPath} is critically low on space: {FreeText} free.",
+        FreeSpaceLevel.Low =>
+            $"{RootPath} is low on space: {FreeText} free.",
+        _ => null,
+    };
+
     public double UsedFraction => TotalBytes > 0 ? 1d - ((double)FreeBytes / TotalBytes) : 0d;
+
+    public long UsedBytes => Math.Max(0, TotalBytes - FreeBytes);
+
+    /// <summary>The Free cell: <c>14.2 GB (14%)</c>.</summary>
+    public string FreeText => $"{ByteSize.Format(FreeBytes)} ({Percent(TotalBytes > 0 ? FreeFraction : 0d)})";
+
+    /// <summary>The Used cell: <c>86.8 GB (86%)</c>.</summary>
+    public string UsedText => $"{ByteSize.Format(UsedBytes)} ({Percent(UsedFraction)})";
+
+    // Whole percent, the same in every culture: "P0" reads "14 %" in some.
+    private static string Percent(double fraction) =>
+        Math.Round(fraction * 100, MidpointRounding.AwayFromZero)
+            .ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%";
 }

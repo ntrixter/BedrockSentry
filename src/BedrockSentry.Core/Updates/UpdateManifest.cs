@@ -43,8 +43,38 @@ public sealed class UpdateManifest
     [JsonPropertyName("downloadUrl")]
     public string DownloadUrl { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The install epoch the build was cut at (<c>D114</c>). A build above the running
+    /// one's epoch cannot be installed by self-update and needs <c>uninstall.ps1</c>
+    /// then <c>install.ps1</c> instead.
+    /// </summary>
+    /// <remarks>
+    /// An epoch rather than a flag because the manifest is a rolling pointer: a flag
+    /// set on the first build that needs a reinstall would have to stay set on every
+    /// build after it, and then no install on the new side could update either.
+    /// Absent from every manifest published before the field existed, which reads as
+    /// <c>0</c>. A build that predates this property ignores it, so the field only
+    /// protects installs that already run a build that reads it.
+    /// </remarks>
+    [JsonPropertyName("installEpoch")]
+    public int InstallEpoch { get; set; }
+
+    /// <summary>True when this build is above the running build's install epoch.</summary>
+    public bool NeedsReinstall() => NeedsReinstallFrom(BuildInfo.InstallEpoch);
+
+    /// <summary>True when this build is above <paramref name="runningEpoch"/>.</summary>
+    public bool NeedsReinstallFrom(int runningEpoch) => InstallEpoch > runningEpoch;
+
     /// <summary>True when this manifest describes a build other than the running one.</summary>
     public bool IsNewerThanRunning() =>
         !string.IsNullOrWhiteSpace(CommitSha)
         && !string.Equals(CommitSha, BuildInfo.CommitSha, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// What the Settings page says in place of <em>Install now</em> for a build that
+    /// <see cref="NeedsReinstall"/>.
+    /// </summary>
+    public string ReinstallNotice() =>
+        $"{Identity} cannot be installed from here. Run uninstall.ps1 and then install.ps1 "
+        + "from its release; worlds, backups and settings are kept.";
 }

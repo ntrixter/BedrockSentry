@@ -27,26 +27,45 @@ namespace BedrockSentry.Core.Instances;
 /// what players are doing.
 /// </param>
 /// <param name="Joins">Players arriving.</param>
-/// <param name="Leaves">Players departing.</param>
+/// <param name="Leaves">Players departing; the console's Disconnects box.</param>
 /// <param name="Chat">
-/// What players said. Nothing is ever classified as chat until the companion
-/// pack ships (milestone 12) — BDS prints no player chat of its own
-/// (<c>docs/design.md</c> § 5.4, measured).
+/// What players said, once chat is relayed (<see cref="ChatRelayed"/>). Until
+/// then the console has no Chat box and this governs nothing.
+/// </param>
+/// <param name="Deaths">Players dying, as the companion pack relays it.</param>
+/// <param name="OperatorCommands">
+/// The companion pack's commands an operator ran in game, as the pack relays them.
 /// </param>
 public sealed record ConsoleFilters(
     bool ServerOutput = true,
     bool Joins = true,
     bool Leaves = true,
-    bool Chat = true)
+    bool Chat = true,
+    bool Deaths = true,
+    bool OperatorCommands = true)
 {
     /// <summary>Everything, which is how the console opens.</summary>
     public static ConsoleFilters All { get; } = new();
 
-    /// <summary>Just the people: who arrived, who left, and what they said.</summary>
+    /// <summary>Just the people: who arrived, who left, who died, and what they said.</summary>
     public static ConsoleFilters PlayersOnly { get; } = new(ServerOutput: false);
 
+    /// <summary>
+    /// Whether any line can be classified as chat (<c>D95</c>). False: BDS prints no
+    /// player chat of its own (<c>docs/design.md</c> § 5.4, measured), and relaying
+    /// it needs Bedrock's pre-release <c>chatSend</c> event, which the companion pack
+    /// does not use. Its default is the one line to change once the pack relays chat.
+    /// </summary>
+    /// <remarks>
+    /// While false the console has no Chat box and <see cref="Chat"/> governs nothing:
+    /// a chat line that arrives anyway, from some pack other than the companion, is
+    /// shown rather than hidden behind a box nobody can see.
+    /// </remarks>
+    public bool ChatRelayed { get; init; } = false;
+
     /// <summary>True when nothing is filtered out.</summary>
-    public bool ShowingEverything => ServerOutput && Joins && Leaves && Chat;
+    public bool ShowingEverything =>
+        ServerOutput && Joins && Leaves && Deaths && OperatorCommands && (Chat || !ChatRelayed);
 
     /// <summary>
     /// Whether this line belongs on screen.
@@ -55,7 +74,8 @@ public sealed record ConsoleFilters(
     /// Run boundaries are never hidden. They are structural rather than
     /// conversational — a restart in the middle of a filtered feed would
     /// otherwise be invisible, and "why did everyone leave and rejoin" has no
-    /// answer without it.
+    /// answer without it. A blank line is never shown: a row with a time and
+    /// nothing after it says nothing (<c>T311</c>).
     /// </remarks>
     public bool Shows(ConsoleLine line)
     {
@@ -66,25 +86,32 @@ public sealed record ConsoleFilters(
 
         if (line.Origin is ConsoleOrigin.Chat)
         {
-            return Chat;
+            return Chat || !ChatRelayed;
         }
 
         return line.Kind switch
         {
             ConsoleLineKind.PlayerJoined => Joins,
             ConsoleLineKind.PlayerLeft => Leaves,
+            ConsoleLineKind.Death => Deaths,
+            ConsoleLineKind.OperatorCommand => OperatorCommands,
+            ConsoleLineKind.Blank => false,
             _ => ServerOutput,
         };
     }
 
     /// <summary>How many of <paramref name="lines"/> this would hide.</summary>
+    /// <remarks>
+    /// A blank line is never shown, whatever is ticked, so it is not counted:
+    /// the count is what ticking a box would bring back.
+    /// </remarks>
     public int CountHidden(IEnumerable<ConsoleLine> lines)
     {
         var hidden = 0;
 
         foreach (var line in lines)
         {
-            if (!Shows(line))
+            if (line.Kind is not ConsoleLineKind.Blank && !Shows(line))
             {
                 hidden++;
             }
@@ -92,4 +119,17 @@ public sealed record ConsoleFilters(
 
         return hidden;
     }
+
+    /// <summary>What the console says about the lines these boxes hide, or null when they hide none.</summary>
+    /// <remarks>
+    /// Asked at every render rather than kept (<c>T308</c>): a count kept beside the
+    /// lines was updated only when a new line arrived, so unticking a box showed no
+    /// count and ticking it again left the old one.
+    /// </remarks>
+    public string? HiddenSentence(IEnumerable<ConsoleLine> lines) => CountHidden(lines) switch
+    {
+        0 => null,
+        1 => "1 line hidden.",
+        var hidden => $"{hidden} lines hidden.",
+    };
 }

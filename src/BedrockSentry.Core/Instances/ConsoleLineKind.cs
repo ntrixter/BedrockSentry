@@ -28,11 +28,37 @@ public enum ConsoleLineKind
     /// <summary>Somebody left.</summary>
     PlayerLeft,
 
-    /// <summary>The save handshake, manifest included.</summary>
+    /// <summary>The save handshake: <c>Saving...</c>, <c>Data saved</c>, the resume.</summary>
     Save,
+
+    /// <summary>
+    /// The file list <c>save query</c> prints after <c>Data saved</c>. Its own kind so the
+    /// console can fold it under that line (<see cref="ConsoleSaveFold"/>); coloured and
+    /// filtered as <see cref="Save"/>.
+    /// </summary>
+    SaveManifest,
 
     /// <summary>Real, routine, and not worth reading — dimmed rather than hidden.</summary>
     Housekeeping,
+
+    /// <summary>A player died, as the companion pack relayed it.</summary>
+    Death,
+
+    /// <summary>
+    /// An operator ran one of the companion pack's commands in game, as the pack relayed it
+    /// (<c>cmd|…</c>). Vanilla commands a player types print nothing on BDS and have no
+    /// script event, so they cannot be shown.
+    /// </summary>
+    OperatorCommand,
+
+    /// <summary>
+    /// A line of the server's output with nothing in it. Recorded, and never shown:
+    /// a row with a time and nothing after it says nothing (<c>T311</c>). The
+    /// wrapper reads one after every script line from Linux BDS 1.26.51.1 and two on
+    /// Windows (<c>D93</c>'s spike, <c>T295</c>), and two on Windows after
+    /// <c>Content logging to console is enabled.</c> at each start.
+    /// </summary>
+    Blank,
 }
 
 /// <summary>
@@ -100,6 +126,52 @@ public static class ConsoleLineClassifier
         return true;
     }
 
+    /// <summary>
+    /// The boxed notices the console folds under their opening line
+    /// (<see cref="ConsoleNoticeFold"/>), by the subject their banner carries, and whether
+    /// a box starts folded. The telemetry message is advice and starts folded (<c>ON2</c>);
+    /// the allow list warning and the transport error are printed at <c>WARN</c> and
+    /// <c>ERROR</c> and start open, so hiding them is the viewer's choice.
+    /// </summary>
+    /// <remarks>
+    /// <c>TRANSPORT TYPE ERROR</c> is matched without the two spaces BDS 1.26.50.1 prints
+    /// after it, so a banner that drops them still matches.
+    /// </remarks>
+    public static readonly IReadOnlyList<(string Banner, bool FoldedAtFirst)> Notices =
+    [
+        ("TELEMETRY MESSAGE", true),
+        ("ALLOW LIST WARNING", false),
+        ("TRANSPORT TYPE ERROR", false),
+    ];
+
+    /// <summary>
+    /// The subject from <see cref="Notices"/> that <paramref name="message"/> opens, or
+    /// null; the console folds the box under the line (<see cref="ConsoleNoticeFold"/>).
+    /// </summary>
+    public static string? NoticeOpenedBy(string? message)
+    {
+        if (message is null || !message.Contains('='))
+        {
+            return null;
+        }
+
+        foreach (var (banner, _) in Notices)
+        {
+            if (message.Contains(banner, StringComparison.Ordinal))
+            {
+                return banner;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>True when <paramref name="message"/> opens one of <see cref="Notices"/>.</summary>
+    public static bool OpensANotice(string? message) => NoticeOpenedBy(message) is not null;
+
+    /// <summary>True when <paramref name="message"/> is nothing but a rule of <c>=</c>, as a boxed notice closes.</summary>
+    public static bool IsNoticeRule(string? message) => message is not null && IsRule(message);
+
     /// <summary>True when this line opens one of <see cref="DimBanners"/>.</summary>
     private static bool OpensADimBanner(ReadOnlySpan<char> text)
     {
@@ -155,20 +227,44 @@ public static class ConsoleLineClassifier
         public bool InDimBanner;
     }
 
+    /// <summary>Nothing but whitespace and control characters, or nothing at all.</summary>
+    private static bool IsBlank(ReadOnlySpan<char> text)
+    {
+        foreach (var c in text)
+        {
+            if (!char.IsWhiteSpace(c) && !char.IsControl(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>
     /// Classifies a line, advancing <paramref name="state"/> past it.
     /// </summary>
+    /// <param name="relay">The companion pack's relay the line carries, if any.</param>
+    /// <param name="echoPositions">
+    /// Whether the pack's join and leave lines count as arrivals and departures
+    /// (<see cref="CompanionSettings.EchoPositions"/>); off, they are dimmed.
+    /// </param>
     /// <returns>
     /// The kind, and the level the line should be treated as having — which is
     /// the parsed level for a prefixed line, and the carried one for a wrapped
     /// continuation.
     /// </returns>
     public static (ConsoleLineKind Kind, BdsLogLevel Level) Classify(
-        ConsoleOrigin origin, BdsLogLevel level, string? message, ref State state)
+        ConsoleOrigin origin,
+        BdsLogLevel level,
+        string? message,
+        CompanionRelay? relay,
+        bool echoPositions,
+        ref State state)
     {
         if (origin is not ConsoleOrigin.Stdout)
         {
-            // The wrapper's own voice and the commands it sent are neither
+            // Chat, the wrapper's own voice and the commands it sent are neither
             // continuations of the server's warnings nor inside its boxes.
             return (ConsoleLineKind.Ordinary, level);
         }
@@ -180,13 +276,30 @@ public static class ConsoleLineClassifier
             // A line that states its own level ends whatever was being carried.
             state.CarriedLevel = level;
         }
-        else if (state.CarriedLevel is BdsLogLevel.Warn or BdsLogLevel.Error
+
+        // Wherever it falls (T311): after a script line, after the content log's
+        // notice, inside a boxed notice, under a warning. It closes no box and
+        // carries no level worth painting, and a timestamp prefix, whitespace or a
+        // control character does not make it something to read.
+        if (IsBlank(text))
+        {
+            return (ConsoleLineKind.Blank, level);
+        }
+
+        if (level is BdsLogLevel.Unknown
+            && state.CarriedLevel is BdsLogLevel.Warn or BdsLogLevel.Error
             && Classify(message) is ConsoleLineKind.Ordinary)
         {
             // A bare line under a warning, and not something the classifier
             // recognises in its own right — the save manifest arrives bare too
             // and must keep its own colour rather than inheriting an alarm.
             level = state.CarriedLevel;
+        }
+
+        // Before the banners: a relay says what it is, wherever it lands.
+        if (relay is not null)
+        {
+            return (KindOf(relay, echoPositions), level);
         }
 
         if (state.InDimBanner)
@@ -208,6 +321,21 @@ public static class ConsoleLineClassifier
 
         return (Classify(message), level);
     }
+
+    /// <summary>
+    /// What a relay line is about. The lines the pack prints for the wrapper rather
+    /// than for a person (hello, the probe, the stop exchange, a newer pack's kinds)
+    /// are dimmed, and so are its join and leave lines when they are not wanted as
+    /// arrivals and departures.
+    /// </summary>
+    private static ConsoleLineKind KindOf(CompanionRelay relay, bool echoPositions) => relay switch
+    {
+        DeathRelay => ConsoleLineKind.Death,
+        CommandRelay => ConsoleLineKind.OperatorCommand,
+        JoinRelay => echoPositions ? ConsoleLineKind.PlayerJoined : ConsoleLineKind.Housekeeping,
+        LeaveRelay => echoPositions ? ConsoleLineKind.PlayerLeft : ConsoleLineKind.Housekeeping,
+        _ => ConsoleLineKind.Housekeeping,
+    };
 
     /// <summary>
     /// Classifies a console line, or returns <see cref="ConsoleLineKind.Ordinary"/>
@@ -232,9 +360,9 @@ public static class ConsoleLineClassifier
     /// <summary>The shape test itself, exposed for tests and reuse.</summary>
     public static ConsoleLineKind Classify(string? message)
     {
-        if (string.IsNullOrWhiteSpace(message))
+        if (message is null || IsBlank(message))
         {
-            return ConsoleLineKind.Ordinary;
+            return ConsoleLineKind.Blank;
         }
 
         var text = message.AsSpan().TrimStart();
@@ -267,7 +395,7 @@ public static class ConsoleLineClassifier
             return ConsoleLineKind.Save;
         }
 
-        return LooksLikeAManifest(message) ? ConsoleLineKind.Save : ConsoleLineKind.Ordinary;
+        return LooksLikeAManifest(message) ? ConsoleLineKind.SaveManifest : ConsoleLineKind.Ordinary;
     }
 
     /// <summary>

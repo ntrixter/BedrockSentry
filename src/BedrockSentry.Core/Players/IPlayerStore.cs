@@ -34,6 +34,16 @@ public sealed record OnlinePlayer(
 /// to the moment the caller asked, so a page left open does not freeze somebody's
 /// total at the instant it loaded.
 /// </param>
+/// <param name="Deaths">
+/// On one server's roster only; null on the global view, where a sum over servers
+/// with different starting points would be a number nobody can read.
+/// </param>
+/// <param name="LastKnownPosition">
+/// Where they were when their latest session on this server ended, as the
+/// companion pack reported it; null when that session carries none, so a
+/// position is never older than the last-seen time beside it. Null on the global
+/// view.
+/// </param>
 public sealed record PlayerSummary(
     string Xuid,
     string Gamertag,
@@ -43,7 +53,9 @@ public sealed record PlayerSummary(
     DateTimeOffset FirstSeenUtc,
     DateTimeOffset? LastSeenUtc,
     TimeSpan Playtime,
-    int SessionCount)
+    int SessionCount,
+    DeathTally? Deaths,
+    BlockPosition? LastKnownPosition)
 {
     public bool IsOnline => OnlineOn is not null;
 
@@ -93,6 +105,46 @@ public interface IPlayerStore
     Task RecordAsync(
         string instanceId,
         PlayerEvent playerEvent,
+        DateTimeOffset atUtc,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Records a death the companion pack relayed, against the XUID its gamertag
+    /// resolves to under <see cref="CompanionAttribution"/>. Writes nothing unless
+    /// exactly one player matches.
+    /// </summary>
+    /// <param name="runStartedUtc">
+    /// When this run of the server started. Only sessions opened since then are
+    /// candidates, so a name seen hours ago cannot take a death now.
+    /// </param>
+    Task<RelayAttribution> RecordDeathAsync(
+        string instanceId,
+        DateTimeOffset runStartedUtc,
+        CompanionDeath death,
+        DateTimeOffset atUtc,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Records where a player was when their session ended, on the one session
+    /// their gamertag resolves to under <see cref="CompanionAttribution"/>. Writes
+    /// nothing unless exactly one session matches.
+    /// </summary>
+    Task<RelayAttribution> RecordExitAsync(
+        string instanceId,
+        DateTimeOffset runStartedUtc,
+        string gamertag,
+        BlockPosition position,
+        ExitPositionSource source,
+        DateTimeOffset atUtc,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Records that the companion pack said hello on this instance. The earliest
+    /// report is when counting deaths began there.
+    /// </summary>
+    Task RecordCompanionReportAsync(
+        string instanceId,
+        string packVersion,
         DateTimeOffset atUtc,
         CancellationToken cancellationToken = default);
 

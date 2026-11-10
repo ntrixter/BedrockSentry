@@ -1,18 +1,30 @@
-@* Start / Stop / Restart for one instance.
+@* The row above every instance tab: the server's state, its pid, the players online
+   and Start / Stop / Restart.
 
-   Its own component because it appears on both the Status and Console tabs.
-   Someone watching output should not have to leave the output to restart the
-   thing producing it, and someone on Status should not have to go and find a
-   console to stop a server. Two copies of these three buttons would drift. *@
+   Rendered once, by the instance page, above whichever tab is showing, so a tab
+   added later has it without asking. Someone watching output should not have to
+   leave it to restart the thing producing it, and someone editing a setting should
+   not have to go and find another tab to stop a server. Two copies of these three
+   buttons would drift. *@
 
+@using BedrockSentry.Core.Backups
 @using BedrockSentry.Core.Instances
+@using BedrockSentry.Core.Players
+@using BedrockSentry.Core.Sync
+@using BedrockSentry.Services.Backups
 @using BedrockSentry.Services.Instances
+@using BedrockSentry.Services.Sync
 @using Microsoft.Extensions.Options
 
 @inject IOptions<InstanceOptions> Options
 @inject OrphanCleanup Orphans
+@inject WorldSync Sync
+@inject WorldRestoreRuns Restores
+@inject AreaRestore AreaRestores
+@inject BackupOrchestrator Backups
+@inject IPlayerStore Players
 
-<div class="console-toolbar">
+<div class="instance-bar">
     <span class="state-badge state-@Status.State.ToString().ToLowerInvariant()">@Status.State</span>
 
     @if (Status.ProcessId is { } pid)
@@ -20,33 +32,77 @@
         <span class="console-meta">pid @pid</span>
     }
 
+    @* Sets the players apart from the process facts before them. Hidden where the
+       row is narrow enough that the players take a line of their own. *@
+    <span class="instance-bar-separator" aria-hidden="true">|</span>
+
+    <span class="instance-bar-players">
+        <span class="instance-bar-label">Players</span>
+        <PlayersOnlineMeter Online="@players.Online" MaxPlayers="@players.MaxPlayers" />
+    </span>
+
     <span class="console-spacer"></span>
 
-    @* Disabled by state rather than hidden, so the buttons do not move around
-       underneath a cursor as the server changes state. *@
-    <button class="btn btn-sm btn-secondary" @onclick="StartAsync"
-            disabled="@(busy || !Supervisor.IsProvisioned || Status.State is not (InstanceState.Stopped or InstanceState.Faulted))">
-        Start
-    </button>
-    @* Enabled on Faulted, unlike Restart (T184). RefusedStartRetry's rule names
-       pressing Stop on a faulted instance as "I know, leave it down" and refuses to
-       re-check after it — and this is the only Stop affordance in the app, so while
-       it was disabled here that documented gesture could not be made at all, and the
-       only cancel inside the two-minute re-check window was the auto-start toggle: a
-       persistent config change that also alters what happens at the next boot.
+    <span class="instance-bar-buttons">
+        @* Disabled by state rather than hidden, so the buttons do not move around
+           underneath a cursor as the server changes state. A job that claims the
+           server, such as a sync (D103), starts and stops it itself, so all three
+           wait for it; the supervisor refuses them meanwhile either way. *@
+        <button class="btn btn-sm btn-secondary" @onclick="StartAsync" title="@ClaimWait"
+                disabled="@(Held || !Supervisor.IsProvisioned || Status.State is not (InstanceState.Stopped or InstanceState.Faulted))">
+            Start
+        </button>
+        @* Enabled on Faulted, unlike Restart (T184). RefusedStartRetry's rule names
+           pressing Stop on a faulted instance as "I know, leave it down" and refuses to
+           re-check after it — and this is the only Stop affordance in the app, so while
+           it was disabled here that documented gesture could not be made at all, and the
+           only cancel inside the two-minute re-check window was the auto-start toggle: a
+           persistent config change that also alters what happens at the next boot.
 
-       Safe because StopAsync takes its no-process branch for a faulted instance —
-       cancel the lifetime, await the monitor, move to Stopped. No drain, no kill.
-       Stopped stays disabled, where Stop really is a no-op. *@
-    <button class="btn btn-sm btn-secondary" @onclick="StopAsync"
-            disabled="@(busy || Status.State is InstanceState.Stopped)">
-        Stop
-    </button>
-    <button class="btn btn-sm btn-secondary" @onclick="RestartAsync"
-            disabled="@(busy || Status.State is InstanceState.Stopped or InstanceState.Faulted)">
-        Restart
-    </button>
+           Safe because StopAsync takes its no-process branch for a faulted instance —
+           cancel the lifetime, await the monitor, move to Stopped. No drain, no kill.
+           Stopped stays disabled, where Stop really is a no-op. *@
+        <button class="btn btn-sm btn-secondary" @onclick="StopAsync" title="@ClaimWait"
+                disabled="@(Held || Status.State is InstanceState.Stopped)">
+            Stop
+        </button>
+        <button class="btn btn-sm btn-secondary" @onclick="RestartAsync" title="@ClaimWait"
+                disabled="@(Held || Status.State is InstanceState.Stopped or InstanceState.Faulted)">
+            Restart
+        </button>
+    </span>
 </div>
+
+@if (Sync.Progress(Supervisor.InstanceId) is { } progress)
+{
+    <SyncStripView Strip="SyncStrip.For(progress, t => t.ToLocalTime())"
+                   OnDismiss="() => Sync.Dismiss(Supervisor.InstanceId)" />
+}
+
+@* D111. A restore of the world or of one area, in the same place as a sync, so a
+   job that stops this server is seen wherever its controls are. *@
+@if (Restores.Progress(Supervisor.InstanceId) is { } restore)
+{
+    <SyncStripView Strip="WorldRestoreText.Strip(restore, t => t.ToLocalTime())" Restore="true"
+                   OnDismiss="() => Restores.Dismiss(Supervisor.InstanceId)" />
+}
+
+@if (AreaRestores.Progress(Supervisor.InstanceId) is { } area)
+{
+    <SyncStripView Strip="AreaRestoreText.Strip(area, t => t.ToLocalTime())" Restore="true"
+                   OnDismiss="() => AreaRestores.Dismiss(Supervisor.InstanceId)" />
+}
+
+@* D113. A backup, whoever asked for it, in the same place: it pauses this
+   server's saves while it runs, and Back up now is on another tab. *@
+@if (Backups.Runs.Progress(Supervisor.InstanceId) is { } backup)
+{
+    <SyncStripView Strip="BackupProgressText.Strip(backup, t => t.ToLocalTime())" Backup="true"
+                   OnDismiss="() => Backups.Runs.Dismiss(Supervisor.InstanceId)" />
+}
+
+@* T411, T414. A port change leaves the firewall rules behind; said here, on every tab. *@
+<FirewallRulesCard Supervisor="Supervisor" />
 
 @* D56. Only rendered when there is one, so the ordinary case is unchanged — a
    banner that is usually absent is read when it appears. The wording, and the
@@ -82,6 +138,12 @@
     public InstanceSupervisor Supervisor { get; set; } = default!;
 
     private bool busy;
+
+    /// <summary>Whether the three buttons wait: for a click already under way, or for a job that claims the server.</summary>
+    private bool Held => busy || Status.ClaimedFor is not null;
+
+    private string? ClaimWait => Status.ClaimedFor is { } purpose ? ClaimText.ButtonsWait(purpose) : null;
+
     private string? error;
     private string? outcome;
 
@@ -89,17 +151,44 @@
 
     private InstanceStatus Status => Supervisor.Status;
 
+    /// Nobody online until the first read lands, which is also what a stopped server reads.
+    private PlayersNow players = new(0, null, null);
+
+    /// Each time the page ticks, once a second, as the Status card's count always has:
+    /// one session query and a read of server.properties, both small.
+    protected override async Task OnParametersSetAsync() =>
+        players = await PlayersNow.ReadAsync(
+            Players, Supervisor.InstanceId, Supervisor.WorkingDirectory, countOperators: false);
+
     /// Looked for on load rather than on the page's tick: walking the process
     /// table once a second to answer a question that is almost always "none"
     /// would cost real work to render nothing. Refreshed after a start is
     /// refused and after one is ended, which are the two moments it changes.
-    protected override void OnInitialized() => Refresh();
+    ///
+    /// After the first render rather than in OnInitializedAsync, which also runs
+    /// during prerender and holds the HTTP response on the find. Under the broker
+    /// that is a pipe round trip; with the broker busy, every tab clicked waited
+    /// out its connect timeout before the page appeared (`T412`).
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
 
-    private void Refresh()
+        await RefreshAsync();
+
+        if (orphans.Count > 0 || error is not null)
+        {
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshAsync()
     {
         try
         {
-            orphans = Orphans.Find(Supervisor);
+            orphans = await Orphans.FindAsync(Supervisor);
         }
         catch (Exception ex)
         {
@@ -132,7 +221,7 @@
         finally
         {
             busy = false;
-            Refresh();
+            await RefreshAsync();
         }
     }
 
@@ -161,7 +250,7 @@
 
     private async Task RunAsync(Func<InstanceSupervisor, Task> action)
     {
-        if (busy)
+        if (Held)
         {
             return;
         }
@@ -183,7 +272,7 @@
 
             // A refused start is exactly when an orphan is worth showing, and
             // the refusal is what sent the operator here.
-            Refresh();
+            await RefreshAsync();
         }
     }
 }

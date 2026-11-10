@@ -16,7 +16,7 @@ public enum ReservedScope
     /// </summary>
     /// <remarks>
     /// For the container that holds every account's own folder. Refusing the whole
-    /// subtree would forbid <c>C:\Users\Alice\Documents\Servers</c>, which is an
+    /// subtree would forbid <c>C:\Users\testuser\Documents\Servers</c>, which is an
     /// ordinary place to keep a server — blocking a reasonable setup to prevent an
     /// unlikely one.
     /// </remarks>
@@ -55,7 +55,7 @@ public sealed record ReservedSystemDirectory(string Path, ReservedScope Scope, s
 /// one, so <c>Path.Combine</c>, <c>Path.GetFullPath</c> or
 /// <c>Path.TrimEndingDirectorySeparator</c> in here would make the Linux suite assert
 /// semantics the product does not have — and quietly:
-/// <c>Path.TrimEndingDirectorySeparator(@"C:\Users\Alice\")</c> returns the string
+/// <c>Path.TrimEndingDirectorySeparator(@"C:\Users\testuser\")</c> returns the string
 /// <em>unchanged</em> on Linux, so a trailing-separator case would pass while checking
 /// nothing.</para>
 ///
@@ -216,13 +216,14 @@ public static class ReservedSystemDirectories
     /// <remarks>
     /// <para><strong>Deliberately not
     /// <see cref="Environment.SpecialFolder.UserProfile"/>.</strong> This process runs
-    /// as LocalSystem, whose profile is
-    /// <c>C:\Windows\System32\config\systemprofile</c> — so that route resolves a rule
-    /// <em>inside</em> the Windows directory, which looks correct, is already covered
-    /// by the Windows rule, and leaves <c>C:\Users</c> guarded by nothing.</para>
+    /// as a service account, whose profile need not be among the accounts' folders:
+    /// LocalSystem's is <c>C:\Windows\System32\config\systemprofile</c> — so that
+    /// route resolves a rule <em>inside</em> the Windows directory, which looks correct,
+    /// is already covered by the Windows rule, and leaves <c>C:\Users</c> guarded by
+    /// nothing.</para>
     ///
     /// <para>The grandparent of a per-machine known folder answers correctly under
-    /// LocalSystem. If neither resolves, the rule is <strong>absent</strong> — never a
+    /// any account. If neither resolves, the rule is <strong>absent</strong> — never a
     /// fallback to a <c>C:\Users</c> literal, which is the staleness the decision
     /// refuses. The authoritative answer is a registry value; a two-level walk off a
     /// known folder is still a lookup rather than a literal, and the decision names
@@ -309,7 +310,7 @@ public static class ReservedSystemDirectories
 
                 case ReservedScope.FolderAndItsImmediateChildren when isTheFolder:
                     return $"'{shown}' is {rule.Rule}, not a place for a server. Pick somewhere "
-                        + $"inside one of them, such as '{shownAt}\\Alice\\Documents\\Servers'.";
+                        + $"inside one of them, such as '{shownAt}\\testuser\\Documents\\Servers'.";
 
                 case ReservedScope.FolderAndItsImmediateChildren when isBeneath
                     && probe.IndexOf('\\', at.Length + 1) < 0:
@@ -456,7 +457,7 @@ public static class ReservedSystemDirectories
     /// <para><strong><c>NoRootDirectory</c> is the operative answer and
     /// <c>Network</c> is the backstop, which is the opposite way round from how it
     /// reads.</strong> Drive mappings live in the logon session's device namespace
-    /// and this service is LocalSystem, whose session has no <c>Z:</c> — so Windows
+    /// and this service runs as a service account, whose session has no <c>Z:</c> — so Windows
     /// answers <c>DRIVE_NO_ROOT_DIR</c> and the service cannot tell "the drive you
     /// mapped in Explorer" from "a letter nobody ever assigned". It does not need
     /// to: both are equally unusable, and the message says both. **Confirmed on a
@@ -473,16 +474,16 @@ public static class ReservedSystemDirectories
             // test for this arm caught it the moment the rule moved into this class.
             : $"'{full}' is on drive {root.TrimEnd('\\', '/')}, which this machine does not "
                 + "have. Drives you map in Explorer belong to your own sign-in; this service runs "
-                + "as LocalSystem and never sees them. If that drive is a network share, "
+                + "under its own account and never sees them. If that drive is a network share, "
                 + "BedrockSentry does not support one for a server's folder either — put the "
                 + "server on a disk attached to this machine.";
 
     /// <summary>The sentence for a network share, wherever it was recognised.</summary>
     public static string NetworkShare(string path) =>
         $"'{path}' is on a network share, which BedrockSentry does not support for a server's "
-        + "folder. The service runs as LocalSystem and presents the machine account on the "
-        + "network rather than your account, so it cannot reliably reach a share — and a share "
-        + "cannot be shadow-copied for backups. Put the server on a disk attached to this machine.";
+        + "folder. The service runs under its own account rather than yours, so it cannot "
+        + "reliably reach a share — and a share cannot be shadow-copied for backups. Put the "
+        + "server on a disk attached to this machine.";
 
     /// <summary>
     /// Equal to a volume root, in the pure Windows sense or in this host's own.

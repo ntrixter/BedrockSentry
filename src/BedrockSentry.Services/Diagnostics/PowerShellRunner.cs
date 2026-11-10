@@ -83,12 +83,28 @@ public static class PowerShellError
         // The message is the tail of the last line, and everything above it is the
         // source. Read from the end deliberately: a script block can contain " : "
         // of its own, and the marker that matters is the last one.
-        var last = kept[^1];
-        var marker = last.LastIndexOf(" : ", StringComparison.Ordinal);
-
-        if (marker >= 0 && marker + 3 < last.Length)
+        //
+        // The message can itself run to several lines (Get-AppxPackage's "Access is
+        // denied." comes twice, `T399`), so the marker is looked for upward from the
+        // last line, and the lines below it are the rest of the message.
+        for (var line = kept.Count - 1; line >= 0; line--)
         {
-            return last[(marker + 3)..].Trim();
+            var marker = kept[line].LastIndexOf(" : ", StringComparison.Ordinal);
+
+            if (marker >= 0 && marker + 3 < kept[line].Length)
+            {
+                var message = new List<string> { kept[line][(marker + 3)..].Trim() };
+
+                foreach (var rest in kept.Skip(line + 1))
+                {
+                    if (!rest.Equals(message[^1], StringComparison.Ordinal))
+                    {
+                        message.Add(rest);
+                    }
+                }
+
+                return string.Join(" ", message);
+            }
         }
 
         // No marker to cut on. Better an ugly line than no reason at all, which is

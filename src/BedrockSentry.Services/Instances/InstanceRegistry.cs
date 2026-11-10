@@ -2,13 +2,20 @@ using System.Collections.Immutable;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using BedrockSentry.Core.Broker;
 using BedrockSentry.Core.Configuration;
+using BedrockSentry.Core.Diagnostics;
 using BedrockSentry.Core.Instances;
 using BedrockSentry.Core.Players;
+using BedrockSentry.Core.Structures;
+using BedrockSentry.Core.Sync;
+using BedrockSentry.Services.Broker;
 using BedrockSentry.Services.Configuration;
 using BedrockSentry.Services.Packages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+
+using BedrockSentry.Services.Addons;
 
 namespace BedrockSentry.Services.Instances;
 
@@ -51,6 +58,13 @@ public sealed class InstanceRegistry : IAsyncDisposable
     /// <summary>Handed to every supervisor so a version change is dated when it happens.</summary>
     private readonly ServerVersionLog? _versions;
 
+    /// <summary>Switches the companion pack on for a new server before its first start (<c>D93</c>).</summary>
+    private readonly InstanceAddons? _addons;
+    private readonly IFirewallService? _firewall;
+
+    /// <summary>What to say, or ask the broker, about a folder outside the data root (<c>D120</c>).</summary>
+    private readonly OutsideFolders? _outside;
+
     /// <summary>Serialises instance creation against itself.</summary>
     private readonly SemaphoreSlim _createGate = new(1, 1);
 
@@ -78,8 +92,14 @@ public sealed class InstanceRegistry : IAsyncDisposable
         IInstancePlayerData playerData,
         LanDiscoveryPortGuard? discoveryGuard = null,
         IPlayerStore? players = null,
-        ServerVersionLog? versions = null)
+        ServerVersionLog? versions = null,
+        InstanceAddons? addons = null,
+        IFirewallService? firewall = null,
+        OutsideFolders? outside = null)
     {
+        _outside = outside;
+        _addons = addons;
+        _firewall = firewall;
         _discoveryGuard = discoveryGuard;
         _players = players;
         _versions = versions;
@@ -103,14 +123,14 @@ public sealed class InstanceRegistry : IAsyncDisposable
             // instance actually owns it. Reads each instance's own file, the
             // same source of truth the supervisor's start uses.
             guard.OwnerExists = () => _supervisors.Values.Any(s =>
-                guard.OwnsDiscoveryPair(PortInspector.PortsOf(s.WorkingDirectory)));
+                guard.OwnsDiscoveryPair(PortInspector.ModelOf(s.WorkingDirectory)));
 
             // Whether that owner is up. The guard needs the two apart to know what a
             // failed bind means: the owner running is holding the pair itself and
             // wants no help, while the owner stopped means something else has it and
             // the owner is locked out of its own ports.
             guard.OwnerRunning = () => _supervisors.Values.Any(s =>
-                guard.OwnsDiscoveryPair(PortInspector.PortsOf(s.WorkingDirectory))
+                guard.OwnsDiscoveryPair(PortInspector.ModelOf(s.WorkingDirectory))
                 && s.Status.State is not (InstanceState.Stopped or InstanceState.Faulted));
         }
 
@@ -184,8 +204,8 @@ public sealed class InstanceRegistry : IAsyncDisposable
     ///
     /// It is allowed — the working directory override exists precisely so a world
     /// can live wherever the administrator wants — but a user profile is the one
-    /// destination that is quietly wrong. The service runs as LocalSystem, not as
-    /// the person who put the files there; profile folders are routinely
+    /// destination that is quietly wrong. The service runs as its own account, not
+    /// as the person who put the files there; profile folders are routinely
     /// redirected into OneDrive, where files become cloud placeholders that are
     /// not actually on disk; and Downloads in particular is a folder people empty
     /// without thinking, which for a Minecraft server means deleting the world.
@@ -222,13 +242,34 @@ public sealed class InstanceRegistry : IAsyncDisposable
             return;
         }
 
+        if (SuggestsInstanceRoot(workingDirectory, Root, ReservedSystemDirectories.AccountsFolder))
+        {
+            _log.LogWarning(
+                "Instance {InstanceId} is configured to run from {Directory}, which is inside a user "
+                + "profile. The service runs as its own account and does not own that folder, and "
+                + "profile folders are often synced to OneDrive or cleared out by hand — either of "
+                + "which loses the world. Prefer the instance root at {Root}.",
+                instanceId, workingDirectory, Root);
+            return;
+        }
+
         _log.LogWarning(
             "Instance {InstanceId} is configured to run from {Directory}, which is inside a user "
-            + "profile. The service runs as LocalSystem and does not own that folder, and "
+            + "profile. The service runs as its own account and does not own that folder, and "
             + "profile folders are often synced to OneDrive or cleared out by hand — either of "
-            + "which loses the world. Prefer the instance root at {Root}.",
-            instanceId, workingDirectory, Root);
+            + "which loses the world. Prefer a folder outside every user profile and OneDrive.",
+            instanceId, workingDirectory);
     }
+
+    /// <summary>
+    /// Whether the profile warning may point at <paramref name="root"/>: only when the
+    /// server is not already in it and the root is not in a profile or OneDrive itself
+    /// (<c>T397</c>).
+    /// </summary>
+    internal static bool SuggestsInstanceRoot(string workingDirectory, string root, string? accountsFolder) =>
+        !ReservedSystemDirectories.IsAtOrUnder(workingDirectory, root)
+        && !ReservedSystemDirectories.IsAtOrUnder(root, accountsFolder)
+        && !root.Contains("OneDrive", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// What every supervisor asks before it launches (<c>T149</c>). Set after
@@ -247,6 +288,12 @@ public sealed class InstanceRegistry : IAsyncDisposable
     /// instance created later is covered too.
     /// </summary>
     public IOrphanInspector? Orphans { get; set; }
+
+    /// <summary>
+    /// Work every launch does first, with the process down (<see cref="IBeforeLaunch"/>).
+    /// Wired like the two above; null does nothing.
+    /// </summary>
+    public IBeforeLaunch? BeforeLaunch { get; set; }
 
     /// <summary>
     /// The operating system's own directories, which no server may live in
@@ -276,9 +323,15 @@ public sealed class InstanceRegistry : IAsyncDisposable
             _players,
             _versions,
             () => StartPreflight,
-            () => Orphans);
+            () => Orphans,
+            () => BeforeLaunch);
 
         _supervisors[id] = supervisor;
+        supervisor.AreaCommand += (from, command) => AreaCommand?.Invoke(from, command);
+        supervisor.TickShow += (from, command) => TickShow?.Invoke(from, command);
+        supervisor.RestoreCommand += (from, command) => RestoreCommand?.Invoke(from, command);
+        supervisor.CompanionHello += from => CompanionHello?.Invoke(from);
+        supervisor.StatusChanged += status => StatusChanged?.Invoke(supervisor, status);
 
         if (Options.ConsoleLog.Enabled)
         {
@@ -306,6 +359,25 @@ public sealed class InstanceRegistry : IAsyncDisposable
     /// running under whatever ran it yesterday, and the wrapper starting a
     /// second copy uninvited would fight it for the port.
     /// </remarks>
+    /// <summary>Whether this service can write a file in <paramref name="folder"/>: one probe, written and removed.</summary>
+    internal static bool Writable(string folder)
+    {
+        var probe = Path.Combine(folder, $".bedrocksentry-probe-{Guid.NewGuid():n}");
+
+        try
+        {
+            using (File.Create(probe, 1, FileOptions.DeleteOnClose))
+            {
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
+    }
+
     public async Task<InstanceSupervisor> AdoptAsync(
         string name,
         string directory,
@@ -324,20 +396,42 @@ public sealed class InstanceRegistry : IAsyncDisposable
 
         RefuseAManagedOrReservedDirectory(full);
 
-        if (!Directory.Exists(full))
+        // Through the same rule the panel and the launch guard read, so the
+        // three cannot come to disagree about which file makes a folder a server.
+        //
+        // `T252`. A Directory.Exists check stood here and answered this question
+        // first, which put the same swallow one folder up from the one `T246` was
+        // filed for: it reports false for a folder this service may not traverse,
+        // so a denied folder was refused with "does not exist" and somebody was
+        // sent to look for a folder sitting where they left it. PresenceOf
+        // separates the two from the exception the read itself throws, so the
+        // check is gone rather than duplicated.
+        var defaults = new InstanceDefinition();
+        var executable = InstanceLayout.ExecutablePath(full, defaults);
+
+        var presence = InstanceLayout.PresenceOf(full, defaults);
+
+        // D120: a folder outside the data root the service may not read, or may read
+        // and not write, is one an administrator has not handed over yet; say how. It
+        // holds a server, so the broker would refuse it too, and adoption writes
+        // server.properties before anything else could ask (T391 clause 9).
+        if (_outside is { } outside && outside.IsOutside(full)
+            && (presence.State is ServerPresenceState.Unreadable or ServerPresenceState.Unknown
+                || (presence.CanLaunch && !Writable(full))))
         {
-            throw new InvalidOperationException($"'{full}' does not exist.");
+            throw new InvalidOperationException(outside.Refusal(full));
         }
 
-        var executable = Path.Combine(full, new InstanceDefinition().Executable);
-
-        if (!File.Exists(executable))
+        if (!presence.CanLaunch)
         {
             // The one thing an instance cannot run without. Checked here rather
-            // than discovered at first start, where it reads as a crash.
+            // than discovered at first start, where it reads as a crash — and
+            // said differently when the file is there and refused, because
+            // "it does not look like a Bedrock server folder" is then false and
+            // sends somebody to re-download a server they already have (`T246`).
             throw new InvalidOperationException(
-                $"'{full}' has no {Path.GetFileName(executable)} — it does not look like a "
-                + "Bedrock server folder. To create a new server, use New instance instead.");
+                MissingServerText.AdoptionRefusal(
+                    full, Path.GetFileName(executable), presence));
         }
 
         return await CreateAsync(
@@ -473,6 +567,15 @@ public sealed class InstanceRegistry : IAsyncDisposable
     /// with the wrapper's own data. Those need the instance list and belong to the
     /// attempt, not to a keystroke.</para>
     /// </remarks>
+    /// <summary>
+    /// The adoption form's sentence for a folder it could not read, the same one
+    /// <see cref="AdoptAsync"/> gives (<c>T391</c> clause 9).
+    /// </summary>
+    public string? AdoptionRefusalFor(BdsFolderReport report, string folder, string executable) =>
+        _outside is { } outside
+            ? outside.AdoptionRefusal(report, folder, executable)
+            : report.RefusalSentence(folder, executable);
+
     public string? WhyThisFolderCannotHoldAServer(string? requested)
     {
         if (ReservedSystemDirectories.RefuseAnUnsupportedPathForm(requested) is { } form)
@@ -527,7 +630,7 @@ public sealed class InstanceRegistry : IAsyncDisposable
     /// <para><strong><c>NoRootDirectory</c> is the operative answer and
     /// <c>Network</c> is the backstop, which is the opposite way round from how this
     /// reads.</strong> Drive mappings live in the logon session's device namespace.
-    /// This service runs as LocalSystem, whose session has no <c>Z:</c>, so Windows
+    /// This service runs as a service account, whose session has no <c>Z:</c>, so Windows
     /// answers <c>DRIVE_NO_ROOT_DIR</c> and the service genuinely cannot tell "the
     /// drive you mapped in Explorer" from "a letter nobody ever assigned". It does not
     /// need to: both are equally unusable from here, and the message says both.
@@ -647,6 +750,10 @@ public sealed class InstanceRegistry : IAsyncDisposable
                 return File.Exists(Path.Combine(full, supervisor.Definition.Executable));
             }
 
+            // Before the state is read: a sync stops the server part-way through,
+            // and a stopped server inside a claimed job is not one that can move.
+            using var claim = await supervisor.ClaimAsync(ClaimText.Move, cancellationToken).ConfigureAwait(false);
+
             if (supervisor.Status.State is not (InstanceState.Stopped or InstanceState.Faulted))
             {
                 throw new InvalidOperationException(
@@ -655,10 +762,18 @@ public sealed class InstanceRegistry : IAsyncDisposable
             }
 
             RefuseAManagedOrReservedDirectory(full, exceptInstanceId: instanceId);
-            Directory.CreateDirectory(full);
 
             var definition = supervisor.Definition;
             var previous = supervisor.WorkingDirectory;
+
+            try
+            {
+                Directory.CreateDirectory(full);
+            }
+            catch (UnauthorizedAccessException ex) when (_outside is { } outside && outside.IsOutside(full))
+            {
+                await MoveHandOverAsync(outside, instanceId, definition.WorkingDirectory, full, ex, cancellationToken).ConfigureAwait(false);
+            }
 
             await JsonConfigWriter
                 .MergeAsync(
@@ -673,7 +788,7 @@ public sealed class InstanceRegistry : IAsyncDisposable
 
             definition.WorkingDirectory = full;
 
-            await ReleaseAsync(supervisor).ConfigureAwait(false);
+            await ReleaseAsync(supervisor, claim).ConfigureAwait(false);
             Register(instanceId, definition, full);
             WarnIfUnderAUserProfile(instanceId, full);
 
@@ -885,6 +1000,23 @@ public sealed class InstanceRegistry : IAsyncDisposable
             throw new ArgumentException("An instance needs a name.", nameof(request));
         }
 
+        // Before anything is made. The parser does not read the address, so a line
+        // break is refused on its own: it would put a second line into server.properties.
+        if (!string.IsNullOrWhiteSpace(request.UdpPorts)
+            && (request.UdpPorts.Trim().Any(char.IsControl)
+                || ServerUdpPorts.Parse(request.UdpPorts) is not { IsPinned: true }))
+        {
+            throw new ArgumentException(
+                $"\"{request.UdpPorts.Trim()}\" is not a {ServerUdpPorts.Key} value. It is a port range such "
+                + "as 19132-19141, optionally after an address and the published range: "
+                + "203.0.113.7:19132-19141:19132-19141.",
+                nameof(request));
+        }
+
+        // D120: set once the server is written to the configuration ahead of the rest,
+        // for the broker to grant its folder, so a later failure takes it out again.
+        string? writtenEarly = null;
+
         await _createGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -900,6 +1032,12 @@ public sealed class InstanceRegistry : IAsyncDisposable
                 WorkingDirectory = string.IsNullOrWhiteSpace(request.WorkingDirectory)
                     ? null
                     : request.WorkingDirectory,
+
+                // `D40`. Through the create path rather than written afterwards, so
+                // the note reaches the config file in the same write as everything
+                // else — a second write would be a window in which the copy exists
+                // and does not know what it is.
+                RestoredFrom = request.RestoredFrom,
             };
 
             // The default folder is named after the instance, which two instances
@@ -936,7 +1074,15 @@ public sealed class InstanceRegistry : IAsyncDisposable
             // easily land on ground something else already manages.
             RefuseAManagedOrReservedDirectory(workingDirectory);
 
-            Directory.CreateDirectory(workingDirectory);
+            try
+            {
+                Directory.CreateDirectory(workingDirectory);
+            }
+            catch (UnauthorizedAccessException ex) when (_outside is { } outside && outside.IsOutside(workingDirectory))
+            {
+                await HandOverAsync(outside, id, definition, workingDirectory, ex, cancellationToken).ConfigureAwait(false);
+                writtenEarly = id;
+            }
 
             // Before the config is written: if unpacking fails, nothing has been
             // recorded, and the administrator can fix the cause and try again
@@ -955,6 +1101,14 @@ public sealed class InstanceRegistry : IAsyncDisposable
                     + "into it; to install fresh, pick an empty folder.");
             }
 
+            // `T315`. A new server starts with no build history. A record already under
+            // this id belongs to a removed server, and both the package record below and
+            // the first start's announcement merge into what is there, which dated a new
+            // server's first start as an update from the removed one's build. Here as
+            // well as at removal, because a record left by a removal on an earlier build
+            // is still on disk.
+            _versions?.Forget(id);
+
             if (request.PackageFileName is { } packageName)
             {
                 var package = _packages.Find(packageName)
@@ -963,6 +1117,12 @@ public sealed class InstanceRegistry : IAsyncDisposable
 
                 await _packages.ExtractAsync(package, workingDirectory, cancellationToken)
                     .ConfigureAwait(false);
+
+                // D53: which package this server was built from, before it has run.
+                if (package.Version is { } installed)
+                {
+                    _versions?.RecordPackage(id, installed, reportedNow: null, _timeProvider.GetUtcNow());
+                }
             }
 
             // D24. Every instance keeps Bedrock's own default for LAN visibility,
@@ -971,11 +1131,12 @@ public sealed class InstanceRegistry : IAsyncDisposable
             // and LanDiscoveryPortGuard now settles the port contention it was
             // guarding against without taking anything away from the server.
             await ApplyServerPropertiesAsync(
-                    workingDirectory, name, request.Port, request.World,
-                    freshInstall: request.PackageFileName is not null, cancellationToken)
+                    workingDirectory, name, request.Port, request.World, request.Transport,
+                    freshInstall: request.PackageFileName is not null, request.UdpPorts, cancellationToken)
                 .ConfigureAwait(false);
 
             await WriteToConfigAsync(id, definition, cancellationToken).ConfigureAwait(false);
+            writtenEarly = null;
 
             Options.Servers[id] = definition;
             var supervisor = Register(id, definition, workingDirectory);
@@ -984,12 +1145,26 @@ public sealed class InstanceRegistry : IAsyncDisposable
             _log.LogInformation(
                 "Created instance {InstanceId} ({Name}) at {Directory}", id, name, workingDirectory);
 
+            // D93: before the first start, because the world is generated into
+            // the seeded folder then. Only onto a server this call installed.
+            if (request.CompanionPack && request.PackageFileName is not null && _addons is not null)
+            {
+                await SwitchOnCompanionAsync(supervisor, cancellationToken).ConfigureAwait(false);
+            }
+
             if (request.StartNow && supervisor.IsProvisioned)
             {
                 await supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
             }
 
             return supervisor;
+        }
+        catch when (writtenEarly is { } early)
+        {
+            await JsonConfigWriter
+                .RemoveAsync(ConfigPath, [$"{InstanceOptions.SectionName}:Servers:{early}"], CancellationToken.None)
+                .ConfigureAwait(false);
+            throw;
         }
         finally
         {
@@ -998,21 +1173,73 @@ public sealed class InstanceRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Names the server and, if asked, moves it off the default port.
+    /// Switches the companion pack on for a server that has never started (<c>D93</c>).
+    /// When it could not be, the server's console says why.
+    /// </summary>
+    /// <returns>Null when the pack is on; otherwise why not.</returns>
+    /// <remarks>
+    /// Whatever goes wrong, the server exists, so only a cancellation is thrown. A world
+    /// file's world is placed before this is called (<c>T334</c>), since the pack goes into
+    /// the world <c>level-name</c> names.
+    /// </remarks>
+    public async Task<string?> SwitchOnCompanionAsync(
+        InstanceSupervisor supervisor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(supervisor);
+
+        string? notOn;
+
+        try
+        {
+            notOn = _addons is { } addons
+                ? await addons.PreSeedCompanionAsync(supervisor, cancellationToken).ConfigureAwait(false)
+                : "Add-ons are not available in this wrapper.";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            notOn = ex.Message;
+        }
+
+        if (notOn is not null)
+        {
+            supervisor.Console.Append(
+                ConsoleOrigin.Notice,
+                $"the companion pack was not switched on: {notOn} It can be switched on from the Add-ons tab.",
+                _timeProvider.GetUtcNow());
+            _log.LogWarning(
+                "The companion pack was not switched on for {InstanceId}: {Reason}", supervisor.InstanceId, notOn);
+        }
+
+        return notOn;
+    }
+
+    /// <summary>
+    /// Names the server, and — when the wrapper is the one that put the file
+    /// there — moves it off the default port, sets its transport and answers the
+    /// settings the create form collected.
     /// </summary>
     /// <remarks>
-    /// The port matters more than it looks. Every BDS package ships listening on
-    /// 19132, so a second instance created from the same zip silently collides
-    /// with the first — one of them starts, the other exits, and the wrapper
-    /// reports a crash loop with no obvious cause. Bedrock also takes the next
-    /// number for IPv6, which is why suggested ports are spaced two apart.
+    /// <para>The port matters more than it looks. Every BDS package ships
+    /// listening on 19132, so a second instance created from the same zip
+    /// silently collides with the first — one of them starts, the other exits,
+    /// and the wrapper reports a crash loop with no obvious cause. Bedrock also
+    /// takes the next number for IPv6, which is written here and which the
+    /// suggested port leaves room for (<see cref="NewServerPorts"/>).</para>
+    ///
+    /// <para><paramref name="freshInstall"/> is what separates the two halves,
+    /// and every default below is behind it. A package was just extracted, so
+    /// that file is the wrapper's to answer; a folder that already had a server
+    /// in it made its own choices, or deliberately made none, and neither is
+    /// ours to correct.</para>
     /// </remarks>
     private static async Task ApplyServerPropertiesAsync(
         string workingDirectory,
         string name,
         int? port,
         NewWorldSettings? world,
+        ServerTransport transport,
         bool freshInstall,
+        string? udpPorts,
         CancellationToken cancellationToken)
     {
         var path = ServerProperties.PathFor(workingDirectory);
@@ -1030,10 +1257,47 @@ public sealed class InstanceRegistry : IAsyncDisposable
             ["server-name"] = name,
         };
 
+        List<string> unset = [];
+
         if (port is { } p)
         {
             values["server-port"] = p.ToString();
             values["server-portv6"] = (p + 1).ToString();
+        }
+
+        if (freshInstall)
+        {
+            // D75. A 1.26.50-or-later package extracts a file that says
+            // transport=nethernet, so without this line every server the wrapper
+            // creates speaks a transport whose port model nothing here describes
+            // correctly — the Status card names an IPv6 port it does not bind,
+            // and the start pre-flight reads a UDP table that cannot hold the
+            // answer. Written unconditionally rather than only when the file
+            // disagrees: the value is the operator's answer from the form, and a
+            // write that depends on what the package happened to ship is a rule
+            // whose behaviour changes under it.
+            //
+            // Only on a fresh install, for the reason the telemetry default just
+            // below spells out — an adopted folder's file is not the wrapper's to
+            // configure, and rewriting this one in particular would change which
+            // ports somebody's running server binds.
+            values[ServerTransports.PropertyKey] = ServerTransports.Spell(transport);
+
+            // ON1. The line the form showed, as the operator left it. D71 keeps the
+            // wrapper from writing it afterwards, on its own schedule, into a file the
+            // server owns; this is the file's first write and the operator's answer.
+            if (transport is ServerTransport.NetherNet && !string.IsNullOrWhiteSpace(udpPorts))
+            {
+                values[ServerUdpPorts.Key] = udpPorts.Trim();
+            }
+            else
+            {
+                // A 1.26.61 package ships server-udp-ports=19132 set, beside
+                // transport=nethernet. A RakNet server, or a NetherNet one whose Play
+                // ports the form left empty, takes no window, so the stock line is
+                // commented out rather than left naming a port the form never showed (T371).
+                unset.Add(ServerUdpPorts.Key);
+            }
         }
 
         if (world is not null)
@@ -1059,7 +1323,76 @@ public sealed class InstanceRegistry : IAsyncDisposable
             values["emit-server-telemetry"] = "false";
         }
 
-        await ServerProperties.SetAsync(path, values, cancellationToken).ConfigureAwait(false);
+        await ServerProperties.SetAsync(path, values, unset, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A new server's folder outside the data root that the service may not make
+    /// (<c>D120</c>): the command that hands it over, or, where the install lets the panel
+    /// ask, the broker's grant.
+    /// </summary>
+    /// <remarks>
+    /// The broker grants the folder it reads from the configuration, so the server is
+    /// written there first and taken out again if the grant is refused; the broker makes
+    /// the folder and grants it to the service and the server's container.
+    /// </remarks>
+    private async Task HandOverAsync(
+        OutsideFolders outside, string id, InstanceDefinition definition, string workingDirectory,
+        UnauthorizedAccessException denied, CancellationToken cancellationToken)
+    {
+        if (!outside.PanelMayGrant)
+        {
+            throw new InvalidOperationException(outside.Refusal(workingDirectory), denied);
+        }
+
+        await WriteToConfigAsync(id, definition, cancellationToken).ConfigureAwait(false);
+
+        if (await outside.GrantAsync(BrokerGrantTarget.InstanceWorkingDirectory, id, cancellationToken).ConfigureAwait(false)
+            is { } refused)
+        {
+            await JsonConfigWriter
+                .RemoveAsync(ConfigPath, [$"{InstanceOptions.SectionName}:Servers:{id}"], CancellationToken.None)
+                .ConfigureAwait(false);
+            throw new InvalidOperationException(outside.Refusal(workingDirectory, refused), denied);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="HandOverAsync"/> for a server moving to a folder outside the data root:
+    /// the new folder is written first for the broker to read, and the old one put back
+    /// if the grant is refused.
+    /// </summary>
+    private async Task MoveHandOverAsync(
+        OutsideFolders outside, string instanceId, string? previous, string full,
+        UnauthorizedAccessException denied, CancellationToken cancellationToken)
+    {
+        if (!outside.PanelMayGrant)
+        {
+            throw new InvalidOperationException(outside.Refusal(full), denied);
+        }
+
+        var key = $"{InstanceOptions.SectionName}:Servers:{instanceId}:WorkingDirectory";
+
+        await JsonConfigWriter
+            .MergeAsync(ConfigPath, new Dictionary<string, JsonNode?> { [key] = JsonValue.Create(full) }, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (await outside.GrantAsync(BrokerGrantTarget.InstanceWorkingDirectory, instanceId, cancellationToken).ConfigureAwait(false)
+            is { } refused)
+        {
+            if (previous is null)
+            {
+                await JsonConfigWriter.RemoveAsync(ConfigPath, [key], CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                await JsonConfigWriter
+                    .MergeAsync(ConfigPath, new Dictionary<string, JsonNode?> { [key] = JsonValue.Create(previous) }, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            throw new InvalidOperationException(outside.Refusal(full, refused), denied);
+        }
     }
 
     private async Task WriteToConfigAsync(
@@ -1118,9 +1451,10 @@ public sealed class InstanceRegistry : IAsyncDisposable
                     [$"{prefix}:Zip:Compression"] = JsonValue.Create(settings.Zip.Compression.ToString()),
                     [$"{prefix}:Zip:Retention:Mode"] = JsonValue.Create(settings.Zip.Retention.Mode.ToString()),
                     [$"{prefix}:Zip:Retention:Value"] = JsonValue.Create(settings.Zip.Retention.Value),
-                    [$"{prefix}:Vss:Enabled"] = JsonValue.Create(settings.Vss.Enabled),
-                    [$"{prefix}:Vss:Retention:Mode"] = JsonValue.Create(settings.Vss.Retention.Mode.ToString()),
-                    [$"{prefix}:Vss:Retention:Value"] = JsonValue.Create(settings.Vss.Retention.Value),
+                    [$"{prefix}:Folder:Enabled"] = JsonValue.Create(settings.Folder.Enabled),
+                    [$"{prefix}:Folder:Retention:Mode"] = JsonValue.Create(settings.Folder.Retention.Mode.ToString()),
+                    [$"{prefix}:Folder:Retention:Value"] = JsonValue.Create(settings.Folder.Retention.Value),
+                    [$"{prefix}:Acquisition:UseShadowCopy"] = JsonValue.Create(settings.Acquisition.UseShadowCopy),
                     [$"{prefix}:Schedule:Mode"] = JsonValue.Create(settings.Schedule.Mode.ToString()),
                     [$"{prefix}:Schedule:IntervalHours"] = JsonValue.Create(settings.Schedule.IntervalHours),
                     [$"{prefix}:Schedule:IntervalMinutes"] = JsonValue.Create(settings.Schedule.IntervalMinutes),
@@ -1138,6 +1472,8 @@ public sealed class InstanceRegistry : IAsyncDisposable
                         JsonValue.Create(settings.OnShutdown.OnWrapperUpdate),
                     [$"{prefix}:OnShutdown:OnServerUpdate"] =
                         JsonValue.Create(settings.OnShutdown.OnServerUpdate),
+                    [$"{prefix}:History:KeepDays"] =
+                        JsonValue.Create(settings.History.KeepDays),
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1225,8 +1561,14 @@ public sealed class InstanceRegistry : IAsyncDisposable
     /// it. Config is written first, and only a successful write updates the
     /// live definition, the same order every other setter here uses, so a
     /// failed attempt cannot poison a retry into skipping its own pin.
+    /// The server's firewall rules are relabelled with it (<c>T411</c>): tagged under
+    /// the old name before the write, renamed under the new one after it.
     /// </remarks>
-    public async Task RenameAsync(
+    /// <returns>
+    /// What happened to its firewall rules, or null when the name did not change or
+    /// this service has no firewall access. A failure there does not undo the rename.
+    /// </returns>
+    public async Task<SystemCheckFix?> RenameAsync(
         string instanceId, string name, CancellationToken cancellationToken = default)
     {
         var supervisor = Get(instanceId);
@@ -1242,6 +1584,13 @@ public sealed class InstanceRegistry : IAsyncDisposable
         var pin = string.IsNullOrWhiteSpace(definition.WorkingDirectory)
             ? supervisor.WorkingDirectory
             : null;
+
+        var renamesRules = _firewall is not null && !string.Equals(previous, trimmed, StringComparison.Ordinal);
+
+        if (renamesRules)
+        {
+            await RenameFirewallRulesAsync(instanceId, previous, cancellationToken).ConfigureAwait(false);
+        }
 
         var prefix = $"{InstanceOptions.SectionName}:Servers:{instanceId}";
         var values = new Dictionary<string, JsonNode?>
@@ -1272,6 +1621,32 @@ public sealed class InstanceRegistry : IAsyncDisposable
         _log.LogInformation(
             "Instance {InstanceId} renamed from {Previous} to {Name}",
             instanceId, previous, trimmed);
+
+        return renamesRules
+            ? await RenameFirewallRulesAsync(instanceId, trimmed, cancellationToken).ConfigureAwait(false)
+            : null;
+    }
+
+    /// <summary>The firewall half of a rename; a failure is reported, never thrown, so the rename stands.</summary>
+    private async Task<SystemCheckFix> RenameFirewallRulesAsync(
+        string instanceId, string name, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var fix = await _firewall!.RenameServerRulesAsync(instanceId, name, cancellationToken).ConfigureAwait(false);
+
+            if (!fix.Succeeded)
+            {
+                _log.LogWarning("The firewall rules of {InstanceId} were not renamed to {Name}: {Reason}", instanceId, name, fix.Message);
+            }
+
+            return fix;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "The firewall rules of {InstanceId} were not renamed to {Name}", instanceId, name);
+            return new SystemCheckFix(false, ex.Message);
+        }
     }
 
     /// <summary>Writes an instance's crash-watchdog settings.</summary>
@@ -1300,6 +1675,285 @@ public sealed class InstanceRegistry : IAsyncDisposable
 
         _log.LogInformation("Instance {InstanceId} watchdog settings updated", instanceId);
     }
+
+    /// <summary>Writes an instance's companion-pack toggles.</summary>
+    /// <remarks>
+    /// Config first, and only a written file changes the live definition, so a
+    /// failed save cannot leave the panel showing a value that reverts at the
+    /// next service start.
+    /// </remarks>
+    public async Task SetCompanionAsync(
+        string instanceId, CompanionSettings companion, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(companion);
+
+        var supervisor = Get(instanceId);
+        var prefix = $"{InstanceOptions.SectionName}:Servers:{instanceId}:Companion";
+
+        await JsonConfigWriter
+            .MergeAsync(
+                ConfigPath,
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{prefix}:RecordDeaths"] = JsonValue.Create(companion.RecordDeaths),
+                    [$"{prefix}:RecordLastLocation"] = JsonValue.Create(companion.RecordLastLocation),
+                    [$"{prefix}:EchoPositions"] = JsonValue.Create(companion.EchoPositions),
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        supervisor.Definition.Companion = new CompanionSettings
+        {
+            RecordDeaths = companion.RecordDeaths,
+            RecordLastLocation = companion.RecordLastLocation,
+            EchoPositions = companion.EchoPositions,
+        };
+
+        _log.LogInformation("Instance {InstanceId} companion pack settings updated", instanceId);
+    }
+
+    /// <summary>Writes which of an instance's add-on issues are hidden (<c>D96</c>).</summary>
+    /// <remarks>
+    /// The whole list, as a JSON array, for the reason
+    /// <see cref="SetRestartScheduleAsync"/> gives: merged key by key, a shorter
+    /// list would leave the keys it dropped in force. The caller trims it to the
+    /// issues the tab can see (<c>AddonIssues.Hide</c>), so this writes what it is
+    /// given.
+    /// </remarks>
+    public async Task SetHiddenAddonIssuesAsync(
+        string instanceId, IReadOnlyList<string> keys, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+
+        var supervisor = Get(instanceId);
+        var hidden = new JsonArray();
+
+        foreach (var key in keys)
+        {
+            hidden.Add(JsonValue.Create(key));
+        }
+
+        await JsonConfigWriter
+            .MergeAsync(
+                ConfigPath,
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{InstanceOptions.SectionName}:Servers:{instanceId}:Addons:HiddenIssues"] = hidden,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var addons = supervisor.Definition.Addons.Copy();
+        addons.HiddenIssues = [.. keys];
+        supervisor.Definition.Addons = addons;
+    }
+
+    /// <summary>Writes whether an instance's add-ons follow the library at each start (<c>D112</c>).</summary>
+    public async Task SetAddonAutoUpdateAsync(
+        string instanceId, bool autoUpdate, CancellationToken cancellationToken = default)
+    {
+        var supervisor = Get(instanceId);
+
+        await JsonConfigWriter
+            .MergeAsync(
+                ConfigPath,
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{InstanceOptions.SectionName}:Servers:{instanceId}:Addons:AutoUpdate"] = JsonValue.Create(autoUpdate),
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var addons = supervisor.Definition.Addons.Copy();
+        addons.AutoUpdate = autoUpdate;
+        supervisor.Definition.Addons = addons;
+    }
+
+    /// <summary>Writes the add-ons an instance holds at a chosen version (<c>D112</c>).</summary>
+    /// <remarks>
+    /// The whole list, as a JSON array, for the reason <see cref="SetHiddenAddonIssuesAsync"/>
+    /// gives. The caller works out the list (<c>AddonHolds.After</c>).
+    /// </remarks>
+    public async Task SetAddonHoldsAsync(
+        string instanceId, IReadOnlyList<AddonHold> holds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(holds);
+
+        var supervisor = Get(instanceId);
+        var written = new JsonArray();
+
+        foreach (var hold in holds)
+        {
+            written.Add(new JsonObject { ["Uuid"] = hold.Uuid, ["Version"] = hold.Version });
+        }
+
+        await JsonConfigWriter
+            .MergeAsync(
+                ConfigPath,
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{InstanceOptions.SectionName}:Servers:{instanceId}:Addons:Holds"] = written,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var addons = supervisor.Definition.Addons.Copy();
+        addons.Holds = [.. holds.Select(h => new AddonHold { Uuid = h.Uuid, Version = h.Version })];
+        supervisor.Definition.Addons = addons;
+    }
+
+    /// <summary>Writes the server an instance takes its world from and the areas it keeps (<c>D103</c>).</summary>
+    /// <remarks>
+    /// The Sync Areas are written whole, as a JSON array, for the reason
+    /// <see cref="SetRestartScheduleAsync"/> gives: merged key by key, a shorter
+    /// list would leave the areas it dropped in force. Config first, and only a
+    /// written file changes the live definition.
+    /// </remarks>
+    public async Task SetSyncAsync(
+        string instanceId, SyncSettings sync, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sync);
+
+        var supervisor = Get(instanceId);
+        var prefix = $"{InstanceOptions.SectionName}:Servers:{instanceId}:Sync";
+        var copy = new SyncSettings
+        {
+            SourceInstanceId = sync.SourceInstanceId ?? string.Empty,
+            KeptAreas =
+            [
+                .. sync.KeptAreas.Select(a => new KeptAreaSettings
+                {
+                    Name = (a.Name ?? string.Empty).Trim(),
+
+                    // A dimension Bedrock has is written by its id; one it has not is kept as
+                    // typed, so the Sync tab can name it as the problem it is.
+                    Dimension = BedrockDimension.Find(a.Dimension)?.Id ?? (a.Dimension ?? string.Empty).Trim(),
+                    Color = AreaColors.IsValid(a.Color) ? a.Color.ToLowerInvariant() : string.Empty,
+                    ShowInGame = a.ShowInGame,
+                    X1 = a.X1, Y1 = a.Y1, Z1 = a.Z1,
+                    X2 = a.X2, Y2 = a.Y2, Z2 = a.Z2,
+                }),
+            ],
+        };
+
+        var areas = new JsonArray();
+
+        foreach (var area in copy.KeptAreas)
+        {
+            areas.Add(new JsonObject
+            {
+                [nameof(KeptAreaSettings.Name)] = area.Name,
+                [nameof(KeptAreaSettings.Dimension)] = area.Dimension,
+                [nameof(KeptAreaSettings.Color)] = area.Color,
+                [nameof(KeptAreaSettings.ShowInGame)] = area.ShowInGame,
+                [nameof(KeptAreaSettings.X1)] = area.X1,
+                [nameof(KeptAreaSettings.Y1)] = area.Y1,
+                [nameof(KeptAreaSettings.Z1)] = area.Z1,
+                [nameof(KeptAreaSettings.X2)] = area.X2,
+                [nameof(KeptAreaSettings.Y2)] = area.Y2,
+                [nameof(KeptAreaSettings.Z2)] = area.Z2,
+            });
+        }
+
+        await JsonConfigWriter
+            .MergeAsync(
+                ConfigPath,
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{prefix}:{nameof(SyncSettings.SourceInstanceId)}"] = JsonValue.Create(copy.SourceInstanceId),
+                    [$"{prefix}:{nameof(SyncSettings.KeptAreas)}"] = areas,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        supervisor.Definition.Sync = copy;
+
+        _log.LogInformation(
+            "Instance {InstanceId} syncs from {Source} keeping {Count} area(s)",
+            instanceId, copy.SourceInstanceId, copy.KeptAreas.Count);
+
+        SyncSettingsChanged?.Invoke(instanceId);
+
+        // A running server's outlines follow the panel at once (D106); a stopped one is
+        // handed them at its next start.
+        await supervisor.SendOutlinesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes how the panel shows the world's ticking areas in game (<c>D107</c>), whole, as
+    /// <see cref="SetSyncAsync"/> writes the Sync Areas, and sends a running server its outlines.
+    /// </summary>
+    public async Task SetTickingAreasAsync(
+        string instanceId, IReadOnlyList<TickingAreaSettings> settings, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        var supervisor = Get(instanceId);
+        var copy = settings
+            .Where(s => (s.Name ?? string.Empty).Length > 0)
+            .Select(s => new TickingAreaSettings
+            {
+                Name = s.Name,
+                Dimension = BedrockDimension.Find(s.Dimension)?.Id ?? (s.Dimension ?? string.Empty).Trim(),
+                ShowInGame = s.ShowInGame,
+                Color = AreaColors.IsValid(s.Color) ? s.Color.ToLowerInvariant() : string.Empty,
+            })
+            .ToList();
+
+        var array = new JsonArray();
+        foreach (var setting in copy)
+        {
+            array.Add(new JsonObject
+            {
+                [nameof(TickingAreaSettings.Name)] = setting.Name,
+                [nameof(TickingAreaSettings.Dimension)] = setting.Dimension,
+                [nameof(TickingAreaSettings.ShowInGame)] = setting.ShowInGame,
+                [nameof(TickingAreaSettings.Color)] = setting.Color,
+            });
+        }
+
+        await JsonConfigWriter
+            .MergeAsync(
+                ConfigPath,
+                new Dictionary<string, JsonNode?>
+                {
+                    [$"{InstanceOptions.SectionName}:Servers:{instanceId}:{nameof(InstanceDefinition.TickingAreas)}"] = array,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        supervisor.Definition.TickingAreas = copy;
+        TickingAreasChanged?.Invoke(instanceId);
+        await supervisor.SendOutlinesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>A server's ticking-area display settings were written; an open Ticking Areas view reads them again.</summary>
+    public event Action<string>? TickingAreasChanged;
+
+    /// <summary>Every server's <see cref="InstanceSupervisor.TickShow"/>, raised on that server's console pump.</summary>
+    public event Action<InstanceSupervisor, TickShowCommand>? TickShow;
+
+    /// <summary>Every server's <see cref="InstanceSupervisor.RestoreCommand"/>, raised on that server's console pump.</summary>
+    public event Action<InstanceSupervisor, AreaRestoreCommand>? RestoreCommand;
+
+    /// <summary>Every server's <see cref="InstanceSupervisor.CompanionHello"/>, raised on that server's console pump.</summary>
+    public event Action<InstanceSupervisor>? CompanionHello;
+
+    /// <summary>Every supervisor's status changes, one subscription for all of them (<c>D85</c>).</summary>
+    /// <remarks>Raised on the supervisor's own thread, as its event is; a listener must not block it.</remarks>
+    public event Action<InstanceSupervisor, InstanceStatus>? StatusChanged;
+
+    /// <summary>Raised with an instance's id as it is retired or removed and its supervisor let go.</summary>
+    public event Action<string>? Released;
+
+    /// <summary>Every server's <see cref="InstanceSupervisor.AreaCommand"/>, raised on that server's console pump.</summary>
+    public event Action<InstanceSupervisor, SyncAreaCommand>? AreaCommand;
+
+    /// <summary>
+    /// A server's Sync Areas were written, by the Sync tab or by <c>syncarea</c> in game; an open
+    /// Sync tab reads them again.
+    /// </summary>
+    public event Action<string>? SyncSettingsChanged;
 
     /// <summary>Writes an instance's scheduled-restart settings.</summary>
     /// <remarks>
@@ -1420,7 +2074,11 @@ public sealed class InstanceRegistry : IAsyncDisposable
         try
         {
             var supervisor = Get(instanceId);
-            await ReleaseAsync(supervisor).ConfigureAwait(false);
+
+            using (var claim = await supervisor.ClaimAsync(ClaimText.Retirement, cancellationToken).ConfigureAwait(false))
+            {
+                await ReleaseAsync(supervisor, claim).ConfigureAwait(false);
+            }
 
             supervisor.Definition.Retired = true;
 
@@ -1549,7 +2207,16 @@ public sealed class InstanceRegistry : IAsyncDisposable
             var name = supervisor.Definition.Name;
             var workingDirectory = supervisor.WorkingDirectory;
 
-            await ReleaseAsync(supervisor).ConfigureAwait(false);
+            using (var claim = await supervisor.ClaimAsync(ClaimText.Removal, cancellationToken).ConfigureAwait(false))
+            {
+                await ReleaseAsync(supervisor, claim).ConfigureAwait(false);
+            }
+
+            // `T400`. Before the configuration forgets the server: the broker finds the
+            // name the rules carry from that configuration.
+            var firewallRules = request.RemoveFirewallRules
+                ? await RemoveFirewallRulesAsync(instanceId, name, cancellationToken).ConfigureAwait(false)
+                : null;
 
             Options.Servers.Remove(instanceId);
 
@@ -1559,6 +2226,11 @@ public sealed class InstanceRegistry : IAsyncDisposable
                     [$"{InstanceOptions.SectionName}:Servers:{instanceId}"],
                     cancellationToken)
                 .ConfigureAwait(false);
+
+            // `T315`. Its build history goes with it whatever else is kept: nothing
+            // reads the record of a server that is gone, and one left behind is
+            // inherited by the next server given this id.
+            _versions?.Forget(instanceId);
 
             var forgotten = request.ForgetPlayers
                 ? await _playerData.ForgetAsync(instanceId, cancellationToken).ConfigureAwait(false)
@@ -1692,11 +2364,38 @@ public sealed class InstanceRegistry : IAsyncDisposable
             return new InstanceRemovalOutcome(
                 instanceId, name, workingDirectory, files, filesFailedBecause, forgotten,
                 backups, backupsFailedBecause, transcripts, transcriptsFailedBecause,
-                transcriptDirectory);
+                transcriptDirectory, firewallRules);
         }
         finally
         {
             _createGate.Release();
+        }
+    }
+
+    /// <summary>The firewall half of a removal; a failure is reported, never thrown, so the removal goes on.</summary>
+    private async Task<SystemCheckFix> RemoveFirewallRulesAsync(
+        string instanceId, string name, CancellationToken cancellationToken)
+    {
+        if (_firewall is null)
+        {
+            return new SystemCheckFix(false, "This service has no firewall access.");
+        }
+
+        try
+        {
+            var fix = await _firewall.RemoveServerRulesAsync(instanceId, name, cancellationToken).ConfigureAwait(false);
+
+            if (!fix.Succeeded)
+            {
+                _log.LogWarning("The firewall rules of {InstanceId} ({Name}) were not removed: {Reason}", instanceId, name, fix.Message);
+            }
+
+            return fix;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "The firewall rules of {InstanceId} ({Name}) were not removed", instanceId, name);
+            return new SystemCheckFix(false, ex.Message);
         }
     }
 
@@ -1719,11 +2418,16 @@ public sealed class InstanceRegistry : IAsyncDisposable
     /// supervisor left running after its config entry is gone would keep
     /// restarting a server nothing is managing.
     /// </summary>
-    private async Task ReleaseAsync(InstanceSupervisor supervisor)
+    /// <param name="claim">
+    /// The caller's claim on the server, taken before anything changed, so a sync or
+    /// an update is refused rather than having the server disposed under it.
+    /// </param>
+    private async Task ReleaseAsync(InstanceSupervisor supervisor, InstanceClaim claim)
     {
         // Out of the collection first, so the watchdog and the restart scheduler
         // stop looking at an instance that is on its way out.
         _supervisors.TryRemove(supervisor.InstanceId, out _);
+        Released?.Invoke(supervisor.InstanceId);
 
         // Stopped properly, not killed. DisposeAsync kills — it says so, and it
         // is right to — but a server killed mid-write leaves a world that may
@@ -1734,7 +2438,7 @@ public sealed class InstanceRegistry : IAsyncDisposable
         {
             try
             {
-                await supervisor.StopAsync(
+                await claim.StopAsync(
                         new GracefulStopRequest(
                             StopReason.Manual,
                             Options.ServiceStopWarning,
@@ -1829,25 +2533,18 @@ public sealed class InstanceRegistry : IAsyncDisposable
     private string ConfigPath => Path.Combine(_paths.Config, "bedrocksentry.json");
 
     /// <summary>
-    /// A port no existing instance is using, spaced two apart so the IPv6 port
-    /// beside it stays free too.
+    /// The first port from <paramref name="start"/> up where a RakNet server would
+    /// clash with no instance's file: its port and the IPv6 port after it, against
+    /// every instance's ports and play window (<see cref="NewServerPorts"/>).
     /// </summary>
-    public int SuggestPort(int start = 19132)
-    {
-        var taken = _supervisors.Values
-            .Select(s => ServerProperties.PortOf(s.WorkingDirectory))
-            .Where(p => p is not null)
-            .Select(p => p!.Value)
-            .ToHashSet();
-
-        var candidate = start;
-        while (taken.Contains(candidate) || taken.Contains(candidate + 1))
-        {
-            candidate += 2;
-        }
-
-        return candidate;
-    }
+    /// <remarks>
+    /// Files only. The panel asks <see cref="PortInspector"/>, which adds the machine's
+    /// sockets, for both the new server form and restore-as-new (<c>T404</c>).
+    /// </remarks>
+    public int SuggestPort(int start = ServerPorts.DefaultPort) =>
+        NewServerPorts.Next(
+            [.. PortInspector.FileClaims(_supervisors.Values)], ServerTransport.RakNet, pinWindow: false, start)
+        ?? start;
 
     public async ValueTask DisposeAsync()
     {

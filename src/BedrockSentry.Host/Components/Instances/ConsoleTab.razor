@@ -2,16 +2,66 @@
    controls the Status tab carries. *@
 @implements IAsyncDisposable
 
+@using BedrockSentry.Core.Commands
+@using BedrockSentry.Core.Diagnostics
 @using BedrockSentry.Core.Instances
+@using BedrockSentry.Core.Players
+@using BedrockSentry.Services.Commands
 @using BedrockSentry.Services.Instances
 @using Microsoft.AspNetCore.Components.Web
 
 @inject IJSRuntime JS
+@inject CompletionData Completion
+@inject IPlayerStore Players
+@inject TimeProvider Time
 
-<InstanceControls Supervisor="Supervisor" />
+@* D105. Console and Commands are two views of one tab. The console stays in the page
+   while Commands is shown, hidden rather than removed, so its script, its history and
+   its place in the output survive the switch. *@
+<div class="view-bar">
+    <nav class="view-switch" aria-label="Console views">
+        <button type="button" class="@(view == ConsoleView.Console ? "active" : null)"
+                aria-current="@(view == ConsoleView.Console ? "page" : null)"
+                @onclick="() => ShowAsync(ConsoleView.Console)">
+            Console
+        </button>
+        <button type="button" class="@(view == ConsoleView.Commands ? "active" : null)"
+                aria-current="@(view == ConsoleView.Commands ? "page" : null)"
+                @onclick="() => ShowAsync(ConsoleView.Commands)">
+            Commands
+            <span class="view-count">@CommandCount</span>
+        </button>
+        <button type="button" class="@(view == ConsoleView.TickingAreas ? "active" : null)"
+                aria-current="@(view == ConsoleView.TickingAreas ? "page" : null)"
+                @onclick="() => ShowAsync(ConsoleView.TickingAreas)">
+            Ticking Areas
+            @if (Supervisor.TickingAreas is { } read)
+            {
+                <span class="view-count">@read.List.InUse</span>
+            }
+        </button>
+    </nav>
 
+    <span class="view-bar-spacer"></span>
+
+    @if (view == ConsoleView.Commands)
+    {
+        <span class="check-detail">What Tab completes on this server, and where it comes from</span>
+    }
+    else if (view == ConsoleView.TickingAreas)
+    {
+        <span class="check-detail">The areas this world keeps loaded with nobody near</span>
+    }
+</div>
+
+@if (view == ConsoleView.TickingAreas)
+{
+    <TickingAreasView Supervisor="Supervisor" />
+}
+
+<div hidden="@(view != ConsoleView.Console)">
 <div class="console-filters">
-    <span class="console-filter-label">Show</span>
+    <span class="console-filter-label">Filter</span>
 
     <label class="field-row">
         <input type="checkbox" checked="@Filters.ServerOutput"
@@ -28,14 +78,24 @@
     <label class="field-row">
         <input type="checkbox" checked="@Filters.Leaves"
                @onchange="e => SetAsync(Filters with { Leaves = Ticked(e) })" />
-        <span>Leaves</span>
+        <span>Disconnects</span>
     </label>
 
     <label class="field-row">
-        <input type="checkbox" checked="@Filters.Chat"
-               @onchange="e => SetAsync(Filters with { Chat = Ticked(e) })" />
-        <span>Chat</span>
+        <input type="checkbox" checked="@Filters.Deaths"
+               @onchange="e => SetAsync(Filters with { Deaths = Ticked(e) })" />
+        <span>Deaths</span>
     </label>
+
+    @* The companion pack's commands an operator ran in game; vanilla commands print nothing. *@
+    <label class="field-row">
+        <input type="checkbox" checked="@Filters.OperatorCommands"
+               @onchange="e => SetAsync(Filters with { OperatorCommands = Ticked(e) })" />
+        <span>Operator commands</span>
+    </label>
+
+    @* No Chat box until the companion pack relays chat (D95); until then
+       ConsoleFilters shows every chat line whatever Filters.Chat holds. *@
 
     @* One click for the view this whole feature exists to give: who is on the
        server and what they are doing, with the machine underneath them out of
@@ -48,24 +108,12 @@
     </button>
 </div>
 
-@* Said out loud because the opposite would be a reasonable thing to fear.
-   Hiding chat while a raid is being organised, and finding the transcript has a
-   hole in it, is exactly the kind of thing a toggle like this is assumed to do. *@
-<p class="console-hint" style="margin-top:0">
-    Everything is recorded whatever is ticked here — this only changes the view, and
-    turning a category back on brings back everything that happened while it was off.
-    @if (hidden > 0)
-    {
-        <text><strong>@hidden line@(hidden == 1 ? "" : "s") hidden.</strong></text>
-    }
-    @if (Filters.Chat)
-    {
-        <text>
-            Chat needs the companion pack at milestone 12 — the server prints none of
-            its own, so nothing is classified as chat yet.
-        </text>
-    }
-</p>
+@* T308: asked of the boxes as they are now, at every render. A count kept
+   beside the lines went stale when a box changed and no new line arrived. *@
+@if (Filters.HiddenSentence(lines) is { } hiddenSentence)
+{
+    <p class="console-hint" style="margin-top:0"><strong>@hiddenSentence</strong></p>
+}
 
 @if (gapped)
 {
@@ -82,9 +130,17 @@
        it at read time would drop the hidden lines on the floor, and turning a
        category back on would show only what arrived from that moment on — which
        looks like it works, and quietly loses the history you turned it on for. *@
-    @foreach (var line in lines.Where(Visible))
+    @{
+        var shown = lines.Where(Visible).ToList();
+        var fold = ConsoleSaveFold.Of(shown);
+        var notices = ConsoleNoticeFold.Of(shown);
+    }
+    @foreach (var line in shown)
     {
-        @if (line.Origin is ConsoleOrigin.Launch)
+        @if (fold.Hides(line, openedManifests) || notices.Hides(line, noticeChoices))
+        {
+        }
+        else if (line.Origin is ConsoleOrigin.Launch)
         {
             @* A rule rather than another line. A restart drops hundreds of lines
                of startup on top of hundreds that look exactly the same, and
@@ -92,37 +148,63 @@
                this one's. *@
             <div class="console-launch">
                 <span class="console-launch-label">
-                    @line.ReceivedUtc.ToLocalTime().ToString("HH:mm:ss") · @line.Message
+                    @ClockText.TimeWithSeconds(line.ReceivedUtc.ToLocalTime()) · @line.DisplayText
                 </span>
             </div>
         }
         else
         {
-            <div class="console-line console-@line.Origin.ToString().ToLowerInvariant() @LevelClass(line) @KindClass(line)">
-                <span class="console-time">@line.ReceivedUtc.ToLocalTime().ToString("HH:mm:ss")</span>
+            <div class="console-line console-@line.Origin.ToString().ToLowerInvariant() @ConsoleLineStyle.LevelClass(line) @ConsoleLineStyle.KindClass(line)">
+                <span class="console-time">@ClockText.TimeWithSeconds(line.ReceivedUtc.ToLocalTime())</span>
                 @* One character wide and always present, blank where a line has
                    no mark, so every message starts in the same column. It is
                    also the half of the scheme that survives being pasted into a
                    bug report, where the colour does not. *@
-                <span class="console-glyph">@Glyph(line)</span>
-                <span class="console-text">@line.Message</span>
+                <span class="console-glyph">@ConsoleLineStyle.Glyph(line)</span>
+                <span class="console-text">@(line.DisplayText)@if (fold.Under(line) is { } manifest)
+                    {
+                        @* ON5: the save query's file list folds under this line. *@
+                        var open = openedManifests.Contains(manifest.Sequence);
+                        <button type="button" class="console-fold" aria-expanded="@(open ? "true" : "false")"
+                                @onclick="() => ToggleManifest(manifest.Sequence)">@ConsoleSaveFold.Label(manifest, open)</button>
+                    }
+                    else if (notices.Under(line) is { } notice)
+                    {
+                        @* ON2, T406: a boxed notice folds under its opening line; the choice is per banner and instance, and kept. *@
+                        var open = ConsoleNoticeFold.IsOpen(notice, noticeChoices);
+                        <button type="button" class="console-fold" aria-expanded="@(open ? "true" : "false")"
+                                @onclick="() => ToggleNotice(notice.Banner, !open)">@ConsoleNoticeFold.Label(open)</button>
+                    }</span>
             </div>
         }
     }
 </div>
 
+@* The input belongs to console-completion.js: keys, history, the list, the grey
+   preview and the usage line. It sends through SendFromBrowser, so what may be sent
+   and the reply to a failed send stay here. No @bind: the script owns the value, and a
+   render writing it back would undo a Tab. *@
 <div class="console-input">
-    <input @ref="commandInput"
-           @bind="command"
-           @bind:event="oninput"
-           @onkeydown="OnKeyDownAsync"
-           class="form-control"
-           placeholder="@(CanSend ? "Type a server command and press Enter" : "The server is not running")"
-           disabled="@(!CanSend)"
-           autocomplete="off"
-           spellcheck="false" />
-    <button class="btn btn-primary" @onclick="SendAsync" disabled="@(!CanSend)">Send</button>
+    <div class="cc-wrap">
+        <div class="cc-ghost" id="@GhostId" aria-hidden="true" hidden><span id="@GhostTypedId"></span><span class="cc-ghost-rest" id="@GhostRestId"></span></div>
+        <input id="@InputId"
+               class="form-control"
+               placeholder="@(CanSend ? "Type a server command; Tab completes it" : "The server is not running")"
+               disabled="@(!CanSend)"
+               autocomplete="off"
+               autocapitalize="off"
+               spellcheck="false"
+               role="combobox"
+               aria-autocomplete="list"
+               aria-expanded="false"
+               aria-controls="@ListId"
+               aria-describedby="@UsageId" />
+    </div>
+    <div class="cc-list" id="@ListId" role="listbox" aria-label="Completions" hidden></div>
+    <button type="button" class="btn btn-primary" id="@SendId" disabled="@(!CanSend)">Send</button>
 </div>
+
+<div class="cc-usage" id="@UsageId" aria-live="polite"></div>
 
 @if (sendError is not null)
 {
@@ -130,14 +212,93 @@
 }
 
 <p class="console-hint">
-    Commands go straight to the server, exactly as typed. Up and down arrows walk
-    your history.
+    Commands go straight to the server, exactly as typed. Tab takes a suggestion, Esc
+    closes the list, and up and down arrows walk your history.
 </p>
+</div>
+
+@if (view == ConsoleView.Commands && completion is { } data)
+{
+    <div class="data-box">
+        @foreach (var row in SourceRows(data))
+        {
+            <div class="data-row">
+                <span class="@row.BadgeClass">@row.BadgeText</span>
+                <div>
+                    <strong>@row.Title</strong>
+                    <span class="data-what">
+                        @foreach (var (text, code) in row.Runs)
+                        {
+                            @if (code)
+                            {
+                                <code>@text</code>
+                            }
+                            else
+                            {
+                                @text
+                            }
+                        }
+                    </span>
+                </div>
+            </div>
+        }
+        <p class="data-note">@CompletionSources.NotCompleted</p>
+    </div>
+
+    <div class="ref-tools">
+        <input class="form-control" type="search" placeholder="Filter commands, aliases or descriptions"
+               aria-label="Filter commands"
+               value="@filter" @oninput="e => filter = e.Value as string ?? string.Empty" />
+        <span class="ref-count">@ReferenceCount(data)</span>
+    </div>
+
+    <div class="ref">
+        @foreach (var (command, addon) in Reference(data))
+        {
+            <details>
+                <summary>
+                    <code>@command.Name</code>
+                    @if (command.Aliases.Count > 0)
+                    {
+                        <span class="ref-aliases">also @(string.Join(", ", command.Aliases))</span>
+                    }
+                    @if (addon is not null)
+                    {
+                        <span class="addon-badge" title="@addon">add-on</span>
+                    }
+                    <span class="ref-desc">@command.Description</span>
+                </summary>
+                <pre>@(string.Join("\n", command.Forms.Select(f => f.Line)))</pre>
+            </details>
+        }
+    </div>
+}
 
 @code {
     /// Bounded independently of the buffer: the buffer holds what the server said,
     /// this holds what one browser can render before the DOM becomes the bottleneck.
     private const int MaxRenderedLines = 500;
+
+    /// How often the names completion offers are sent again without a join or a
+    /// leave to prompt it: an allowlist edited by hand, or a player seen on another
+    /// server. Counted in polls of 500 ms.
+    private const int PlayersEveryPolls = 20;
+
+    // One console is on the page at a time, so the ids are fixed, like console-output.
+    private const string InputId = "console-command";
+    private const string ListId = "console-completions";
+    private const string UsageId = "console-usage";
+    private const string GhostId = "console-ghost";
+    private const string GhostTypedId = "console-ghost-typed";
+    private const string GhostRestId = "console-ghost-rest";
+    private const string SendId = "console-send";
+
+    private enum ConsoleView
+    {
+        Console,
+        Commands,
+        TickingAreas,
+    }
 
     [Parameter, EditorRequired]
     public InstanceSupervisor Supervisor { get; set; } = default!;
@@ -155,20 +316,49 @@
     private long cursor;
     private bool gapped;
 
-    private string command = string.Empty;
-    private readonly List<string> history = [];
-    private int historyIndex = -1;
-    private ElementReference commandInput;
     private string? sendError;
     private bool shouldScroll;
 
-    /// How much is being kept back, so filtering never feels like losing it.
-    private int hidden;
+    private ConsoleView view = ConsoleView.Console;
+    private CompletionView? completion;
+    private CompletionPlayers? players;
+    private string filter = string.Empty;
+    private bool playersDue;
+    private int polls;
 
+    private DotNetObjectReference<ConsoleTab>? self;
     private PeriodicTimer? timer;
     private CancellationTokenSource? cts;
 
     private bool Visible(ConsoleLine line) => Filters.Shows(line);
+
+    // The save query file lists (ON5) and boxed notices (ON2) clicked open: a file list
+    // by its own line's sequence, a notice by its opening line's.
+    private readonly HashSet<long> openedManifests = [];
+
+    private void ToggleManifest(long sequence)
+    {
+        if (!openedManifests.Remove(sequence))
+        {
+            openedManifests.Add(sequence);
+        }
+    }
+
+    // Read from the browser on the first render; until then every notice keeps its default.
+    private ConsoleNoticeChoices noticeChoices = new();
+
+    private async Task ToggleNotice(string banner, bool shown)
+    {
+        noticeChoices.Choose(banner, shown);
+        try
+        {
+            await JS.InvokeVoidAsync("bedrockSentryConsole.saveNoticeChoices", Supervisor.InstanceId.ToString(), noticeChoices.Serialize());
+        }
+        catch (JSException)
+        {
+            // Storage refused (a private window, blocked site data): the choice holds for this page.
+        }
+    }
 
     private static bool Ticked(ChangeEventArgs e) => e.Value is bool value && value;
 
@@ -185,7 +375,15 @@
     private bool CanSend =>
         Supervisor.Status.State is InstanceState.Running or InstanceState.Starting;
 
-    protected override void OnInitialized() => Pump();
+    // The commands the server has, aliases left out, as the script counts them.
+    private int CommandCount =>
+        completion is { } data ? data.Commands.Grammar.Commands.Count + data.AddonCommands.Count : 0;
+
+    protected override void OnInitialized()
+    {
+        Pump();
+        completion = Completion.For(Supervisor);
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -205,6 +403,25 @@
             // it — the view is by then exactly as far from the bottom as the new
             // batch is tall.
             await JS.InvokeVoidAsync("bedrockSentryConsole.attach", "console-output");
+            noticeChoices = ConsoleNoticeChoices.Parse(
+                await JS.InvokeAsync<string?>("bedrockSentryConsole.noticeChoices", Supervisor.InstanceId.ToString()));
+
+            self = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync(
+                "bedrockSentryCompletion.attach",
+                new
+                {
+                    input = InputId,
+                    list = ListId,
+                    usage = UsageId,
+                    ghost = GhostId,
+                    ghostTyped = GhostTypedId,
+                    ghostRest = GhostRestId,
+                    send = SendId,
+                },
+                CompletionPayload.PathFor(Supervisor.InstanceId),
+                self);
+            await PushPlayersAsync(CancellationToken.None);
         }
 
         if (shouldScroll)
@@ -221,12 +438,47 @@
             while (await timer!.WaitForNextTickAsync(cancellationToken))
             {
                 Pump();
+                if (playersDue || ++polls >= PlayersEveryPolls)
+                {
+                    await InvokeAsync(() => PushPlayersAsync(cancellationToken));
+                }
+
                 await InvokeAsync(StateHasChanged);
             }
         }
         catch (OperationCanceledException)
         {
             // Navigating away or losing the circuit.
+        }
+        catch (JSDisconnectedException)
+        {
+            // The circuit went while a push was on its way.
+        }
+    }
+
+    // The names completion offers, and the data's tag, which tells the script to fetch
+    // the data again when it has changed: a version read, Mojang's data fetched, an
+    // add-on switched on.
+    private async Task PushPlayersAsync(CancellationToken cancellationToken)
+    {
+        playersDue = false;
+        polls = 0;
+        completion = Completion.For(Supervisor);
+        players = await CompletionPlayers.ReadAsync(Players, Supervisor, Time.GetUtcNow(), cancellationToken);
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "bedrockSentryCompletion.update",
+                cancellationToken,
+                InputId,
+                new { online = players.Online, known = players.Known, allowlist = players.Allowlist },
+                completion.Tag);
+        }
+        catch (JSException)
+        {
+            // Names are a convenience. A script error here must not end the poll that
+            // keeps the output moving; the next push tries again.
         }
     }
 
@@ -249,60 +501,41 @@
         if (lines.Count > MaxRenderedLines)
         {
             lines.RemoveRange(0, lines.Count - MaxRenderedLines);
+            openedManifests.RemoveWhere(sequence => sequence < lines[0].Sequence);
         }
 
-        hidden = Filters.CountHidden(lines);
+        // Somebody arrived or left, so the online names have changed.
+        if (snapshot.Lines.Any(l => l.Kind is ConsoleLineKind.PlayerJoined or ConsoleLineKind.PlayerLeft))
+        {
+            playersDue = true;
+        }
 
         shouldScroll = true;
     }
 
-    private async Task OnKeyDownAsync(KeyboardEventArgs args)
+    private async Task ShowAsync(ConsoleView wanted)
     {
-        switch (args.Key)
+        view = wanted;
+        if (wanted == ConsoleView.Commands)
         {
-            case "Enter":
-                await SendAsync();
-                break;
-
-            // Newest first, the way a shell behaves.
-            case "ArrowUp" when history.Count > 0:
-                historyIndex = historyIndex < 0 ? history.Count - 1 : Math.Max(0, historyIndex - 1);
-                command = history[historyIndex];
-                break;
-
-            case "ArrowDown" when historyIndex >= 0:
-                historyIndex++;
-                if (historyIndex >= history.Count)
-                {
-                    historyIndex = -1;
-                    command = string.Empty;
-                }
-                else
-                {
-                    command = history[historyIndex];
-                }
-
-                break;
+            completion = Completion.For(Supervisor);
+            players = await CompletionPlayers.ReadAsync(Players, Supervisor, Time.GetUtcNow());
+        }
+        else
+        {
+            // Back from the Commands view, the output has grown underneath it.
+            shouldScroll = true;
         }
     }
 
-    private async Task SendAsync()
+    /// <summary>Sends what the input held; the script calls it on Enter or Send.</summary>
+    [JSInvokable]
+    public async Task SendFromBrowser(string text)
     {
-        var text = command.Trim();
+        text = text?.Trim() ?? string.Empty;
         if (text.Length == 0 || !CanSend)
         {
             return;
-        }
-
-        // Cleared before the send, not after: a slow send would otherwise leave the
-        // command sitting in the box looking unsent, inviting a second Enter.
-        command = string.Empty;
-        historyIndex = -1;
-
-        // Consecutive duplicates are noise in a history you navigate by arrow key.
-        if (history.Count == 0 || history[^1] != text)
-        {
-            history.Add(text);
         }
 
         try
@@ -316,55 +549,37 @@
         }
 
         Pump();
-        await commandInput.FocusAsync();
+        StateHasChanged();
     }
 
-    /// <summary>
-    /// The one-character mark for a line, or a space.
-    /// </summary>
-    /// <remarks>
-    /// Severity outranks origin, which outranks subject — a warning is a warning
-    /// whoever raised it and whatever it is about. Chat's mark is a quote rather
-    /// than an emoji: emoji are double-width, and one on every chat line knocks
-    /// that line a column out of true with the rest of the console.
-    /// </remarks>
-    private static string Glyph(ConsoleLine line) => line switch
+    private IEnumerable<SourceRow> SourceRows(CompletionView data)
     {
-        { Level: BdsLogLevel.Error } => "✖",
-        { Level: BdsLogLevel.Warn } => "▲",
-        { Origin: ConsoleOrigin.Stderr } => "✖",
-        { Origin: ConsoleOrigin.Command } => "›",
-        { Origin: ConsoleOrigin.Notice } => "❯",
-        { Origin: ConsoleOrigin.Chat } => "\"",
-        _ => line.Kind switch
-        {
-            ConsoleLineKind.Lifecycle => "●",
-            ConsoleLineKind.PlayerJoined => "→",
-            ConsoleLineKind.PlayerLeft => "←",
-            ConsoleLineKind.Save => "◆",
-            _ => " ",
-        },
-    };
+        static string At(DateTimeOffset utc) => "at " + ClockText.TimeOnDay(utc.ToLocalTime());
 
-    private static string? LevelClass(ConsoleLine line) => line.Level switch
+        yield return CompletionSources.Commands(data.Commands, At);
+        yield return CompletionSources.Options(data.Commands);
+        yield return CompletionSources.GameRules(data.Commands);
+        yield return CompletionSources.Vanilla(data.VanillaSource, At);
+        yield return CompletionSources.Players(players?.SeenNotListed ?? 0, players?.Allowlist?.Count);
+        yield return CompletionSources.Addons(data.Addons, At);
+    }
+
+    // The server's commands, then the add-ons', each with the add-on it came from, through
+    // the filter Core states.
+    private IEnumerable<(GrammarCommand Command, string? Addon)> Reference(CompletionView data)
     {
-        BdsLogLevel.Warn => "console-warn",
-        BdsLogLevel.Error => "console-error",
-        _ => null,
-    };
+        var addon = data.Addons.Packs.Count > 0 ? string.Join(", ", data.Addons.Packs) : "an add-on";
+        return data.Commands.Grammar.Commands.Select(c => (c, (string?)null))
+            .Concat(data.AddonCommands.Select(c => (c, (string?)addon)))
+            .Where(r => CommandReference.Matches(r.Item1, filter, r.Item2));
+    }
 
-    /// Null for Ordinary, so an unrecognised line carries no class at all and
-    /// renders exactly as it did before any of this existed.
-    private static string? KindClass(ConsoleLine line) =>
-        line.Kind switch
-        {
-            ConsoleLineKind.Lifecycle => "console-lifecycle",
-            ConsoleLineKind.PlayerJoined => "console-join",
-            ConsoleLineKind.PlayerLeft => "console-leave",
-            ConsoleLineKind.Save => "console-save",
-            ConsoleLineKind.Housekeeping => "console-noise",
-            _ => null,
-        };
+    private string ReferenceCount(CompletionView data)
+    {
+        var shown = Reference(data).Count();
+        var all = CommandCount;
+        return shown == all ? $"{all} commands" : $"{shown} of {all} commands";
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -377,5 +592,21 @@
         }
 
         timer?.Dispose();
+
+        // Only once attached: a prerendered copy is disposed without ever having a
+        // circuit, and a JS call from it throws InvalidOperationException (T396).
+        if (self is not null)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("bedrockSentryCompletion.dispose", InputId);
+            }
+            catch (JSDisconnectedException)
+            {
+                // The page is gone, and its listeners with it.
+            }
+
+            self.Dispose();
+        }
     }
 }

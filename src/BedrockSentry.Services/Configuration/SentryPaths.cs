@@ -17,8 +17,17 @@ public sealed class SentryPaths : ISentryPaths
     /// </remarks>
     public const string DataRootEnvironmentVariable = "BEDROCKSENTRY_DATAROOT";
 
-    public SentryPaths(string? dataRoot = null)
+    private readonly Action<string>? _lockNewDataRoot;
+
+    /// <param name="dataRoot">The data root; null reads the environment, then ProgramData.</param>
+    /// <param name="lockNewDataRoot">
+    /// What <see cref="EnsureCreated"/> does to a data root it had to create; null is
+    /// <see cref="AccessPlan.ForDataRoot"/> for this process's account on Windows.
+    /// </param>
+    public SentryPaths(string? dataRoot = null, Action<string>? lockNewDataRoot = null)
     {
+        _lockNewDataRoot = lockNewDataRoot;
+
         DataRoot = dataRoot
             ?? Environment.GetEnvironmentVariable(DataRootEnvironmentVariable)
             ?? Path.Combine(
@@ -26,6 +35,44 @@ public sealed class SentryPaths : ISentryPaths
                 "BedrockSentry");
 
         DataRoot = Path.GetFullPath(DataRoot);
+    }
+
+    /// <summary>
+    /// The value of <c>--dataroot</c>, which <c>install.ps1</c> writes into each
+    /// service's ImagePath (<c>D36</c>); null when it is absent. Read by both services,
+    /// so the broker resolves the same root the main service writes.
+    /// </summary>
+    /// <exception cref="ArgumentException">The switch is there with no path after it.</exception>
+    public static string? DataRootArgument(IReadOnlyList<string> args)
+    {
+        for (var i = 0; i < args.Count; i++)
+        {
+            var argument = args[i];
+
+            if (argument.StartsWith("--dataroot=", StringComparison.OrdinalIgnoreCase))
+            {
+                return NonEmpty(argument["--dataroot=".Length..]);
+            }
+
+            if (!argument.Equals("--dataroot", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return NonEmpty(i + 1 < args.Count ? args[i + 1] : null);
+        }
+
+        return null;
+
+        // A registration carrying --dataroot with nothing usable after it is malformed.
+        // Falling through to ProgramData would put the data somewhere the operator
+        // explicitly did not ask for, and would look like it had worked, so this fails
+        // the start instead. It throws before logging exists — see T104 — which is a
+        // known gap in its own right rather than something this switch introduces.
+        static string NonEmpty(string? value) =>
+            string.IsNullOrWhiteSpace(value)
+                ? throw new ArgumentException("--dataroot was given without a path.")
+                : value;
     }
 
     public string DataRoot { get; }
@@ -50,8 +97,27 @@ public sealed class SentryPaths : ISentryPaths
 
     public string ServerPackages => _serverPackagesOverride ?? Path.Combine(DataRoot, "server-packages");
 
+    public string AddonLibrary => Path.Combine(DataRoot, "addon-library");
+
+    public string Completion => Path.Combine(DataRoot, "completion");
+
+    public string PlayerFaces => Path.Combine(DataRoot, "player-faces");
+
     private string? _backupsOverride;
     private string? _serverPackagesOverride;
+
+    private void LockNewDataRoot(string root)
+    {
+        if (_lockNewDataRoot is { } lockRoot)
+        {
+            lockRoot(root);
+        }
+        else if (OperatingSystem.IsWindows())
+        {
+            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            WindowsAcl.Apply(new DirectoryInfo(root), AccessPlan.ForDataRoot(identity.User!.Value));
+        }
+    }
 
     /// <summary>
     /// Points the space-hungry folders somewhere else (<c>docs/design.md</c> § 4.3).
@@ -80,20 +146,22 @@ public sealed class SentryPaths : ISentryPaths
 
     public void EnsureCreated()
     {
-        Directory.CreateDirectory(DataRoot);
-
-        // Lock the root down before creating anything beneath it. ProgramData
-        // grants BUILTIN\Users read access by default and children inherit it, so
-        // a certificate written first and secured second is briefly world-readable.
-        if (OperatingSystem.IsWindows())
+        // The installer owns the data root's access list (milestone 18.5): it grants the
+        // service's account Modify, which carries no WRITE_DAC, so a service that re-locked
+        // the root here at every start would fail at its first. Only a root this call
+        // creates is locked, before anything is created beneath it: ProgramData grants
+        // BUILTIN\Users read by default and children inherit it, so a certificate written
+        // first and secured second would be briefly world-readable.
+        if (!Directory.Exists(DataRoot))
         {
-            WindowsAcl.RestrictToSystemAndAdministrators(DataRoot);
+            Directory.CreateDirectory(DataRoot);
+            LockNewDataRoot(DataRoot);
         }
 
         foreach (var dir in new[]
                  {
                      Config, Certificates, DataProtectionKeys, Data, Update, Logs, InstanceLogs, Instances,
-                     ServerPackages,
+                     ServerPackages, AddonLibrary, Completion, PlayerFaces,
                  })
         {
             Directory.CreateDirectory(dir);

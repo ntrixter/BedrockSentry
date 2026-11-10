@@ -1,0 +1,87 @@
+@* D103. Where a server's sync is, under its controls on every tab that shows
+   them. The sentences and the state of each step come from Core's SyncStrip,
+   which the suite reads; this only draws them. D111: a restore of the world or
+   of an area draws here too, in the danger colours while it runs. D113: so does
+   a backup, with its own icon and the sync's colours. *@
+
+@using BedrockSentry.Core.Sync
+
+<section class="sync-strip sync-@Strip.Outcome.ToString().ToLowerInvariant() @(Restore ? "restore-strip" : null)"
+         aria-label="@Strip.Title" role="status">
+    <div class="sync-strip-head">
+        @if (Backup)
+        {
+            <svg class="sync-strip-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="5" rx="1" />
+                <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" />
+                <path d="M10 13h4" />
+            </svg>
+        }
+        else if (Restore)
+        {
+            <svg class="sync-strip-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M12 7v5l3 2" />
+            </svg>
+        }
+        else
+        {
+            <svg class="sync-strip-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" />
+                <path d="M4 3v5h5" />
+                <path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" />
+                <path d="M20 21v-5h-5" />
+            </svg>
+        }
+        <strong>@Strip.Title</strong>
+        <span class="sync-strip-when">@Strip.When</span>
+        <span class="console-spacer"></span>
+        <span class="sync-strip-position">@Strip.Position</span>
+
+        @if (Strip.Outcome != SyncOutcome.Running && OnDismiss.HasDelegate)
+        {
+            <button type="button" class="btn btn-sm btn-secondary" @onclick="OnDismiss">Dismiss</button>
+        }
+    </div>
+
+    @if (Strip.Bar is { } bar)
+    {
+        <div class="sync-strip-bar" role="progressbar" aria-label="Pieces done"
+             aria-valuemin="0" aria-valuemax="@bar.Of" aria-valuenow="@bar.Done">
+            <div style="width: @Percent(bar)%"></div>
+        </div>
+    }
+
+    <ol class="sync-steps">
+        @foreach (var step in Strip.Steps)
+        {
+            <li class="sync-step is-@step.State.ToString().ToLowerInvariant()"
+                aria-current="@(step.State == SyncStepState.Current ? "step" : null)">
+                @step.Number. @step.Name
+            </li>
+        }
+    </ol>
+
+    <p class="sync-strip-line">@Strip.Line</p>
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public SyncStrip Strip { get; set; } = default!;
+
+    /// <summary>A restore rather than a sync: the restore icon, and the danger colours while it runs.</summary>
+    [Parameter]
+    public bool Restore { get; set; }
+
+    /// <summary>A backup rather than a sync: the backup icon, in the sync's colours (<c>D113</c>).</summary>
+    [Parameter]
+    public bool Backup { get; set; }
+
+    /// <summary>Takes an ended sync's strip away; not offered while one runs.</summary>
+    [Parameter]
+    public EventCallback OnDismiss { get; set; }
+
+    private static string Percent(SyncBar bar) =>
+        bar.Of == 0 ? "0" : (100.0 * bar.Done / bar.Of).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

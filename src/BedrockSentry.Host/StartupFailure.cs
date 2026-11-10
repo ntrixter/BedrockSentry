@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using BedrockSentry.Core.Broker;
+using BedrockSentry.Core.Diagnostics;
 
 namespace BedrockSentry.Host;
 
@@ -31,13 +33,10 @@ namespace BedrockSentry.Host;
 internal static class StartupFailure
 {
     /// <summary>
-    /// The event source the installer creates and <c>Program</c> logs under. A
-    /// service installed under a different name with <c>-ServiceName</c> gets an
-    /// event source of that name instead, so this entry lands nowhere for it —
-    /// which is the unsupported second-install case (<c>D49</c>), and is why it
-    /// is not worth threading the name through for.
+    /// The event source the installer creates and <c>Program</c> logs under: the
+    /// installed service's name, set from <c>--service</c> before anything can fail.
     /// </summary>
-    private const string EventSource = "BedrockSentry";
+    public static string EventSource { get; set; } = BrokerNames.DefaultMainService;
 
     private static volatile bool _started;
 
@@ -49,8 +48,9 @@ internal static class StartupFailure
 
     public static void Record(Exception exception, string logDirectory, string phase)
     {
+        var now = DateTimeOffset.Now;
         var message =
-            $"BedrockSentry failed while {phase}, at {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}."
+            $"BedrockSentry failed while {phase}, at {ClockText.DateAndTimeWithSeconds(now)} {now:zzz}."
             + Environment.NewLine + Environment.NewLine
             + exception;
 

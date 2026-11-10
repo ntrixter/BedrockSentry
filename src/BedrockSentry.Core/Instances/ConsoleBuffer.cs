@@ -94,19 +94,43 @@ public sealed class ConsoleBuffer
     /// (<c>T170</c>). Severity outranks origin in the console's own rules, so
     /// stating it here is all that is needed — the glyph and the colour follow.
     /// </param>
+    /// <param name="echoPositions">
+    /// The instance's <see cref="CompanionSettings.EchoPositions"/>: whether the
+    /// companion pack's join and leave lines show as arrivals and departures.
+    /// Read per line, so a change applies from the next line on.
+    /// </param>
     public ConsoleLine Append(
-        ConsoleOrigin origin, string raw, DateTimeOffset receivedUtc, BdsLogLevel? level = null)
+        ConsoleOrigin origin,
+        string raw,
+        DateTimeOffset receivedUtc,
+        BdsLogLevel? level = null,
+        bool echoPositions = true)
     {
         var (parsedLevel, message, timestamp) = BdsLogParser.Parse(raw);
+        CompanionRelay? relay = null;
+        var display = message;
 
         // Classified once, here, where the line is recorded — not at render
         // time. Every reader then agrees about what is chat: the console page,
         // the transcript on disk, and anything later that wants to count it.
         // Deciding per-viewer would let two views of one buffer disagree.
-        if (origin == ConsoleOrigin.Stdout && ChatParser.TryParse(message, out var chat))
+        //
+        // The message is left as the server printed it, and what reads better
+        // goes beside it: chat's own words must never reach a matcher as the
+        // start of a line.
+        if (origin == ConsoleOrigin.Stdout)
         {
-            origin = ConsoleOrigin.Chat;
-            message = $"{chat.Player}: {chat.Text}";
+            CompanionRelayReader.TryRead(message, out relay);
+
+            if (ChatParser.TryParse(message, out var chat))
+            {
+                origin = ConsoleOrigin.Chat;
+                display = $"{chat.Player}: {chat.Text}";
+            }
+            else if (relay?.Sentence is { Length: > 0 } sentence)
+            {
+                display = sentence;
+            }
         }
 
         ConsoleLine line;
@@ -115,8 +139,8 @@ public sealed class ConsoleBuffer
             // Under the same lock as the sequence number, because it carries
             // state from the previous line and two threads interleaving here
             // would attribute a warning's continuation to the wrong block.
-            var (kind, classifiedLevel) =
-                ConsoleLineClassifier.Classify(origin, parsedLevel, message, ref _classifier);
+            var (kind, classifiedLevel) = ConsoleLineClassifier.Classify(
+                origin, parsedLevel, message, relay, echoPositions, ref _classifier);
 
             // A stated level wins. The classifier reads the server's words to
             // decide what they mean; a wrapper line's severity is not in its
@@ -131,7 +155,11 @@ public sealed class ConsoleBuffer
                 effectiveLevel,
                 message,
                 timestamp,
-                kind);
+                kind)
+            {
+                Relay = relay,
+                DisplayText = display,
+            };
 
             _lines.Enqueue(line);
             while (_lines.Count > _capacity)

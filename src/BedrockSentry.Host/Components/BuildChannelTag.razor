@@ -1,0 +1,13 @@
+@using BedrockSentry.Core.Packages
+@* T333. Mojang names a Preview zip as it names a Release one, so the package log is what
+   knows which it is (ServerPackage.Channel). A Release build carries no tag, and neither
+   does a zip nothing has recorded. *@
+@if (Channel == BdsChannel.Preview)
+{
+    <span class="pill pill-preview"
+          title="From Mojang's Preview channel. Only Minecraft Preview can join a server running it.">Preview</span>
+}
+
+@code {
+    [Parameter] public BdsChannel? Channel { get; set; }
+}

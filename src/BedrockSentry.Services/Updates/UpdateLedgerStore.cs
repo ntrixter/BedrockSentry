@@ -71,11 +71,16 @@ public sealed class UpdateLedgerStore
         }
     }
 
-    /// <summary>Records a successful update and clears the failure counters.</summary>
+    /// <summary>Records a successful update and clears the failure counters and the pause.</summary>
+    /// <remarks>
+    /// The pause went with the counter only from <c>D101</c> on: before, a successful
+    /// <b>Install now</b> left automatic updates off with nothing on the page to say so.
+    /// </remarks>
     public void RecordSuccess(string identity)
     {
         var ledger = Load();
 
+        ledger.AutoUpdateDisabled = false;
         ledger.ConsecutiveFailures = 0;
         ledger.CooldownUntilUtc = null;
         ledger.LastFailureReason = null;
@@ -83,6 +88,25 @@ public sealed class UpdateLedgerStore
         ledger.LastSuccessUtc = DateTimeOffset.UtcNow;
 
         Save(ledger);
+    }
+
+    /// <summary>
+    /// Resumes automatic updates that repeated failures paused (<c>D101</c>).
+    /// </summary>
+    /// <remarks>
+    /// Clears the failure count as well as the flag, because <see cref="UpdateLedger.CanAttempt"/>
+    /// refuses at the count too and the button would otherwise change nothing. A build that
+    /// failed stays blocked, and a cooldown still running keeps running.
+    /// </remarks>
+    public void ResumeAutomaticUpdates()
+    {
+        var ledger = Load();
+
+        ledger.AutoUpdateDisabled = false;
+        ledger.ConsecutiveFailures = 0;
+
+        Save(ledger);
+        _logger.LogInformation("Automatic updates resumed from the Settings page.");
     }
 
     /// <summary>Records a failed update and applies all three anti-loop guards.</summary>
@@ -122,9 +146,13 @@ public sealed class UpdateLedgerStore
     /// when it was rolled back, in the old one. Either way the result file is how the
     /// service learns what happened while it was not running.
     /// </remarks>
-    public UpdateResult? ConsumeResult(UpdateOptions options)
+    /// <param name="resultPath">
+    /// Where the helper wrote it: <see cref="IWrapperUpdateInstaller.ResultPath"/>. Null
+    /// is the data root's <c>update\result.json</c>, where the in-process helper writes.
+    /// </param>
+    public UpdateResult? ConsumeResult(UpdateOptions options, string? resultPath = null)
     {
-        var resultPath = Path.Combine(_paths.Update, "result.json");
+        resultPath ??= Path.Combine(_paths.Update, "result.json");
 
         if (!File.Exists(resultPath))
         {
@@ -134,6 +162,15 @@ public sealed class UpdateLedgerStore
         try
         {
             var result = JsonSerializer.Deserialize<UpdateResult>(File.ReadAllText(resultPath));
+
+            if (result is not null && Load().LastConsumedResultUtc is { } consumed && result.CompletedUtc <= consumed)
+            {
+                // Already counted: a result the service may not delete is read again
+                // at every start, and a success counted twice is harmless but a
+                // failure counted twice blocks updates for a fault that happened once.
+                TryDelete(resultPath);
+                return null;
+            }
 
             if (result is not null)
             {
@@ -152,15 +189,33 @@ public sealed class UpdateLedgerStore
 
                     RecordFailure(result.Identity, result.Message, options);
                 }
+
+                var ledger = Load();
+                ledger.LastConsumedResultUtc = result.CompletedUtc;
+                Save(ledger);
             }
 
-            File.Delete(resultPath);
+            TryDelete(resultPath);
             return result;
         }
-        catch (Exception ex) when (ex is IOException or JsonException)
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
             _logger.LogError(ex, "Could not read the update result file.");
             return null;
+        }
+    }
+
+    private void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The broker's helper writes where this account may only read; the
+            // ledger's mark above is what keeps it from being counted again.
+            _logger.LogDebug(ex, "The update result file {Path} stays where it is.", path);
         }
     }
 }
