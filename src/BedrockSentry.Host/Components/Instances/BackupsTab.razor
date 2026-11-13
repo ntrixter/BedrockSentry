@@ -39,7 +39,9 @@
     // that only came alive after Save would read as broken (T151 clause 6 — one
     // rule, two callers who want it answered about different things).
     var savedFormat = BackupFormatSummary.StateOf(saved, Commands.Allowed);
-    var rows = BackupTimeline.Build(history, archives);
+    var rows = BackupTimeline.Build(
+        history, archives,
+        Orchestrator.Runs.Progress(Supervisor.InstanceId) is { FinishedUtc: null } inProgress ? inProgress.StartedUtc : null);
     var shown = rows.Where(r => BackupTimeline.Matches(r, filter)).ToList();
     var lockedCount = archives.Count(a => StateOf(a.Name).Locked);
 }

@@ -157,6 +157,7 @@
                         <th>Corners x, y, z</th>
                         <th>Size</th>
                         <th>In game</th>
+                        <th title="After a sync, add a ticking area over the two corners">Ticking area</th>
                         @* Named by a label rather than a visually hidden span: that span is
                            positioned against the page, not the scrolling wrapper, and widened
                            the page at phone width. *@
@@ -193,7 +194,7 @@
                             <td>
                                 @* The two corners stacked in one cell, so the row fits a 1280-pixel page
                                    with the In game column beside them. *@
-                                <div class="sync-corner">
+                                <div class="sync-corner" @key="('f', cornerRevision)">
                                     <span class="sync-corner-label">From</span>
                                     <input type="number" class="form-control" value="@area.X1" aria-label="From x" disabled="@Locked"
                                            @onchange="e => EditAsync(index, a => a.X1 = Number(e, a.X1))" />
@@ -202,7 +203,7 @@
                                     <input type="number" class="form-control" value="@area.Z1" aria-label="From z" disabled="@Locked"
                                            @onchange="e => EditAsync(index, a => a.Z1 = Number(e, a.Z1))" />
                                 </div>
-                                <div class="sync-corner">
+                                <div class="sync-corner" @key="('t', cornerRevision)">
                                     <span class="sync-corner-label">To</span>
                                     <input type="number" class="form-control" value="@area.X2" aria-label="To x" disabled="@Locked"
                                            @onchange="e => EditAsync(index, a => a.X2 = Number(e, a.X2))" />
@@ -224,6 +225,13 @@
                                            value="@AreaColors.Of(area.Color, index)" disabled="@Locked"
                                            @onchange="e => EditAsync(index, a => a.Color = e.Value?.ToString() ?? string.Empty)" />
                                 </div>
+                            </td>
+                            <td>
+                                @* T439. The copied world brings the source's ticking areas, not this
+                                   server's, so one kept here is added again after each sync. *@
+                                <input type="checkbox" class="form-check-input" checked="@area.KeepTicking" disabled="@Locked"
+                                       aria-label="Keep a ticking area" title="After a sync, add a ticking area over the two corners"
+                                       @onchange="e => EditAsync(index, a => a.KeepTicking = e.Value is true)" />
                             </td>
                             <td>
                                 <button type="button" class="btn btn-sm btn-secondary" disabled="@Locked"
@@ -553,7 +561,7 @@
 
     private static KeptAreaSettings Copy(KeptAreaSettings a) => new()
     {
-        Name = a.Name, Dimension = a.Dimension, Color = a.Color, ShowInGame = a.ShowInGame,
+        Name = a.Name, Dimension = a.Dimension, Color = a.Color, ShowInGame = a.ShowInGame, KeepTicking = a.KeepTicking,
         X1 = a.X1, Y1 = a.Y1, Z1 = a.Z1, X2 = a.X2, Y2 = a.Y2, Z2 = a.Z2,
     };
 
@@ -562,9 +570,25 @@
         BedrockDimension.Find(a.Dimension)?.Id ?? a.Dimension;
 
     /// <summary>A whole number from a number box, or what was there when it is not one.</summary>
-    private static int Number(ChangeEventArgs e, int was) =>
-        int.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Integer,
-            System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : was;
+    /// <summary>Bumped when a corner field is left blank or unreadable, so the corners draw again.</summary>
+    private int cornerRevision;
+
+    /// <summary>
+    /// The number typed, or <paramref name="was"/> when the field is blank or not a
+    /// number. Then the corners are drawn again with the number kept: the field showed
+    /// blank while the area still saved its old corner.
+    /// </summary>
+    private int Number(ChangeEventArgs e, int was)
+    {
+        if (int.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var value))
+        {
+            return value;
+        }
+
+        cornerRevision++;
+        return was;
+    }
 
     private Task SourceChangedAsync(ChangeEventArgs e)
     {

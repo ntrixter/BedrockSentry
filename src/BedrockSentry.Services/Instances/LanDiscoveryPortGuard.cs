@@ -118,18 +118,40 @@ public sealed class LanDiscoveryPortGuard : IDisposable
     /// </remarks>
     public Func<bool>? OwnerRunning { get; set; }
 
+    /// <summary>
+    /// Whether every owner only plays on the pair: a NetherNet server whose play UDP
+    /// lands on 19132 or 19133 (<c>T453</c>).
+    /// </summary>
+    /// <remarks>
+    /// Such a server binds a play socket per player online, not the pair at its start,
+    /// so a standing hold would take two of its play ports away while it runs (the
+    /// failure <c>T410</c> measured). For it the pair is held across each other start,
+    /// through that server's discovery bind, and then let go. Null reads as false.
+    /// </remarks>
+    public Func<bool>? OwnerPlaysOnly { get; set; }
+
+    /// <summary>
+    /// How long past a start's release the pair stays held for an owner that only
+    /// plays on it: BDS binds discovery about 60 ms after <c>Server started.</c>.
+    /// </summary>
+    public static readonly TimeSpan DefaultDiscoveryMargin = TimeSpan.FromSeconds(5);
+
+    private readonly TimeSpan _discoveryMargin;
+
     public LanDiscoveryPortGuard(
         ILogger<LanDiscoveryPortGuard> log,
         int portV4 = DefaultPortV4,
         int portV6 = DefaultPortV6,
         TimeSpan? retryFor = null,
-        TimeSpan? retryEvery = null)
+        TimeSpan? retryEvery = null,
+        TimeSpan? discoveryMargin = null)
     {
         _log = log;
         _portV4 = portV4;
         _portV6 = portV6;
         _retryFor = retryFor ?? DefaultRetryFor;
         _retryEvery = retryEvery ?? DefaultRetryEvery;
+        _discoveryMargin = discoveryMargin ?? DefaultDiscoveryMargin;
     }
 
     public int PortV4 => _portV4;
@@ -142,28 +164,31 @@ public sealed class LanDiscoveryPortGuard : IDisposable
     /// held against.
     /// </summary>
     /// <remarks>
-    /// <para><strong><see cref="ServerTransport.RakNet"/> only</strong>, which is
-    /// not a detail (<c>D70</c>). Bedrock's answer-on-19132-whatever-your-port
-    /// behaviour is documented for <c>transport=raknet</c> and nothing else, so a
-    /// <see cref="ServerTransport.NetherNet"/> server configured for 19132 never
-    /// performs discovery on the pair whatever it binds. Counting it as the owner
-    /// would hand the pair to a server that does not use it and leave every other
-    /// instance's discovery unprotected for as long as it ran.</para>
+    /// <para><strong>Two kinds of owner, asked by transport.</strong> A
+    /// <see cref="ServerTransport.RakNet"/> server whose own ports include the pair
+    /// answers discovery on it (<c>D70</c>: Bedrock's answer-on-19132 behaviour is
+    /// documented for <c>transport=raknet</c> only). A
+    /// <see cref="ServerTransport.NetherNet"/> server performs no discovery, but when
+    /// its play UDP lands on 19132 or 19133, on <c>server-port</c>'s UDP side or in
+    /// its window (<c>D71</c>), it needs the pair as much (<c>T453</c>). Held for
+    /// nobody, a RakNet server on another port took both at each service start and
+    /// the NetherNet server's own start was refused on them. Held for it, the RakNet
+    /// server's discovery bind fails, the path Bedrock already handles.</para>
     ///
-    /// <para><strong>The transport rather than the protocol, which is a
-    /// correction.</strong> This asked <em>does it hold a UDP socket on one of
-    /// these numbers</em>, which agreed with the transport only for as long as a
-    /// NetherNet server had no UDP row at all. It has one now — play lands on
-    /// <c>server-port</c>'s UDP side when <c>server-udp-ports</c> is unset
-    /// (<c>D71</c>) — so the old test would have called such a server on 19132 the
-    /// owner. A derived signal that happens to agree is not the question being
-    /// asked, and it stops agreeing without anything announcing it
-    /// (<c>T151</c> clause 6).</para>
+    /// <para>A NetherNet server on 19132 whose window is elsewhere is not an owner:
+    /// it uses only TCP 19132, and holding the pair for it would leave every other
+    /// server undiscoverable for nothing.</para>
     /// </remarks>
-    public bool OwnsDiscoveryPair(InstancePorts model) =>
-        model.Transport is ServerTransport.RakNet
-        && model.Ports.Any(p => p.Protocol == PortProtocol.Udp
-            && (p.Port == _portV4 || p.Port == _portV6));
+    public bool OwnsDiscoveryPair(InstancePorts model) => model.Transport switch
+    {
+        ServerTransport.RakNet => model.Ports.Any(p => p.Protocol == PortProtocol.Udp
+            && (p.Port == _portV4 || p.Port == _portV6)),
+        ServerTransport.NetherNet => model.Play.Span is { } play
+            && (Covers(play, _portV4) || Covers(play, _portV6)),
+        _ => false,
+    };
+
+    private static bool Covers(PortSpan span, int port) => port >= span.First && port <= span.Last;
 
     /// <summary>
     /// Takes the start slot, and the standing hold on the discovery pair with it
@@ -184,7 +209,7 @@ public sealed class LanDiscoveryPortGuard : IDisposable
     /// port — usually the owning instance, running — and that protects it just as
     /// well as we would have. It is not an error and must not fail the start.
     /// </remarks>
-    public async Task<IAsyncDisposable> HoldAsync(
+    public async Task<IStartSlot> HoldAsync(
         string instanceId, bool instanceOwnsPair, CancellationToken cancellationToken = default)
     {
         await _starts.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -206,11 +231,13 @@ public sealed class LanDiscoveryPortGuard : IDisposable
             _heldV4 ??= TryBind(IPAddress.Any, _portV4);
             _heldV6 ??= TryBind(IPAddress.IPv6Any, _portV6);
 
-            if (_heldV4 is not null || _heldV6 is not null)
-            {
-                _log.LogDebug(
-                    "Holding the LAN discovery pair for its owner while {InstanceId} runs", instanceId);
-            }
+            // Information, not Debug: which way this went is the first question
+            // whenever a server on another port is found holding the pair (T453).
+            _log.LogInformation(
+                "Starting {InstanceId} with the LAN discovery pair held for its owner: v4 {V4}, v6 {V6}, "
+                + "owner running {Running}, owner only plays on it {PlaysOnly}",
+                instanceId, _heldV4 is not null, _heldV6 is not null,
+                OwnerRunning?.Invoke() == true, OwnerPlaysOnly?.Invoke() == true);
 
             // A failed bind used to end here, on the reasoning that whatever holds
             // the pair is the owner and protects it just as well. That holds only
@@ -221,7 +248,29 @@ public sealed class LanDiscoveryPortGuard : IDisposable
             // That is `T82`: observed once in nine auto-starts, and silent both ways.
             if ((_heldV4 is null || _heldV6 is null) && OwnerRunning?.Invoke() != true)
             {
-                StartRetry();
+                // Waited for here, before this server launches, and not only in the
+                // background. The background retry needs the start slot, which this
+                // start holds until its server reports started, and BDS binds the pair
+                // a moment after that: it won the race on a service restart, and a
+                // RakNet server on another port held 19132 against its owner. The
+                // wait is the outgoing process's exit, usually a second or two.
+                bool taken;
+
+                try
+                {
+                    taken = await WaitForPairAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // No hold is handed out, so the slot is given back here.
+                    _starts.Release();
+                    throw;
+                }
+
+                if (!taken)
+                {
+                    StartRetry();
+                }
             }
         }
         else
@@ -229,9 +278,45 @@ public sealed class LanDiscoveryPortGuard : IDisposable
             // No configured instance owns the pair, so there is nobody to keep
             // it for — and an owner that was just retired must free it.
             ReleaseStandingHold(instanceId);
+            _log.LogInformation("Starting {InstanceId}; no server owns the LAN discovery pair", instanceId);
         }
 
         return new Hold(this, instanceId, owned: false);
+    }
+
+    /// <summary>
+    /// Goes back for the pair with the start slot held, so the server starting cannot
+    /// launch before the pair is taken; true once both are held or there is nothing to
+    /// take them for, false when the wait ran out.
+    /// </summary>
+    private async Task<bool> WaitForPairAsync(CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + _retryFor;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(_retryEvery, cancellationToken).ConfigureAwait(false);
+
+            if (OwnerExists?.Invoke() != true || OwnerRunning?.Invoke() == true)
+            {
+                return true;
+            }
+
+            _heldV4 ??= TryBind(IPAddress.Any, _portV4);
+            _heldV6 ??= TryBind(IPAddress.IPv6Any, _portV6);
+
+            // A machine with IPv6 off has no v6 half to take, and waiting for one held
+            // every non-owner's start for the whole wait.
+            if (_heldV4 is not null && (_heldV6 is not null || !Socket.OSSupportsIPv6))
+            {
+                _log.LogInformation(
+                    "Took the LAN discovery pair ({PortV4}/{PortV6}) for its owner before another server started",
+                    _portV4, _portV6);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -364,12 +449,29 @@ public sealed class LanDiscoveryPortGuard : IDisposable
         }
     }
 
-    private sealed class Hold : IAsyncDisposable
+    /// <summary>
+    /// The start slot one start holds. Disposing gives it back, after the discovery
+    /// margin when a server may still be about to bind the pair.
+    /// </summary>
+    public interface IStartSlot : IAsyncDisposable
+    {
+        /// <summary>
+        /// Says no server came up under this slot (a refusal, or a start that ended
+        /// before its ready line), so nothing is about to bind the pair and the slot
+        /// goes back without the margin.
+        /// </summary>
+        void NothingStarted();
+    }
+
+    private sealed class Hold : IStartSlot
     {
         private readonly LanDiscoveryPortGuard _guard;
         private readonly string _instanceId;
         private readonly bool _owned;
         private bool _released;
+        private volatile bool _nothingStarted;
+
+        public void NothingStarted() => _nothingStarted = true;
 
         public Hold(LanDiscoveryPortGuard guard, string instanceId, bool owned)
         {
@@ -384,22 +486,53 @@ public sealed class LanDiscoveryPortGuard : IDisposable
         /// them. A leaked slot still stops every start, so this stays as small
         /// and unconditional as it can be.
         /// </summary>
-        public ValueTask DisposeAsync()
+        /// <remarks>
+        /// <para>The slot is kept past the ready line by <see cref="_discoveryMargin"/>
+        /// while the wrapper holds the pair against the server that just started
+        /// (<c>T450</c>). BDS binds discovery about 50 ms after <c>Server started.</c>;
+        /// with the slot given back on that line, the owner queued behind it released
+        /// the standing hold at once, the non-owner's bind took the pair, and the owner
+        /// launched into a held port and exited 0xC0000409.</para>
+        /// <para>For an owner that only plays on the pair
+        /// (<see cref="OwnerPlaysOnly"/>) the sockets are then let go with the slot
+        /// still held, so the owner's players have their ports back.</para>
+        /// </remarks>
+        public async ValueTask DisposeAsync()
         {
             if (_released)
             {
-                return ValueTask.CompletedTask;
+                return;
             }
 
             _released = true;
-            _guard._starts.Release();
+
+            try
+            {
+                if (!_owned && (_guard._heldV4 is not null || _guard._heldV6 is not null))
+                {
+                    if (!_nothingStarted)
+                    {
+                        await Task.Delay(_guard._discoveryMargin).ConfigureAwait(false);
+                    }
+
+                    if (_guard.OwnerPlaysOnly?.Invoke() == true)
+                    {
+                        _guard.ReleaseStandingHold(_instanceId);
+                        _guard._log.LogInformation(
+                            "Let the LAN discovery pair go after {InstanceId} started; its owner only plays on it",
+                            _instanceId);
+                    }
+                }
+            }
+            finally
+            {
+                _guard._starts.Release();
+            }
 
             if (!_owned)
             {
                 _guard._log.LogDebug("Start slot released after {InstanceId}", _instanceId);
             }
-
-            return ValueTask.CompletedTask;
         }
     }
 }

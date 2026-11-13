@@ -2630,6 +2630,11 @@ button.sub-tab {
    is here and not on the buttons: on each button, in a flex row, both absorb a
    share of the free space and end up spread across the strip instead of sitting
    side by side. */
+/* T437: the tab being dragged to a new place. */
+.instance-tab.dragging {
+    opacity: 0.5;
+}
+
 .instance-tab-actions {
     display: flex;
     gap: 0.25rem;
@@ -3647,6 +3652,16 @@ button.sub-tab {
 .sync-in-game .form-control-color {
     width: 2.5rem;
     flex: none;
+}
+
+/* An outline round the swatch itself, so the first palette colour, white, shows on
+   the light theme's white field; Bootstrap takes the swatch's border away. */
+.form-control-color::-webkit-color-swatch {
+    border: 1px solid var(--bs-secondary-color) !important;
+}
+
+.form-control-color::-moz-color-swatch {
+    border: 1px solid var(--bs-secondary-color) !important;
 }
 
 .sync-corner {

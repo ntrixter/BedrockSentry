@@ -60,6 +60,21 @@ public static class NewServerPorts
         ServerUdpPorts.Suggest(publicAddress, port, PackageMaxPlayers);
 
     /// <summary>
+    /// The window the New instance form offers (<c>T458</c>): from
+    /// <paramref name="port"/> when nothing holds those UDP ports, otherwise the first
+    /// free one above it (<see cref="FreeWindow"/>). Null when none fits below 65536.
+    /// </summary>
+    /// <remarks>
+    /// A window taken from the port alone started on another server's UDP port when the
+    /// port was typed under RakNet and the form was then switched to NetherNet, whose
+    /// own TCP port that server does not hold.
+    /// </remarks>
+    public static string? SuggestWindow(IReadOnlyList<PortClaim> claims, int port, string? publicAddress) =>
+        FreeWindow(claims, port, PackageMaxPlayers) is { } first
+            ? ServerUdpPorts.Suggest(publicAddress, first, PackageMaxPlayers)
+            : null;
+
+    /// <summary>
     /// The first number from <paramref name="start"/> up where a new server's sockets
     /// clash with no claim, with its suggested window under NetherNet when
     /// <paramref name="pinWindow"/> is set.
@@ -133,11 +148,22 @@ public static class NewServerPorts
     /// One sentence per holder <paramref name="wanted"/> runs into, naming only the
     /// ports it shares with each: <c>UDP 19132 is already open on this machine by …</c>.
     /// </summary>
-    public static IReadOnlyList<string> Describe(IReadOnlyList<PortClaim> claims, IReadOnlyList<ReachableSockets> wanted) =>
+    /// <param name="udpLabel">Put in front of each UDP sentence, to say which of the new server's settings wants the ports.</param>
+    public static IReadOnlyList<string> Describe(
+        IReadOnlyList<PortClaim> claims, IReadOnlyList<ReachableSockets> wanted, string? udpLabel = null) =>
         Clashes(claims, wanted)
-            .Select(claim => $"{Protocol(claim.Protocol)} {Shared(claim.Ports, wanted, claim.Protocol)} is {claim.Holder}.")
+            .Select(claim =>
+                (claim.Protocol is PortProtocol.Udp ? udpLabel : null)
+                + $"{Protocol(claim.Protocol)} {Shared(claim.Ports, wanted, claim.Protocol)} is {claim.Holder}.")
             .Distinct(StringComparer.Ordinal)
             .ToList();
+
+    /// <summary>
+    /// What goes in front of a UDP clash on a NetherNet server (<c>T458</c>): its port is
+    /// TCP, and every UDP port it binds is a play port, in a window or on the port's
+    /// UDP side. Without it the sentence read as RakNet's, as if the port were UDP.
+    /// </summary>
+    public const string PlayPortsLabel = "Play ports: ";
 
     /// <summary>Every claim one of <paramref name="wanted"/>'s sockets runs into, in claim order.</summary>
     public static IReadOnlyList<PortClaim> Clashes(IReadOnlyList<PortClaim> claims, IReadOnlyList<ReachableSockets> wanted) =>
@@ -160,8 +186,33 @@ public static class NewServerPorts
             return [$"{port} is not a port number; the range is 1 to 65535."];
         }
 
-        return Describe(claims, Wanted(transport, port, window));
+        return Describe(
+            claims, Wanted(transport, port, window), transport is ServerTransport.NetherNet ? PlayPortsLabel : null);
     }
+
+    /// <summary>What the form says under the warnings once <strong>Create</strong> was held back for them.</summary>
+    public const string KeepPrompt = "Change the port, or press Create again to keep it.";
+
+    /// <summary>
+    /// Names the ports a create was held back over: null when nothing is in their way,
+    /// otherwise a value that changes whenever the transport, port or window does.
+    /// </summary>
+    public static string? ClashKey(
+        IReadOnlyList<string> warnings, ServerTransport transport, int port, string? window) =>
+        warnings.Count == 0
+            ? null
+            : FormattableString.Invariant($"{transport}|{port}|{window?.Trim()}");
+
+    /// <summary>
+    /// Whether <strong>Create</strong> goes ahead (<c>T455</c>): at once when the ports
+    /// are free, and on a second press when they are not and have not changed since the
+    /// first. A warning shown as the field lost focus to the button was never read, and
+    /// the server made was refused at its first start.
+    /// </summary>
+    /// <param name="clash"><see cref="ClashKey"/> for the form as it stands.</param>
+    /// <param name="acknowledged">The key the last held-back press saw, if any.</param>
+    public static bool MayCreate(string? clash, string? acknowledged) =>
+        clash is null || string.Equals(clash, acknowledged, StringComparison.Ordinal);
 
     private static bool Overlap(PortSpan a, PortSpan b) => a.First <= b.Last && b.First <= a.Last;
 

@@ -61,7 +61,6 @@ public sealed class CompletionStore(ISentryPaths paths, ILogger<CompletionStore>
 
     private string Vanilla => Path.Combine(paths.Completion, "vanilla");
 
-    private string Instances => Path.Combine(paths.Completion, "instances");
 
     /// <summary>The commands a version's run read, or null when none has finished.</summary>
     public CommandGrammar? ReadGrammar(string version) => Read<CommandGrammar>(GrammarFile(version));
@@ -154,7 +153,17 @@ public sealed class CompletionStore(ISentryPaths paths, ILogger<CompletionStore>
 
     private string FailureFile(string version) => Path.Combine(Grammars, Safe(version) + ".failed.json");
 
-    private string InstanceFile(string instanceId) => Path.Combine(Instances, Safe(instanceId) + ".json");
+    private string InstanceFile(string instanceId) => InstanceFiles(paths, instanceId)[0];
+
+    /// <summary>
+    /// The files an instance's add-on run is kept in, the capture first and then its
+    /// transcript. Static so a removal can name them without a store (<c>T460</c>).
+    /// </summary>
+    public static IReadOnlyList<string> InstanceFiles(ISentryPaths paths, string instanceId)
+    {
+        var capture = Path.Combine(paths.Completion, "instances", Safe(instanceId) + ".json");
+        return [capture, Path.ChangeExtension(capture, ".log")];
+    }
 
     // Versions and instance ids are already file-safe; this keeps a hand-edited one from
     // naming a path outside the folder.

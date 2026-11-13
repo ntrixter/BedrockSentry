@@ -251,7 +251,7 @@ public static class SyncAreaEdits
     [
         .. areas.Select(a => new KeptAreaSettings
         {
-            Name = a.Name, Dimension = a.Dimension, Color = a.Color, ShowInGame = a.ShowInGame,
+            Name = a.Name, Dimension = a.Dimension, Color = a.Color, ShowInGame = a.ShowInGame, KeepTicking = a.KeepTicking,
             X1 = a.X1, Y1 = a.Y1, Z1 = a.Z1, X2 = a.X2, Y2 = a.Y2, Z2 = a.Z2,
         }),
     ];

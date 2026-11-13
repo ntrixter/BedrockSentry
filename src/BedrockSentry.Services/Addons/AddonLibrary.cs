@@ -412,8 +412,7 @@ public sealed class AddonLibrary(ISentryPaths paths, ILogger<AddonLibrary> logge
             {
                 return Rejected(
                     name,
-                    $"It holds a link ({Path.GetRelativePath(packDirectory, linked)}) to "
-                    + "somewhere outside it, so it was not copied.");
+                    $"'{Path.GetRelativePath(packDirectory, linked)}' in it is {ServerTree.What(linked)}, so the pack was not copied.");
             }
 
             foreach (var entry in new DirectoryInfo(packDirectory).EnumerateFileSystemInfos(
@@ -421,12 +420,11 @@ public sealed class AddonLibrary(ISentryPaths paths, ILogger<AddonLibrary> logge
             {
                 // A link is refused rather than followed or left out: followed, it copies
                 // whatever it points at into the shelf; left out, the copy is not the pack.
-                if (Security.ReparseTags.IsLink(entry))
+                if (Security.ReparseTags.Why(entry) is { } link)
                 {
                     return Rejected(
                         name,
-                        $"It holds a link ({Path.GetRelativePath(packDirectory, entry.FullName)}) to "
-                        + "somewhere outside it, so it was not copied.");
+                        $"'{Path.GetRelativePath(packDirectory, entry.FullName)}' in it is {link}, so the pack was not copied.");
                 }
 
                 if (entry is not FileInfo file)

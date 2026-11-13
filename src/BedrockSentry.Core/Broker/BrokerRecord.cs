@@ -118,7 +118,39 @@ public sealed class BrokerRecord
     public void RemoveShadowCopy(string shadowId) => Change(s => s.ShadowCopies.Remove(Key(shadowId)));
 
     /// <summary>Records a folder the broker granted, which may then be excluded from scanning (<c>D115</c>).</summary>
-    public void AddGrantedFolder(string folder) => Change(s => s.GrantedFolders.Add(FolderKey(folder)));
+    public void AddGrantedFolder(string folder) => Change(s =>
+    {
+        s.GrantedFolders.RemoveWhere(Gone);
+        s.GrantedFolders.Add(FolderKey(folder));
+    });
+
+    /// <summary>
+    /// Drops each granted folder that no longer exists (<c>T445</c>): a removed server's
+    /// folder stayed on the list, so a folder made later at that path read as granted.
+    /// Run at the broker's start, before each grant and before each request it answers.
+    /// </summary>
+    /// <returns>How many were dropped.</returns>
+    public int DropGoneFolders()
+    {
+        var dropped = 0;
+
+        lock (_gate)
+        {
+            Refresh();
+            if (!_state.GrantedFolders.Any(Gone))
+            {
+                return 0;
+            }
+        }
+
+        Change(s => dropped = s.GrantedFolders.RemoveWhere(Gone));
+        return dropped;
+    }
+
+    /// <summary>A seam for <see cref="Directory.Exists"/>, so a test can say what is on disk.</summary>
+    internal Func<string, bool> FolderExists { get; set; } = Directory.Exists;
+
+    private bool Gone(string key) => !FolderExists(key);
 
     /// <summary>Whether the broker granted <paramref name="folder"/> itself.</summary>
     public bool Granted(string folder)

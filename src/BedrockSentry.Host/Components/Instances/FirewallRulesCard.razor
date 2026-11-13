@@ -96,7 +96,17 @@
     {
         try
         {
-            sockets = PortInspector.ReachableOn(Supervisor.WorkingDirectory);
+            // T461. A file that names no port says nothing about which rules are behind.
+            if (PortInspector.ReachableToShow(Supervisor.WorkingDirectory) is not { } reachable)
+            {
+                sockets = [];
+                stale = [];
+                dismissed = false;
+                StateHasChanged();
+                return;
+            }
+
+            sockets = reachable;
 
             // T414 clause 1. The rules a port change leaves behind are the ones last read,
             // so they are said now; the fresh read, which takes seconds, follows.

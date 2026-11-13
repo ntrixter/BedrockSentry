@@ -122,7 +122,8 @@ public static class DataRootPreparation
             if (WhyNotWritten(paths.DataRoot, current, writer) is { } why)
             {
                 throw new IOException(
-                    $"The data root {paths.DataRoot} already exists and {why}, so its access list is not "
+                    // T444. A refusal composed in here can end with a full stop of its own.
+                    $"The data root {paths.DataRoot} already exists and {why.TrimEnd('.')}, so its access list is not "
                     + "written over it. Give it and everything in it to LocalSystem and Administrators alone, "
                     + "owned by Administrators, or name a data root that does not exist yet, and run the "
                     + "installer again. A root granted to another account is refused the same way: to change "

@@ -61,9 +61,13 @@ public static class PortConflictText
     public static string Line(PortConflict conflict) =>
         $"Port {conflict.Port} {conflict.Reason}.";
 
-    /// <summary>Every conflict, one sentence each, space-separated.</summary>
+    /// <summary>Every conflict, one sentence each, space-separated, each sentence once.</summary>
+    /// <remarks>
+    /// A port checked on both protocols against one server's file gave the same
+    /// sentence twice: <c>Port 19132 is a's server-port. Port 19132 is a's server-port.</c>
+    /// </remarks>
     public static string Describe(IReadOnlyList<PortConflict> conflicts) =>
-        string.Join(" ", conflicts.Select(Line));
+        string.Join(" ", conflicts.Select(Line).Distinct(StringComparer.Ordinal));
 
     /// <summary>
     /// What the supervisor records and prints when it refuses to launch.

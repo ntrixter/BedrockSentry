@@ -224,6 +224,7 @@ else
     {
         Queue.Changed += OnQueueChanged;
         Supervisor.StatusChanged += OnStatusChanged;
+        lastState = Supervisor.Status.State;
         Reload();
     }
 
@@ -246,7 +247,21 @@ else
         }
     }
 
-    private void OnStatusChanged(Core.Instances.InstanceStatus status) => _ = InvokeAsync(StateHasChanged);
+    // T438. A change of state re-reads the packs, not only the page: "Keep add-ons up
+    // to date" moves a pack to a newer version just before the server launches, and
+    // the tab went on listing the old one until it was reloaded by hand.
+    private Core.Instances.InstanceState? lastState;
+
+    private void OnStatusChanged(Core.Instances.InstanceStatus status) => _ = InvokeAsync(() =>
+    {
+        if (status.State != lastState)
+        {
+            lastState = status.State;
+            Reload();
+        }
+
+        StateHasChanged();
+    });
 
     private void Reload()
     {
@@ -664,7 +679,7 @@ else
                         <span class="addons-settings-pick-text">
                             <span class="addons-settings-pick-name">@entry.Name</span>
                             <span class="check-detail">
-                                @(entry.IsCompanion ? "Built in · " : "")@(entry.Count == 1 ? "1 setting" : $"{entry.Count} settings")
+                                @(entry.IsCompanion ? "Built in · " : "")@AddonsTabText.SettingsCount(entry.Count)
                             </span>
                         </span>
                         @if (dirty.Contains(entry.Uuid))
@@ -717,13 +732,21 @@ else
                         {
                             RenderCompanionOptions(__builder);
                         }
-                        else if (entry.Row?.Details.Description is { } description)
-                        {
-                            <p class="check-detail">@description @AddonsTabText.SettingsApply</p>
-                        }
                         else
                         {
-                            <p class="check-detail">@AddonsTabText.SettingsApply</p>
+                            @* The description on a line of its own: run on, one with no full
+                               stop read as one sentence with the note (T442). The note only
+                               where no settings form follows, since the form says it beside
+                               Save settings. *@
+                            @if (entry.Row?.Details.Description is { } description)
+                            {
+                                <p class="check-detail">@description</p>
+                            }
+
+                            @if (entry.Schema is null)
+                            {
+                                <p class="check-detail">@AddonsTabText.SettingsApply</p>
+                            }
                         }
 
                         @if (entry.Schema is { } schema)
@@ -732,7 +755,7 @@ else
                             {
                                 <div class="addons-settings-group-head">
                                     <h5>In game</h5>
-                                    <span class="check-detail">The pack's own option. Applies when the server next starts.</span>
+                                    <span class="check-detail">The pack's own option.</span>
                                 </div>
                             }
 

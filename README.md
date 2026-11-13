@@ -51,8 +51,8 @@ self-updates, an add-on manager, and a companion behavior pack.
 
 ## Status
 
-**Not production ready.** Every release so far is a prerelease on the Build
-channel; nothing has been released on the Stable channel.
+**Early releases.** 0.4.1 was the first release on the Stable channel; Build-channel
+releases are prereleases meant for a test server you have backups of.
 
 **Verified on Windows** against Bedrock 1.26.36.1 through 1.26.61.1 and Preview
 1.26.60.28: the service and panel, self-update, server supervision, players,

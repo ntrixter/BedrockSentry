@@ -56,12 +56,30 @@ else if (!document.Known)
         </span>
     </p>
 }
-else if (document.Properties.Count == 0 && mode == Mode.Form)
+else if (document.State == PropertiesReadState.Missing && mode == Mode.Form)
 {
     <p class="empty-state">
         There is no <code>@ServerProperties.FileName</code> in
-        <code>@Supervisor.WorkingDirectory</code> yet. It arrives with the server —
-        install one from the Status tab and this fills in.
+        <code>@Supervisor.WorkingDirectory</code> yet.
+        @if (Supervisor.Presence.State is ServerPresenceState.Installed)
+        {
+            @* T453: the server was installed and the file renamed away. *@
+            <text>The server writes one at its next start.</text>
+        }
+        else
+        {
+            <text>It arrives with the server: install one from the Status tab and this fills in.</text>
+        }
+    </p>
+}
+else if (document.Properties.Count == 0 && mode == Mode.Form)
+{
+    @* A file that is there and holds no setting is not a missing one: it said
+       "there is no server.properties" of a garbled file. *@
+    <p class="empty-state">
+        <code>@ServerProperties.FileName</code> in
+        <code>@Supervisor.WorkingDirectory</code> holds no setting: no line in it
+        reads <code>key=value</code>. Open <strong>Text</strong> to see or fix it.
     </p>
 }
 else

@@ -463,10 +463,12 @@ public sealed class InstanceAddons(AddonLibrary library, ILogger<InstanceAddons>
             state, state.Registrations.For(PackPlacement.Behavior), PackPlacement.Behavior,
             CompanionPack.Uuid, version);
 
+        // `T459`. Unannounced: the console of a server just made opened by telling its
+        // reader to restart it over a file they had not edited.
         var refused = plan.Change is { } change
-            ? await ApplyAsync(supervisor, state, change, cancellationToken).ConfigureAwait(false)
+            ? await ApplyAsync(supervisor, state, change, announce: false, cancellationToken).ConfigureAwait(false)
             : plan.Refusal is AddonChangeRefusal.AlreadyAtThatVersion or AddonChangeRefusal.AlreadyAtAnotherVersion
-                ? await TurnOnScriptOutputAsync(supervisor, cancellationToken).ConfigureAwait(false)
+                ? await TurnOnScriptOutputAsync(supervisor, announce: false, cancellationToken).ConfigureAwait(false)
                 : AddonText.Refusal(plan.Refusal);
 
         return refused ?? await FollowCompanionAsync(supervisor, cancellationToken).ConfigureAwait(false);
@@ -528,11 +530,24 @@ public sealed class InstanceAddons(AddonLibrary library, ILogger<InstanceAddons>
             : $"The companion's resources, which draw its outlines, were not {(companionOn ? "switched on" : "switched off")}: {refused.TrimEnd('.')}.";
     }
 
-    public async Task<string?> ApplyAsync(
+    public Task<string?> ApplyAsync(
         InstanceSupervisor supervisor,
         InstanceAddonState state,
         AddonChange change,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ApplyAsync(supervisor, state, change, announce: true, cancellationToken);
+
+    /// <param name="announce">
+    /// Whether a write to <c>server.properties</c> is said on the server's console
+    /// (<see cref="ServerProperties.UpdatedNotice"/>). False only while a server is being
+    /// made (<see cref="PreSeedCompanionAsync"/>).
+    /// </param>
+    private async Task<string?> ApplyAsync(
+        InstanceSupervisor supervisor,
+        InstanceAddonState state,
+        AddonChange change,
+        bool announce,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(supervisor);
         ArgumentNullException.ThrowIfNull(state);
@@ -567,7 +582,7 @@ public sealed class InstanceAddons(AddonLibrary library, ILogger<InstanceAddons>
             && change.Files.Any(f =>
                 f.Kind is AddonFileActionKind.CopyFromLibrary or AddonFileActionKind.AlreadyInPlace
                 && CompanionPack.Is(f.Uuid))
-            && await TurnOnScriptOutputAsync(supervisor, cancellationToken).ConfigureAwait(false)
+            && await TurnOnScriptOutputAsync(supervisor, announce, cancellationToken).ConfigureAwait(false)
                 is { } refused)
         {
             return refused;
@@ -871,7 +886,7 @@ public sealed class InstanceAddons(AddonLibrary library, ILogger<InstanceAddons>
     /// carries the shared notice only when it did.
     /// </remarks>
     private async Task<string?> TurnOnScriptOutputAsync(
-        InstanceSupervisor supervisor, CancellationToken cancellationToken)
+        InstanceSupervisor supervisor, bool announce, CancellationToken cancellationToken)
     {
         var file = ServerProperties.ReadFile(ServerProperties.PathFor(supervisor.WorkingDirectory));
 
@@ -904,7 +919,11 @@ public sealed class InstanceAddons(AddonLibrary library, ILogger<InstanceAddons>
         logger.LogInformation(
             "Set {Key}=true on {Instance} for the companion pack.", ScriptOutput.Key, supervisor.InstanceId);
 
-        supervisor.Console.Append(Core.Instances.ConsoleOrigin.Notice, ServerProperties.UpdatedNotice);
+        if (announce)
+        {
+            supervisor.Console.Append(Core.Instances.ConsoleOrigin.Notice, ServerProperties.UpdatedNotice);
+        }
+
         return null;
     }
 

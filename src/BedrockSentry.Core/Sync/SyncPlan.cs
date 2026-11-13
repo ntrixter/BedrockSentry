@@ -6,7 +6,7 @@ namespace BedrockSentry.Core.Sync;
 /// <summary>One Sync Area, split into the pieces a sync saves and puts back.</summary>
 /// <param name="Number">Its place in the list, from 1; its pieces are named <c>keep_&lt;Number&gt;_&lt;n&gt;</c>.</param>
 /// <param name="Dimension">The dimension it is in, or null when its dimension is not one Bedrock has.</param>
-public sealed record KeptAreaPlan(int Number, string Name, StructurePlan Plan, BedrockDimension? Dimension = null)
+public sealed record KeptAreaPlan(int Number, string Name, StructurePlan Plan, BedrockDimension? Dimension = null, bool KeepTicking = false)
 {
     /// <summary>Its pieces, each labelled as the console names it.</summary>
     public IReadOnlyList<LabelledPiece> Pieces =>
@@ -81,7 +81,7 @@ public sealed record SyncPlan(IReadOnlyList<KeptAreaPlan> Areas, IReadOnlyList<s
                 problems.Add($"{name}: {plan.Reason}");
             }
 
-            plans.Add(new KeptAreaPlan(number, name, plan, dimension));
+            plans.Add(new KeptAreaPlan(number, name, plan, dimension, area.KeepTicking));
         }
 
         foreach (var group in plans.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))

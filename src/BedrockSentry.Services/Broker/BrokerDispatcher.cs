@@ -108,6 +108,13 @@ public sealed class BrokerDispatcher
 
         try
         {
+            // `T445`. Dropped only at the broker's own start, a removed server's folder
+            // stayed granted across every restart of the main service, which is the
+            // restart an administrator makes. The main service asks the broker something
+            // as each server starts, so a gone folder leaves the record then. Writes only
+            // when one is gone.
+            _record.DropGoneFolders();
+
             return request.Operation switch
             {
                 BrokerOperation.AllowServerPorts => await AllowServerPortsAsync(request, ct),

@@ -84,7 +84,7 @@ internal static class PinnedHandle
 
         if (!directory && information.NumberOfLinks != 1)
         {
-            return $"'{full}' has {information.NumberOfLinks} names on the volume, so it is not only this file.";
+            return $"'{full}' is a hard link: it has {information.NumberOfLinks} names on the volume.";
         }
 
         if (FinalPathOf(handle) is not { } resolved)
@@ -97,7 +97,9 @@ internal static class PinnedHandle
                 Path.TrimEndingDirectorySeparator(full),
                 StringComparison.OrdinalIgnoreCase))
         {
-            return $"'{full}' is really '{resolved}'. Name it by its own path.";
+            return ReparseTags.LinkAbove(full) is { } above
+                ? $"'{full}' is reached through '{above.Path}', {above.What}."
+                : $"'{full}' is really '{resolved}'. Name it by its own path.";
         }
 
         final = resolved;

@@ -267,9 +267,12 @@ public sealed class InstanceHostedService(
                     continue;
                 }
 
+                // Quiet when it meets the refusal the console already shows: the ALERT
+                // was written once at boot, and repeating it on each fast re-check put
+                // five copies of one sentence on the console (`T441` clause 1).
                 try
                 {
-                    await supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
+                    await supervisor.RecheckStartAsync(cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -302,6 +305,17 @@ public sealed class InstanceHostedService(
             }
         }
 
+        await RecheckSlowlyAsync(refused, attempt, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// After the schedule: says once that each instance is still refused, then
+    /// re-checks it every <see cref="RefusedStartRetry.SlowInterval"/> until it starts
+    /// or something else decides for it (<c>T441</c>).
+    /// </summary>
+    private async Task RecheckSlowlyAsync(
+        List<InstanceSupervisor> refused, int attempt, CancellationToken cancellationToken)
+    {
         foreach (var supervisor in refused)
         {
             var outcome = RefusedStartRetry.GaveUpMessage(attempt, RefusedStartRetry.Window);
@@ -314,6 +328,49 @@ public sealed class InstanceHostedService(
             // because this is the same kind of sentence: a server that is down and
             // is not going to come back without somebody.
             Notice(supervisor, $"ALERT: {outcome}");
+        }
+
+        while (refused.Count > 0)
+        {
+            try
+            {
+                await Task.Delay(RefusedStartRetry.SlowInterval, _time, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            foreach (var supervisor in refused.ToList())
+            {
+                if (!WorthRechecking(supervisor))
+                {
+                    refused.Remove(supervisor);
+                    continue;
+                }
+
+                try
+                {
+                    await supervisor.RecheckStartAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "Instance {InstanceId} failed on a slow re-check", supervisor.InstanceId);
+                }
+
+                if (!WorthRechecking(supervisor))
+                {
+                    refused.Remove(supervisor);
+                    logger.LogInformation(
+                        "Instance {InstanceId} is no longer refused; whatever was holding it has gone",
+                        supervisor.InstanceId);
+                    Notice(supervisor, "no longer refused to start; starting it now");
+                }
+            }
         }
     }
 

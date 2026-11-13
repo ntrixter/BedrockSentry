@@ -446,6 +446,27 @@ public sealed class InstanceSupervisor : IAsyncDisposable, IStructureServer
     public Task StartAsync(CancellationToken cancellationToken = default) =>
         StartAsync(holder: null, cancellationToken);
 
+    /// <summary>Set while <see cref="RecheckStartAsync"/> runs (<c>T441</c>).</summary>
+    private volatile bool _quietRepeatedRefusal;
+
+    /// <summary>
+    /// A start from the boot re-check of a refused instance, fast or slow (<c>T441</c>): the same as
+    /// <see cref="StartAsync(CancellationToken)"/>, except a refusal that repeats the
+    /// reason already shown writes no console line.
+    /// </summary>
+    internal async Task RecheckStartAsync(CancellationToken cancellationToken)
+    {
+        _quietRepeatedRefusal = true;
+        try
+        {
+            await StartAsync(holder: null, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _quietRepeatedRefusal = false;
+        }
+    }
+
     /// <summary>A start by <paramref name="holder"/>, or by anyone while nothing claims the server.</summary>
     internal async Task StartAsync(InstanceClaim? holder, CancellationToken cancellationToken)
     {
@@ -499,6 +520,7 @@ public sealed class InstanceSupervisor : IAsyncDisposable, IStructureServer
                     // status and the console already say why (T149).
                     if (hold is not null)
                     {
+                        hold.NothingStarted();
                         await hold.DisposeAsync().ConfigureAwait(false);
                     }
 
@@ -533,7 +555,7 @@ public sealed class InstanceSupervisor : IAsyncDisposable, IStructureServer
     /// Null when there is no guard at all, which is the single-instance case and
     /// every test that does not care.
     /// </summary>
-    private async Task<IAsyncDisposable?> AcquireDiscoveryAsync(CancellationToken cancellationToken)
+    private async Task<LanDiscoveryPortGuard.IStartSlot?> AcquireDiscoveryAsync(CancellationToken cancellationToken)
     {
         if (_discovery is null)
         {
@@ -562,7 +584,7 @@ public sealed class InstanceSupervisor : IAsyncDisposable, IStructureServer
     /// instance from starting until the service restarts, which locks the owning
     /// instance out of its own port too, since only its own start frees the pair.
     /// </remarks>
-    private async Task ReleaseStartSlotWhenReadyAsync(IAsyncDisposable hold)
+    private async Task ReleaseStartSlotWhenReadyAsync(LanDiscoveryPortGuard.IStartSlot hold)
     {
         try
         {
@@ -600,6 +622,10 @@ public sealed class InstanceSupervisor : IAsyncDisposable, IStructureServer
                     break;
 
                 case ReadyWait.NotStarting:
+                    // No server is about to bind the pair, so the slot goes back
+                    // without the discovery margin.
+                    hold.NothingStarted();
+
                     // Not a warning. A stop, a refusal and a watchdog give-up are
                     // all things somebody or something decided, and the slot is
                     // released early rather than late.
@@ -1055,6 +1081,29 @@ public sealed class InstanceSupervisor : IAsyncDisposable, IStructureServer
     {
         _process = null;
         SetReady(null);
+
+        // `T441`. On the boot re-check, a refusal repeating the one this instance
+        // already shows says nothing new, which keeps it quiet against a port held
+        // for good. A person's Start still gets its ALERT. Only the console and the log are spared: the state is set
+        // again below either way.
+        var repeat = _quietRepeatedRefusal
+                     && Status is { State: InstanceState.Faulted, FaultKind: InstanceFault.RefusedToStart }
+                     && string.Equals(Status.FaultReason, reason, StringComparison.Ordinal);
+
+        if (repeat)
+        {
+            UpdateStatus(s => s with
+            {
+                State = InstanceState.Faulted,
+                ProcessId = null,
+                ReadyUtc = null,
+                NextRetryUtc = null,
+                FaultReason = reason,
+                FaultKind = InstanceFault.RefusedToStart,
+            });
+            _log.LogDebug("Instance {InstanceId} still {Reason}", _instanceId, reason);
+            return LaunchOutcome.Refused;
+        }
 
         // Loud for the same reason the watchdog's give-up is: a server that is
         // quietly not running is worse than one that says why.

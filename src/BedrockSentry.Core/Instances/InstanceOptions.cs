@@ -102,6 +102,13 @@ public sealed class InstanceDefinition
     public bool AutoStart { get; set; } = true;
 
     /// <summary>
+    /// Where this server's tab sits, set by dragging the tabs (<c>T437</c>). Null
+    /// for a server never moved, which sorts after every placed one by name
+    /// (<see cref="InstanceOrder"/>).
+    /// </summary>
+    public int? DisplayOrder { get; set; }
+
+    /// <summary>
     /// Retired instances (<c>D14</c>) keep their player history but are never
     /// launched and get no per-instance page. Removal at milestone 16 sets this
     /// rather than deleting rows, because deleting them would silently shrink

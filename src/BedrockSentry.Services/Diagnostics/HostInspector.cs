@@ -39,7 +39,10 @@ public sealed class HostInspector
         _paths = paths;
         _time = time;
         _deduplication = deduplication;
-        _media = media;
+
+        // Kept here rather than in the registration, so a test host's fake is cached
+        // the same way as the CIM reading it replaces.
+        _media = new CachedVolumeMediaInspector(media, time);
     }
 
     /// <summary>

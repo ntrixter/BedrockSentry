@@ -27,7 +27,7 @@
 
 .EXAMPLE
     .\scripts\package-local.ps1
-    # -> bedrocksentry-0.4.1-local_<sha>.zip in the repository root
+    # -> bedrocksentry-0.5.0-local_<sha>.zip in the repository root
 #>
 
 [CmdletBinding()]

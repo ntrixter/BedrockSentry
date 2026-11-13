@@ -139,7 +139,13 @@
     </div>
 }
 
-@if (volumes is { Count: > 0 })
+@* Null until the read after the first paint comes back; see OnAfterRenderAsync. *@
+@if (volumes is null)
+{
+    <h3>Storage</h3>
+    <p class="empty-state">Checking…</p>
+}
+else if (volumes.Count > 0)
 {
     @* D55. The three dedup columns appear only when some volume has something
        to say: on a machine without the role every row would read "Not installed",
@@ -227,16 +233,11 @@
 
     private CancellationTokenSource? cts;
 
-    /// Everything that can be answered without leaving the machine. All of it is
-    /// a local read, so it costs nothing to have ready for the first paint.
-    ///
-    /// Read once on load rather than on the page's one-second tick: a volume's
-    /// free space does not move meaningfully between renders, and re-reading it
-    /// every second would spend real work to show the same numbers.
+    /// The local reads that cost nothing, ready for the first paint. The volumes
+    /// are not among them: see <see cref="ReadVolumesAsync"/>.
     protected override void OnInitialized()
     {
         system = Host.System();
-        volumes = Host.Volumes(Registry.All.Select(s => s.WorkingDirectory), Registry.Root);
         addresses = HostInspector.Local();
     }
 
@@ -254,6 +255,10 @@
 
         cts = new CancellationTokenSource();
 
+        // Started first and awaited last: the volumes are local and usually back
+        // before the public address, and neither waits on the other.
+        var storage = ReadVolumesAsync(cts.Token);
+
         try
         {
             addresses = await Host.AddressesAsync(cts.Token);
@@ -265,6 +270,41 @@
         catch (OperationCanceledException)
         {
             // Navigating away before the lookups came back.
+        }
+
+        await storage;
+    }
+
+    /// <summary>The Storage table's rows, read once per page open.</summary>
+    /// <remarks>
+    /// <para>After the first paint and on the thread pool, not in
+    /// <c>OnInitialized</c>: a volume's drive type and deduplication state are
+    /// Windows queries (CIM in <c>root\Microsoft\Windows\Storage</c>, and the
+    /// broker), synchronous and slow next to the rest of the page. In
+    /// <c>OnInitialized</c> they ran during prerender, holding back the HTTP
+    /// response, and again on the interactive render, holding the circuit, so
+    /// the Status page opened late every time.</para>
+    /// <para>Not on the page's one-second tick either: free space does not move
+    /// meaningfully between renders.</para>
+    /// </remarks>
+    private async Task ReadVolumesAsync(CancellationToken cancellationToken)
+    {
+        var directories = Registry.All.Select(s => s.WorkingDirectory).ToList();
+        var root = Registry.Root;
+
+        try
+        {
+            var read = await Task.Run(() => Host.Volumes(directories, root), cancellationToken);
+
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                volumes = read;
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigating away before the read started.
         }
     }
 

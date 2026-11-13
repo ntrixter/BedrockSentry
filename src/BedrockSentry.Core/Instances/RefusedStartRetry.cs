@@ -32,11 +32,12 @@ namespace BedrockSentry.Core.Instances;
 /// them, and it reads <see cref="InstanceStatus.FaultKind"/> rather than the
 /// reason sentence on purpose.</para>
 ///
-/// <para><strong>Why it is bounded.</strong> An instance whose port is held by
+/// <para><strong>Why it slows down.</strong> An instance whose port is held by
 /// something permanent — another server, a service that is not ours — must end up
 /// faulted and quiet, not logging an error every thirty seconds forever. The
-/// schedule covers the measured overlap with room to spare and then stops, leaving
-/// the fault exactly as it found it.</para>
+/// schedule covers the measured overlap with room to spare, says so once, and then
+/// re-checks every <see cref="SlowInterval"/> without writing anything unless the
+/// reason changes or the server starts (<c>T441</c>).</para>
 ///
 /// <para>Here in <c>Core</c> rather than beside the loop that runs it, so the
 /// schedule and the eligibility rule are both reachable from a test. The loop
@@ -65,6 +66,23 @@ public static class RefusedStartRetry
         TimeSpan.FromSeconds(30),
         TimeSpan.FromSeconds(60),
     ];
+
+    /// <summary>
+    /// How often a refusal the schedule did not clear is checked again after it,
+    /// for as long as the service runs (<c>T441</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>A refusal that outlives the schedule is not always permanent: a server
+    /// folder the broker could not grant is fixed by an administrator minutes or hours
+    /// later, and the server then stayed down until somebody pressed Start or
+    /// restarted the service. A re-check is still a guard that runs before anything
+    /// launches, so it cannot open a world twice.</para>
+    /// <para>It is quiet: a refusal that repeats the sentence the instance already
+    /// shows writes nothing new to its console and nothing above debug to the log
+    /// (<c>InstanceSupervisor.RecheckStartAsync</c>), so a port held for good costs one check every
+    /// five minutes and no lines.</para>
+    /// </remarks>
+    public static readonly TimeSpan SlowInterval = TimeSpan.FromMinutes(5);
 
     /// <summary>How long the whole schedule spans, for the messages.</summary>
     public static TimeSpan Window
@@ -124,6 +142,6 @@ public static class RefusedStartRetry
     /// </remarks>
     public static string GaveUpMessage(int attempts, TimeSpan window) =>
         $"still refusing to start after {attempts} re-check(s) over "
-        + $"{(int)Math.Round(window.TotalMinutes)} minute(s); it will stay down until somebody "
-        + "clears what is holding it and starts it";
+        + $"{(int)Math.Round(window.TotalMinutes)} minute(s); it will stay down until what is "
+        + $"holding it is cleared, and is checked again every {(int)SlowInterval.TotalMinutes} minutes";
 }

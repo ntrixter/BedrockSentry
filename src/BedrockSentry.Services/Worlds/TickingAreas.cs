@@ -53,7 +53,7 @@ public sealed class TickingAreas : IHostedService
     internal TimeSpan AnswerWithin { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>The sentence for a server that is not running.</summary>
-    public const string NotRunning = "Start the server to read its ticking areas.";
+    public const string NotRunning = TickingAreaConsole.NotRunning;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -225,37 +225,14 @@ public sealed class TickingAreas : IHostedService
         : server.Status.State != InstanceState.Running ? NotRunning
         : null;
 
-    private sealed record Ran(bool Ok, string Said, IReadOnlyList<ConsoleLine>? Lines);
-
     private async Task<TickingAreaResult> RunAsync(InstanceSupervisor server, TickingAreaCommand command)
     {
         var ran = await AskAsync(server, command).ConfigureAwait(false);
         return new TickingAreaResult(ran.Ok, ran.Said, null);
     }
 
-    /// <summary>Sends one command and collects its answer; listening starts before the send.</summary>
-    private async Task<Ran> AskAsync(InstanceSupervisor server, TickingAreaCommand command)
-    {
-        using var collect = ConsoleCollect.For(server.Console, command.Starts, command.Ends);
-
-        try
-        {
-            await server.SendCommandAsync(command.Text).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or ObjectDisposedException)
-        {
-            return new Ran(false, NotRunning, null);
-        }
-
-        var lines = await collect.WaitAsync(AnswerWithin, _time).ConfigureAwait(false);
-        if (lines is null)
-        {
-            return new Ran(false, $"BDS did not answer \"{command.Text}\" within {AnswerWithin.TotalSeconds:0} seconds.", null);
-        }
-
-        var first = lines[0];
-        return new Ran(!TickingAreaAnswers.IsRefusal(first), TickingAreaAnswers.Plain(first.Message), lines);
-    }
+    private Task<TickingAreaAnswer> AskAsync(InstanceSupervisor server, TickingAreaCommand command) =>
+        TickingAreaConsole.AskAsync(server, command, AnswerWithin, _time);
 
     private void OnHello(InstanceSupervisor server)
     {

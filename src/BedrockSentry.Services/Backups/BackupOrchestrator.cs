@@ -283,6 +283,16 @@ public sealed class BackupOrchestrator
             var locked = await _artifacts
                 .LockedAsync(supervisor.InstanceId, cancellationToken).ConfigureAwait(false);
 
+            // Before any hold, and for a running server as for a stopped one. The walk
+            // below follows a junction: one with files behind it was refused per file,
+            // only once the server had stopped, one that was empty was never seen, and
+            // one pointing off the volume was "Access ... denied" (`T443`). Found by name
+            // without following any link, and refused naming it with its tag.
+            if (LinkIn(worldsDirectory) is { } link)
+            {
+                throw new InvalidOperationException(ServerTree.Refusal(link));
+            }
+
             if (!live)
             {
                 // A stopped server is holding nothing, so a snapshot would buy
@@ -807,6 +817,23 @@ public sealed class BackupOrchestrator
     /// </remarks>
     internal Func<string, IEnumerable<string>> WorldLister { get; set; } =
         worlds => Directory.EnumerateFiles(worlds, "*", SearchOption.AllDirectories);
+
+    /// <summary>
+    /// The first link under <paramref name="worldsDirectory"/>, or null. A folder that
+    /// cannot be walked is left to the listing after it, which records why
+    /// (<see cref="WorldLister"/>).
+    /// </summary>
+    private static string? LinkIn(string worldsDirectory)
+    {
+        try
+        {
+            return ServerTree.FirstLink(worldsDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// The files under <c>worlds</c> that a running server's backup copies whole

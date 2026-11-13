@@ -147,7 +147,7 @@ internal static class ServerFileReader
 
         if (information.NumberOfLinks != 1)
         {
-            return $"'{full}' has {information.NumberOfLinks} names on the volume, so it is not copied.";
+            return $"'{full}' is a hard link with {information.NumberOfLinks} names on the volume, so it is not copied.";
         }
 
         // A shadow copy is named by its device, which has no drive letter.
@@ -170,11 +170,19 @@ internal static class ServerFileReader
             resolved = resolved[4..];
         }
 
-        return string.Equals(resolved, expected, StringComparison.OrdinalIgnoreCase)
-            ? null
+        if (string.Equals(resolved, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        // T443. A junction on the way is the likelier cause, and its own sentence names it
+        // and its tag; the short-name hint only fits when no folder on the way is a link.
+        return ReparseTags.LinkAbove(full) is { } above
+            ? $"'{full}' is reached through '{above.Path}', {above.What}, so it is not copied."
             : $"'{full}' is really '{resolved}', so it is not copied. If the server's folder is named "
               + "through a short name, a subst drive or a mapped drive, name it by its full path instead.";
     }
+
 
     private const uint GenericRead = 0x8000_0000;
     private const uint FileShareRead = 0x1;

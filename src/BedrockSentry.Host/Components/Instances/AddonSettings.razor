@@ -112,18 +112,22 @@
         <p class="console-fault">@refusal</p>
     }
 
-    <div class="addon-gear-actions">
-        <button class="btn btn-sm btn-primary" disabled="@(ReadOnly || !changed)" @onclick="SaveAsync">
-            Save settings
-        </button>
-        @if (changed)
-        {
-            <button class="btn btn-sm btn-secondary" disabled="@ReadOnly" @onclick="UndoAsync">
-                Undo
+    @* A pack whose settings are all labels has nothing to save (T453). *@
+    @if (Schema.ControlCount > 0)
+    {
+        <div class="addon-gear-actions">
+            <button class="btn btn-sm btn-primary" disabled="@(ReadOnly || !changed)" @onclick="SaveAsync">
+                Save settings
             </button>
-        }
-        <span class="@(changed ? "addon-gear-note" : Pending is not null ? "addon-gear-note addon-gear-queued" : saved ? "addon-gear-note addon-gear-saved" : "addon-gear-note")">@Note</span>
-    </div>
+            @if (changed)
+            {
+                <button class="btn btn-sm btn-secondary" disabled="@ReadOnly" @onclick="UndoAsync">
+                    Undo
+                </button>
+            }
+            <span class="@(changed ? "addon-gear-note" : Pending is not null ? "addon-gear-note addon-gear-queued" : saved ? "addon-gear-note addon-gear-saved" : "addon-gear-note")">@Note</span>
+        </div>
+    }
 </div>
 
 @code {
@@ -159,7 +163,7 @@
         changed ? (Waits ? "Not saved yet. A save waits until the server stops." : "Not saved yet.")
         : Pending is not null ? AddonsTabText.SettingsQueued
         : saved ? "Saved. The server reads these when it next starts."
-        : "Applies when the server next starts.";
+        : AddonsTabText.SettingsApply;
 
     protected override void OnParametersSet()
     {

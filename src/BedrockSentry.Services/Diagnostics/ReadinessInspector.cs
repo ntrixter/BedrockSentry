@@ -251,9 +251,17 @@ public sealed class ReadinessInspector : IVssServiceControl
     /// could not (<c>T210</c>). Null otherwise.
     /// </param>
     public static SystemCheck CheckPorts(
-        string label, IReadOnlyList<Instances.PortConflict> conflicts, string? unreadable = null)
+        string label, IReadOnlyList<Instances.PortConflict> conflicts, string? unreadable = null, bool namesNoPorts = false)
     {
         var title = PortTitle(label);
+
+        // `T461`. A file that is missing, or holds no setting, names no port. The
+        // conflicts were worked out against BDS's defaults, so the row spoke about
+        // 19132 for a server whose folder was gone.
+        if (namesNoPorts && string.IsNullOrWhiteSpace(unreadable))
+        {
+            return new SystemCheck(title, SystemCheckState.Unknown, NoPortsNamed);
+        }
 
         // Before anything else, because an empty conflict list is what a failed
         // read produces and it is indistinguishable from a clean one (`T210`).
@@ -285,6 +293,10 @@ public sealed class ReadinessInspector : IVssServiceControl
             CanFix: false,
             Warning: Instances.PortConflictText.CrashLoopWarning);
     }
+
+    /// <summary>What the ports row says for a server whose file names none (<c>T461</c>).</summary>
+    public const string NoPortsNamed =
+        "Its server.properties is missing or holds no settings, so its ports are not known.";
 
     private static (string? Status, string? StartType) ParseService(string json)
     {

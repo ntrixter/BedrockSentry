@@ -202,6 +202,23 @@ public static class AreaRestoreText
     public static string NoUsableBackupOf(string owner) =>
         $"{owner} has no backup an area can be restored from. Its Backups tab takes one.";
 
+    /// <summary>
+    /// Why backups that exist give an area nothing to read: how many there are and why
+    /// the newest cannot be used (<c>T440</c>). A server with only a safety backup was
+    /// told it had no backups.
+    /// </summary>
+    /// <param name="owner">The server the backups are of, when it is not this one; null for this one.</param>
+    public static string NoneUsable(int count, BackupCandidate newest, string? owner = null)
+    {
+        ArgumentNullException.ThrowIfNull(newest);
+
+        var whose = owner ?? "This server";
+        var backups = count == 1 ? "1 backup" : $"{count} backups";
+        var fix = owner is null ? "Take one on the Backups tab first." : "Its Backups tab takes one.";
+
+        return $"{whose} has {backups}, and none can restore an area: the newest, {newest.Name}, {newest.Unusable}. {fix}";
+    }
+
     /// <summary>Why a backup's name matched none on disk.</summary>
     /// <param name="owner">The server the backups are of, when it is not this one; null for this one.</param>
     public static string NoSuchBackup(string asked, IReadOnlyList<string> newest, string? owner = null) => newest.Count == 0

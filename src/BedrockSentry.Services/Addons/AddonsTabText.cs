@@ -46,16 +46,34 @@ public static class AddonsTabText
         "Only add-ons that declare settings are listed. Pack settings are stored with this world, so "
         + "updating an add-on keeps them.";
 
+    /// <summary>
+    /// How many settings a pack on the Settings list has, under its name (<c>T462</c>).
+    /// </summary>
+    /// <remarks>
+    /// A pack whose settings page holds only labels has nothing to set and read
+    /// "0 settings"; it is listed because its page still has text to show.
+    /// </remarks>
+    public static string SettingsCount(int count) => count switch
+    {
+        <= 0 => "Text only",
+        1 => "1 setting",
+        _ => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{count} settings"),
+    };
+
     /// <summary>After a pack's description, above its settings.</summary>
-    public const string SettingsApply = "Changes here take effect the next time the world loads.";
+    /// <remarks>
+    /// One sentence for every pack setting (<c>T442</c>): this one said "the next time the
+    /// world loads" beside "Applies when the server next starts", two phrasings of one fact.
+    /// </remarks>
+    public const string SettingsApply = "Applies when the server next starts.";
 
     /// <summary>The auto-update switch above the list (<c>D112</c>).</summary>
     public const string AutoUpdateLabel = "Keep add-ons up to date";
 
     /// <summary>Under the auto-update switch.</summary>
     public const string AutoUpdateDetail =
-        "Each time this server starts, switched-on add-ons move to the newest version in the library. "
-        + "A running server picks it up at its next restart.";
+        "When this server starts, each switched-on add-on moves to its newest version in the library. "
+        + "If it is running now, that happens at its next restart.";
 
     /// <summary>
     /// Under a switched-on pack held at the version somebody chose, while auto-update is on (<c>D112</c>).

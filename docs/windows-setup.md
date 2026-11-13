@@ -4,9 +4,9 @@ How to install the wrapper on a Windows Server machine and get to a working cont
 panel. Nothing here needs the .NET SDK on the server — the release is
 self-contained.
 
-> **Read this first.** BedrockSentry is pre-1.0. Every release so far is a
-> prerelease on the Build channel and nothing has been released on the Stable
-> channel, so run it on a server you can restore from a backup.
+> **Read this first.** BedrockSentry is pre-1.0. Stable-channel releases began
+> with 0.4.1, and Build-channel releases are prereleases, so run it on a server
+> you can restore from a backup.
 >
 > This is no longer a walk into the unknown, though: the install path, the
 > service, the panel, backups and the Bedrock update path have all been exercised
@@ -51,11 +51,6 @@ Builds from `build` are marked as prereleases; builds from `main` are marked
 latest. There is also a rolling `channel-build` / `channel-stable` release
 carrying just the manifest — that is what the wrapper polls, not something you
 need to download.
-
-While the repository is private you can download by hand as a signed-in user. It
-is only the wrapper's *automated* self-update that needs the repo public: an
-installed service carries no credential, and a private repository serves nothing
-to an anonymous request.
 
 ### Option B: build it yourself
 
@@ -548,18 +543,18 @@ old one has to be told again.
 
 ## Updating
 
-### While the repo is private
+### By hand, from a zip
 
 Build or download a newer zip, then **extract it to a new folder and run that
 copy of `install.ps1`** — exactly as you did for the first install:
 
 ```powershell
-Unblock-File .\bedrocksentry-0.4.1-build.99_bbbb222.zip
+Unblock-File .\bedrocksentry-0.5.0-build.99_bbbb222.zip
 
-Expand-Archive .\bedrocksentry-0.4.1-build.99_bbbb222.zip -DestinationPath .\bs-0.4.1-build.99_bbbb222
-cd .\bs-0.4.1-build.99_bbbb222
+Expand-Archive .\bedrocksentry-0.5.0-build.99_bbbb222.zip -DestinationPath .\bs-0.5.0-build.99_bbbb222
+cd .\bs-0.5.0-build.99_bbbb222
 
-.\install.ps1 -ZipPath ..\bedrocksentry-0.4.1-build.99_bbbb222.zip
+.\install.ps1 -ZipPath ..\bedrocksentry-0.5.0-build.99_bbbb222.zip
 ```
 
 First the installer asks the running wrapper to warn players and stop its
@@ -586,7 +581,7 @@ is still correct, but the steps that lay it down are the old ones. The installer
 compares itself with the `install.ps1` inside the archive and warns if they
 differ; it still installs, and extracting to a fresh folder is the fix.
 
-### Once the repo is public
+### From the panel
 
 The wrapper updates itself. Settings → **Wrapper updates** shows the running
 build, the channel, when it last checked, and any newer build it has seen. The
@@ -730,8 +725,10 @@ where they are too.
 ### The service will not start
 
 Check the Application event log for source `BedrockSentry` first. It receives
-the wrapper's warnings and errors only. Informational lines are not written
-there, including the one the wrapper logs on every start with its content root,
+the wrapper's warnings and errors, plus one kind of information line: which server
+UDP 19132 and 19133 (LAN discovery) were held for at each server start. Other
+informational lines are not written there, including the one the wrapper logs on
+every start with its content root,
 web root, working directory and data root, followed by one listing every
 configuration source; run the wrapper in the foreground (below) to read those.
 
@@ -884,14 +881,13 @@ confirming deliberately rather than assuming:
    `(Get-Item "C:\Program Files\BedrockSentry\current").Target` names the
    version directory the installer printed.
 
-Self-update is the least-proven part of the project, and deliberately so: it
-downloads from GitHub releases, which a private repository will not serve
-anonymously, so the drills that would prove it — ship a deliberately broken build
-and confirm rollback, kill the helper mid-swap, make the service unstoppable,
-fill the disk during extraction — cannot run until this repository is public.
-Until they have, prefer installing a newer zip by hand over letting the wrapper
-update itself — the way **Updating** above describes, from a freshly extracted
-folder.
+Self-update is the least-proven part of the project. An update in place from the
+panel has been exercised on real installs, but the drills that would prove its
+failure paths (ship a deliberately broken build and confirm rollback, kill the
+helper mid-swap, make the service unstoppable, fill the disk during extraction)
+have not all been run. Until they have, keep a backup you have restored from, or
+install a newer zip by hand the way **Updating** above describes, from a freshly
+extracted folder.
 
 ---
 
@@ -1167,8 +1163,7 @@ by custom command, with restore and retention, Bedrock updates with a countdown,
 health gate and rollback, and the add-on library. The companion pack is built and
 partly verified on Windows, as are the privilege broker with low-integrity servers,
 NetherNet defaults with firewall and reachability checks, and the authenticator-app
-sign-in. Player faces and creative sister servers are built and not yet verified on
-Windows.
+sign-in, player faces and creative sister servers.
 
 Not built: **in-game chat commands** and the **Telegram and Discord bots**.
 [`ROADMAP.md`](../ROADMAP.md) has the detail and the order they depend on each

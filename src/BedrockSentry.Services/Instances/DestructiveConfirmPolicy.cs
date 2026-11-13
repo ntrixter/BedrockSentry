@@ -71,7 +71,7 @@ public sealed class DestructiveConfirmPolicy(
     /// <summary>The label over the field.</summary>
     public string FieldLabel => AsksForCode
         ? "Confirm with the code from your authenticator app"
-        : "Confirm with your BedrockSentry password";
+        : "Confirm with your panel sign-in password (not your Windows one)";
 
     /// <summary>The field's <c>type</c>: a code is shown as typed, a password is not.</summary>
     public string FieldType => AsksForCode ? "text" : "password";

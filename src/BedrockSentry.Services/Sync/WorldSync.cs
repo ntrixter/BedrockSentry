@@ -116,10 +116,19 @@ public sealed class WorldSync : IBeforeLaunch
     public event Action<string>? Changed;
 
     /// <summary>Where a server's saved pieces are kept between the stop and the put-back.</summary>
-    public string PiecesDirectory(string instanceId) => Path.Combine(_paths.Data, "sync", instanceId);
+    public string PiecesDirectory(string instanceId) => PiecesDirectory(_paths, instanceId);
+
+    /// <inheritdoc cref="PiecesDirectory(string)" />
+    /// <remarks>Static so a removal can name it without a sync service (<c>T460</c>).</remarks>
+    public static string PiecesDirectory(ISentryPaths paths, string instanceId) =>
+        Path.Combine(paths.Data, "sync", instanceId);
 
     /// <summary>Where a sync that stopped before its pieces were put back is recorded, beside its pieces.</summary>
-    public string WaitingFile(string instanceId) => Path.Combine(_paths.Data, "sync", $"{instanceId}.waiting.json");
+    public string WaitingFile(string instanceId) => WaitingFile(_paths, instanceId);
+
+    /// <inheritdoc cref="WaitingFile(string)" />
+    public static string WaitingFile(ISentryPaths paths, string instanceId) =>
+        Path.Combine(paths.Data, "sync", $"{instanceId}.waiting.json");
 
     /// <summary>
     /// The sync that replaced this server's world and stopped before its Sync Areas were put
@@ -370,6 +379,8 @@ public sealed class WorldSync : IBeforeLaunch
             return;
         }
 
+        await KeepTickingAreasAsync(target, plan).ConfigureAwait(false);
+
         if (!wasRunning)
         {
             // Stopped before, so stopped after; the pack comes off at its next start.
@@ -377,6 +388,37 @@ public sealed class WorldSync : IBeforeLaunch
         }
 
         Finished(run, target, plan);
+    }
+
+    /// <summary>How long BDS is given to answer a ticking-area command.</summary>
+    internal TimeSpan TickingAnswerWithin { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Adds a ticking area over each Sync Area ticked to keep one (<c>T439</c>), once every
+    /// piece is back. A refusal is said on the console and does not unfinish the sync.
+    /// </summary>
+    private async Task KeepTickingAreasAsync(InstanceSupervisor target, SyncPlan plan)
+    {
+        foreach (var area in SyncTicking.For(plan))
+        {
+            string said;
+
+            if (area.Add is not { } add)
+            {
+                said = SyncTicking.Said(area.Name, false, area.Problem ?? string.Empty);
+            }
+            else
+            {
+                // A ticking area of that name in the copied world is replaced; "none to
+                // remove" is BDS's answer when there is none, and is not a failure here.
+                await TickingAreaConsole.AskAsync(target, area.Remove, TickingAnswerWithin, _time).ConfigureAwait(false);
+                var added = await TickingAreaConsole.AskAsync(target, add, TickingAnswerWithin, _time).ConfigureAwait(false);
+                said = SyncTicking.Said(area.Name, added.Ok, added.Said);
+            }
+
+            target.Console.Append(ConsoleOrigin.Notice, said, _time.GetUtcNow());
+            _log.LogInformation("Sync of {InstanceId}: {Said}", target.InstanceId, said);
+        }
     }
 
     /// <summary>The server's sync now, or its last; null when it has never synced since the wrapper started.</summary>
@@ -936,6 +978,7 @@ public sealed class WorldSync : IBeforeLaunch
         Dimension = area.Dimension,
         Color = area.Color,
         ShowInGame = area.ShowInGame,
+        KeepTicking = area.KeepTicking,
         X1 = area.X1,
         Y1 = area.Y1,
         Z1 = area.Z1,
@@ -1077,11 +1120,15 @@ public sealed class WorldSync : IBeforeLaunch
             SyncText.Outcome(run.SourceName, run.BackupName, plan));
     }
 
-    private void CallOff(SyncRun run, InstanceSupervisor target, string reason) =>
+    private void CallOff(SyncRun run, InstanceSupervisor target, string reason)
+    {
+        reason = SyncText.Reason(reason);
         End(run, target, SyncOutcome.CalledOff, SyncText.CalledOff(run.SourceName, reason), reason);
+    }
 
     private void Incomplete(SyncRun run, InstanceSupervisor target, string reason)
     {
+        reason = SyncText.Reason(reason);
         var folder = PiecesDirectory(target.InstanceId);
 
         if (run.Areas.Count > 0)

@@ -406,11 +406,7 @@ public sealed class AreaRestore(
 
     }
 
-    private static string Sentence(string? text)
-    {
-        var trimmed = (text ?? "it failed").Trim();
-        return trimmed.EndsWith('.') ? trimmed : trimmed + ".";
-    }
+    private static string Sentence(string? text) => SyncText.Reason(text);
 
     private async Task<string?> StartAndWaitAsync(InstanceSupervisor server, InstanceClaim claim)
     {

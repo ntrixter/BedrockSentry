@@ -25,7 +25,7 @@
 @inject IPlayerStore Players
 
 <div class="instance-bar">
-    <span class="state-badge state-@Status.State.ToString().ToLowerInvariant()">@Status.State</span>
+    <span class="state-badge state-@InstanceStateText.Style(Status)">@InstanceStateText.Label(Status)</span>
 
     @if (Status.ProcessId is { } pid)
     {

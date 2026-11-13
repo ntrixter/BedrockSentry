@@ -406,6 +406,13 @@ then each start is refused with the reason and never counted as a crash.
   instance itself starts — inside the same serialised start slot, so nothing
   can slip between the release and the owner's bind. Running non-owners never
   retry their failed bind, which is what makes that hand-over window safe.
+  The start slot is kept for five seconds past a non-owner's ready line, since
+  BDS binds discovery about 50 ms after it: given back on the line, a queued
+  owner freed the pair in time for the non-owner to take it (`T450`).
+  An owner on NetherNet whose play window covers the pair binds a socket per
+  player, not the pair at its start, so its running says nothing about who holds
+  the pair: the hold is kept across each other start and let go five seconds
+  after that server's ready line (`T453`).
   When no configured instance owns the pair, nothing is held: a wrapper
   squatting on 19132 forever would make every server on the box undiscoverable
   for the benefit of an owner that does not exist. Instance starts are

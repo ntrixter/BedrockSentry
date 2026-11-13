@@ -364,6 +364,12 @@ public sealed class BackupHistory
         };
     }
 
+    /// <summary>A record with both times at offset zero, the same instants (<c>T447</c>).</summary>
+    internal static BackupRecord InUtc(BackupRecord record) =>
+        record.StartedUtc.Offset == TimeSpan.Zero && record.FinishedUtc.Offset == TimeSpan.Zero
+            ? record
+            : record with { StartedUtc = record.StartedUtc.ToUniversalTime(), FinishedUtc = record.FinishedUtc.ToUniversalTime() };
+
     /// <summary>
     /// Reads, changes and replaces the file, one writer per instance at a time.
     /// </summary>
@@ -384,6 +390,11 @@ public sealed class BackupHistory
             {
                 return;
             }
+
+            // T447. Every time written as UTC: a record built from a file's local stamp
+            // carried the machine's offset (-06:00) in fields named Utc. The same instant,
+            // so an older record read with its offset is rewritten as UTC unchanged.
+            records = [.. records.Select(InUtc)];
 
             // Write-then-move, so a crash mid-write leaves the old history intact
             // rather than half a JSON document.

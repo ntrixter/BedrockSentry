@@ -17,6 +17,54 @@ a test server you have backups of.
 
 ---
 
+## 0.5.0 — 2026-11-13
+
+### Added
+- The Status page's server table has a **Uses ports** column listing every port each
+  server's `server.properties` says it binds.
+- Server tabs can be dragged into a new order; the Status page follows it and new servers
+  go last.
+- A Sync Area ticked **Ticking area** gets a ticking area over its corners after each sync.
+- The New instance form says when a folder outside the data root needs
+  `install.ps1 -GrantFolder` before the server can start, and hides the note once the
+  folder is granted.
+
+### Fixed
+- With **Keep add-ons up to date** on, the Add-ons tab kept listing the old version after
+  an update until the page was reloaded.
+- `/bedrocksentry:restorearea` said a server had no backups when it had only safety
+  backups; it now says it found them and why they cannot restore an area.
+- A server refused at service start stayed down after the cause was fixed; it is checked
+  again every 5 minutes and starts on its own, with one alert instead of one per check.
+- Link refusals name the kind of link (junction, symbolic link) and its reparse tag, and a
+  server folder reached through a junction is refused when it is chosen, not at its first
+  start.
+- A removed server's folder stayed on the privilege broker's grant list, so a new folder
+  at the same path read as granted. Grants for folders that no longer exist are dropped.
+- A running backup's row briefly showed *No record*. Backup history now stores its times
+  in UTC; older records are rewritten at the next write.
+- A `server.properties` with no settings, or none at all, shows a dash for its ports, is not
+  called missing, and no longer gets firewall rules or port claims from Bedrock's defaults.
+- The Sync tab crashed once a Sync Area existed; a blanked corner field kept its old value;
+  the white outline colour was invisible in the light theme.
+- After a service restart, a RakNet server on another port could take UDP 19132/19133 from
+  the server configured for them, which then failed to start. The LAN pair is now held for
+  its owner, and a start refused over it names the server holding it.
+- **Create** made a server whose ports were already taken; it now reads the ports again and
+  holds back over a clash.
+- A start refused before anything launched read *Faulted*; it reads *Not started*. A server
+  that gives up after repeated crashes still reads *Faulted*.
+- The NetherNet play window offered on a new server could overlap UDP ports in use, and
+  a UDP clash under NetherNet now begins *Play ports:*.
+- A new server's console opened with a *properties updated* notice.
+- Removing a server left its add-on run files and sync files behind.
+- A label-only settings pack showed an empty settings form; it reads *Text only*.
+- The LAN port guard's information lines did not reach the Windows event log.
+- The Status page opened slowly while it read each volume's drive type; the Storage table
+  now fills in after the page appears.
+
+---
+
 ## 0.4.1 — 2026-11-10
 
 ### Fixed

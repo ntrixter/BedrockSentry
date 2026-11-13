@@ -41,6 +41,33 @@ public sealed class OutsideFolders(
                  || full.StartsWith(root + Path.DirectorySeparatorChar, comparison));
     }
 
+    /// <summary>
+    /// Whether <paramref name="folder"/> exists and carries the low label a grant puts on
+    /// it, which is what a start checks (<see cref="IServerFolderAccess.IsLowLabelled"/>).
+    /// </summary>
+    /// <remarks>
+    /// The label rather than a write test: the service can often write to a folder
+    /// nobody granted, and a server still cannot start there. The folder itself, not a
+    /// parent, so a note is never withheld for a folder the start would refuse. A label
+    /// that cannot be read counts as none.
+    /// </remarks>
+    internal Func<string, bool> CarriesGrant { get; init; } = static folder =>
+    {
+        if (!OperatingSystem.IsWindows() || !Directory.Exists(folder))
+        {
+            return false;
+        }
+
+        try
+        {
+            return new WindowsServerFolderAccess().IsLowLabelled(folder);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    };
+
     /// <summary>Whether the panel may ask the broker to grant a folder.</summary>
     public bool PanelMayGrant => broker is not null && policy.AllowPanelFolderGrants;
 
@@ -63,6 +90,32 @@ public sealed class OutsideFolders(
 
     /// <summary>Why the service could not use <paramref name="folder"/>, and what to run.</summary>
     /// <param name="refusal">The broker's refusal, when it was asked; null when it was not.</param>
+    /// <summary>
+    /// What the New instance form says under a typed folder outside the data root
+    /// (<c>T448</c>); null for a blank, relative or inside one. Said before Create, since
+    /// the server will not start there until the folder is granted.
+    /// </summary>
+    /// <remarks>
+    /// Null too for a folder that already carries the grant (<c>T457</c>): the note told
+    /// an administrator to run a command they had run.
+    /// </remarks>
+    public string? FormNote(string? folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !Path.IsPathRooted(folder.Trim()) || !IsOutside(folder.Trim()))
+        {
+            return null;
+        }
+
+        if (CarriesGrant(folder.Trim()))
+        {
+            return null;
+        }
+
+        return PanelMayGrant
+            ? "Outside the data root: the panel asks the broker to grant this folder when you create the server."
+            : $"Outside the data root: an administrator must grant it first. In PowerShell run as administrator: {Command(folder.Trim())}";
+    }
+
     public string Refusal(string folder, string? refusal = null)
     {
         var why = refusal is null

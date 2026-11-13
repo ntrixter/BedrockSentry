@@ -44,6 +44,13 @@ public sealed class KeptAreaSettings
     /// <summary>Whether the area's outline is drawn in game for operators near it.</summary>
     public bool ShowInGame { get; set; }
 
+    /// <summary>
+    /// Whether a sync adds a ticking area over this area's two corners once the area is
+    /// back, named after it (<c>T439</c>). The world a sync copies in carries its own
+    /// ticking areas, not this server's, so one kept loaded here is lost without this.
+    /// </summary>
+    public bool KeepTicking { get; set; }
+
     public int X1 { get; set; }
 
     public int Y1 { get; set; }

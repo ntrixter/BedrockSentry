@@ -117,8 +117,21 @@ public static class ServerTree
         }
     }
 
-    /// <summary>Why a tree holding <paramref name="link"/> is not read or written.</summary>
+    /// <summary>Why a tree holding <paramref name="link"/> is not read or written, naming its reparse tag (<c>T443</c>).</summary>
     public static string Refusal(string link) =>
-        $"'{link}' is a link, so nothing in the server's folder was read or written through it. "
+        $"'{link}' is {What(link)}, so nothing in the server's folder was read or written through it. "
         + "A server does not make links; remove it with the server stopped and try again.";
+
+    /// <summary>What <paramref name="link"/> is, with its tag (<see cref="Security.ReparseTags.Describe"/>); "a link" when it is gone.</summary>
+    public static string What(string link)
+    {
+        try
+        {
+            return Security.ReparseTags.Why(link) ?? "a link";
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or IOException or UnauthorizedAccessException)
+        {
+            return "a link";
+        }
+    }
 }

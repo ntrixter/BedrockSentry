@@ -238,9 +238,15 @@ public static class BackupTimeline
     /// the strategy records what it wrote, the picker enumerates the directory — so
     /// an ordinal match would drop a row over a drive letter's case.</para>
     /// </remarks>
+    /// <param name="runningSince">
+    /// When a backup of this server now running started, or null. A file it is writing
+    /// has no record until it ends, and was shown meanwhile as <em>No record</em>
+    /// (<c>T446</c>); an unclaimed file from a minute before then on is left out instead.
+    /// </param>
     public static IReadOnlyList<BackupTimelineRow> Build(
         IReadOnlyList<BackupRecord> history,
-        IReadOnlyList<RestorableBackup> archives)
+        IReadOnlyList<RestorableBackup> archives,
+        DateTimeOffset? runningSince = null)
     {
         ArgumentNullException.ThrowIfNull(history);
         ArgumentNullException.ThrowIfNull(archives);
@@ -279,7 +285,8 @@ public static class BackupTimeline
 
         foreach (var archive in archives)
         {
-            if (!claimed.Contains(archive.FullName))
+            if (!claimed.Contains(archive.FullName)
+                && !(runningSince is { } since && archive.TakenUtc >= since - InProgressSlack))
             {
                 rows.Add(BackupTimelineRow.ForFile(archive));
             }
@@ -288,6 +295,9 @@ public static class BackupTimeline
         // A stable sort, so the rows of one run keep the order it recorded them in.
         return [.. rows.OrderByDescending(r => r.AtUtc)];
     }
+
+    /// <summary>How far before a run's start its own file's stamp may fall.</summary>
+    public static readonly TimeSpan InProgressSlack = TimeSpan.FromMinutes(1);
 
     /// <summary>Does this row belong under that chip?</summary>
     /// <remarks>

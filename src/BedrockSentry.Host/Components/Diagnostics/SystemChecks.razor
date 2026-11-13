@@ -190,7 +190,10 @@ else
                 // `T411`: a rule this server already has on an old port is moved
                 // rather than joined by a second one, so a port change leaves one rule
                 // per socket and nothing open where the server no longer listens.
-                var sockets = PortInspector.ReachableOn(directory);
+                //
+                // `T461`: none for a server whose file names no port, where the rows
+                // were for BDS's defaults.
+                var sockets = PortInspector.ReachableToShow(directory) ?? [];
 
                 foreach (var socket in sockets)
                 {

@@ -29,6 +29,14 @@ namespace BedrockSentry.Services.Instances;
 /// </summary>
 public sealed class InstanceRegistry : IAsyncDisposable
 {
+    /// <summary>
+    /// Whether a server has a process that can hold its ports: launched and not yet
+    /// gone. Not its state: at a service start an owner queued for the start slot reads
+    /// Starting with no process, and counted as running it let the guard skip the wait,
+    /// so a RakNet server on another port took the pair from it (<c>T453</c>).
+    /// </summary>
+    internal static bool HoldsItsPorts(InstanceStatus status) => status.ProcessId is not null;
+
     // Concurrent because instances can now be created while the status page and
     // the restart scheduler are reading the collection.
     private readonly ConcurrentDictionary<string, InstanceSupervisor> _supervisors =
@@ -129,9 +137,25 @@ public sealed class InstanceRegistry : IAsyncDisposable
             // failed bind means: the owner running is holding the pair itself and
             // wants no help, while the owner stopped means something else has it and
             // the owner is locked out of its own ports.
+            //
+            // A RakNet owner only: a NetherNet owner binds a play socket per player,
+            // not the pair at its start, so its running says nothing about who holds
+            // the pair. Counted, it let the guard skip its wait and a RakNet server on
+            // another port took the pair (T453).
             guard.OwnerRunning = () => _supervisors.Values.Any(s =>
-                guard.OwnsDiscoveryPair(PortInspector.ModelOf(s.WorkingDirectory))
-                && s.Status.State is not (InstanceState.Stopped or InstanceState.Faulted));
+                PortInspector.ModelOf(s.WorkingDirectory) is { Transport: ServerTransport.RakNet } model
+                && guard.OwnsDiscoveryPair(model)
+                && HoldsItsPorts(s.Status));
+
+            guard.OwnerPlaysOnly = () =>
+            {
+                var owners = _supervisors.Values
+                    .Select(s => PortInspector.ModelOf(s.WorkingDirectory))
+                    .Where(guard.OwnsDiscoveryPair)
+                    .ToList();
+
+                return owners.Count > 0 && owners.All(m => m.Transport is ServerTransport.NetherNet);
+            };
         }
 
         foreach (var (id, definition) in Options.Servers)
@@ -532,7 +556,43 @@ public sealed class InstanceRegistry : IAsyncDisposable
         ?? ReservedSystemDirectories.Refuse(full, SystemDirectories)
         ?? ReservedSystemDirectories.RefuseAVolumeRoot(full)
         ?? ReservedSystemDirectories.RefuseAVolumeFolder(full)
-        ?? RefuseADriveThisMachineDoesNotHave(full);
+        ?? RefuseADriveThisMachineDoesNotHave(full)
+        ?? RefuseAPathThroughALink(full);
+
+    /// <summary>
+    /// Why <paramref name="full"/> is, or is reached through, a junction or a symbolic
+    /// link, naming it with its tag; null when it is neither.
+    /// </summary>
+    /// <remarks>
+    /// The panel made such a server, and nothing could then use its folder:
+    /// <c>install.ps1 -GrantFolder</c> refuses a path through a link, so the server never
+    /// started, and every backup refuses a file reached through one (<c>T443</c>).
+    /// Refused where the folder is chosen instead.
+    /// </remarks>
+    private static string? RefuseAPathThroughALink(string full)
+    {
+        try
+        {
+            var trimmed = Path.TrimEndingDirectorySeparator(full);
+
+            if ((Directory.Exists(trimmed) ? Security.ReparseTags.Why(trimmed) : null) is { } itself)
+            {
+                return $"'{trimmed}' is {itself}. "
+                       + "A server's folder is never a link: the folder grant and every backup refuse one. "
+                       + "Use the folder it points to.";
+            }
+
+            return Security.ReparseTags.LinkAbove(trimmed) is { } above
+                ? $"'{trimmed}' is reached through '{above.Path}', {above.What}. "
+                  + "A server's folder is never reached through a link: the folder grant and every backup "
+                  + "refuse one. Use the folder's real path."
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// One refusal from <see cref="SetRootAsync"/>, said as what it means for the
@@ -975,12 +1035,63 @@ public sealed class InstanceRegistry : IAsyncDisposable
             ? supervisor
             : throw new KeyNotFoundException($"No instance named '{instanceId}' is configured.");
 
-    /// <summary>A snapshot of every instance, ordered by display name for the UI.</summary>
+    /// <summary>A snapshot of every instance, in the panel's order (<see cref="InstanceOrder"/>).</summary>
     public IReadOnlyList<InstanceStatus> Statuses() =>
-        _supervisors.Values
+        InstanceOrder.Sort(_supervisors.Values, s => s.Definition.DisplayOrder, s => s.Status.Name)
             .Select(s => s.Status)
-            .OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+
+    /// <summary>
+    /// Saves the order the instance tabs were dragged into (<c>T437</c>): each named
+    /// server's place is its index. A server not named keeps the place it had.
+    /// </summary>
+    public async Task SetOrderAsync(IReadOnlyList<string> instanceIds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(instanceIds);
+
+        var changes = new Dictionary<string, JsonNode?>();
+        var placed = new List<(InstanceSupervisor Supervisor, int Place)>();
+
+        for (var i = 0; i < instanceIds.Count; i++)
+        {
+            if (TryGet(instanceIds[i], out var supervisor))
+            {
+                changes[$"{InstanceOptions.SectionName}:Servers:{supervisor.InstanceId}:DisplayOrder"] = JsonValue.Create(i);
+                placed.Add((supervisor, i));
+            }
+        }
+
+        if (changes.Count == 0)
+        {
+            return;
+        }
+
+        // Config first, then the live definitions, the order every setter here uses.
+        await JsonConfigWriter.MergeAsync(ConfigPath, changes, cancellationToken).ConfigureAwait(false);
+
+        foreach (var (supervisor, place) in placed)
+        {
+            supervisor.Definition.DisplayOrder = place;
+        }
+    }
+
+    /// <summary>
+    /// Puts a newly made server at the end of the tab order (<c>T437</c> clause 3).
+    /// A server with no saved place sorts by name after every placed one, so a new
+    /// one left unplaced landed among the other unplaced servers by its name. Every
+    /// server is written at the place it shows now, then the new one after them, so
+    /// nothing already on the bar moves.
+    /// </summary>
+    private Task PlaceLastAsync(string id, CancellationToken cancellationToken)
+    {
+        var order = InstanceOrder
+            .Sort(_supervisors.Values.Where(s => s.InstanceId != id), s => s.Definition.DisplayOrder, s => s.Status.Name)
+            .Select(s => s.InstanceId)
+            .Append(id)
+            .ToList();
+
+        return SetOrderAsync(order, cancellationToken);
+    }
 
     /// <summary>
     /// Creates an instance: makes its directory, optionally installs a server
@@ -1141,6 +1252,7 @@ public sealed class InstanceRegistry : IAsyncDisposable
             Options.Servers[id] = definition;
             var supervisor = Register(id, definition, workingDirectory);
             WarnIfUnderAUserProfile(id, workingDirectory);
+            await PlaceLastAsync(id, cancellationToken).ConfigureAwait(false);
 
             _log.LogInformation(
                 "Created instance {InstanceId} ({Name}) at {Directory}", id, name, workingDirectory);
@@ -1830,6 +1942,7 @@ public sealed class InstanceRegistry : IAsyncDisposable
                     Dimension = BedrockDimension.Find(a.Dimension)?.Id ?? (a.Dimension ?? string.Empty).Trim(),
                     Color = AreaColors.IsValid(a.Color) ? a.Color.ToLowerInvariant() : string.Empty,
                     ShowInGame = a.ShowInGame,
+                    KeepTicking = a.KeepTicking,
                     X1 = a.X1, Y1 = a.Y1, Z1 = a.Z1,
                     X2 = a.X2, Y2 = a.Y2, Z2 = a.Z2,
                 }),
@@ -1846,6 +1959,7 @@ public sealed class InstanceRegistry : IAsyncDisposable
                 [nameof(KeptAreaSettings.Dimension)] = area.Dimension,
                 [nameof(KeptAreaSettings.Color)] = area.Color,
                 [nameof(KeptAreaSettings.ShowInGame)] = area.ShowInGame,
+                [nameof(KeptAreaSettings.KeepTicking)] = area.KeepTicking,
                 [nameof(KeptAreaSettings.X1)] = area.X1,
                 [nameof(KeptAreaSettings.Y1)] = area.Y1,
                 [nameof(KeptAreaSettings.Z1)] = area.Z1,
@@ -2301,6 +2415,8 @@ public sealed class InstanceRegistry : IAsyncDisposable
                 }
             }
 
+            ForgetLeftovers(instanceId, worldDeleted: files == DirectoryRemoval.Deleted);
+
             var backups = DirectoryRemoval.NotAsked;
             string? backupsFailedBecause = null;
 
@@ -2369,6 +2485,49 @@ public sealed class InstanceRegistry : IAsyncDisposable
         finally
         {
             _createGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Deletes what a removed server leaves under the data root that nothing reads
+    /// again (<c>T460</c>): its add-on run under <c>completion\instances</c>, and, once
+    /// its world is deleted, the Sync Areas a sync saved for that world.
+    /// </summary>
+    /// <remarks>
+    /// <para>The add-on run is a cache, made again by running the server, so it goes
+    /// whatever else is kept, as the version record does (<c>T315</c>): one left behind
+    /// is inherited by the next server given this id.</para>
+    /// <para>The sync pieces are parts of a world. They go only with that world, so a
+    /// server removed with its files kept still has them to put back.</para>
+    /// <para>A failure is logged and never thrown: these are leftovers, and by now the
+    /// configuration has forgotten the server.</para>
+    /// </remarks>
+    private void ForgetLeftovers(string instanceId, bool worldDeleted)
+    {
+        try
+        {
+            foreach (var file in Commands.CompletionStore.InstanceFiles(_paths, instanceId))
+            {
+                File.Delete(file);
+            }
+
+            if (!worldDeleted)
+            {
+                return;
+            }
+
+            File.Delete(Sync.WorldSync.WaitingFile(_paths, instanceId));
+
+            var pieces = Sync.WorldSync.PiecesDirectory(_paths, instanceId);
+
+            if (Directory.Exists(pieces))
+            {
+                Directory.Delete(pieces, recursive: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogWarning(ex, "Some files a removed server left behind were not deleted for {InstanceId}", instanceId);
         }
     }
 

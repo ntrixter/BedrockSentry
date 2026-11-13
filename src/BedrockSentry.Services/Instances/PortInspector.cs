@@ -1,3 +1,4 @@
+using System.Globalization;
 using BedrockSentry.Core.Instances;
 
 namespace BedrockSentry.Services.Instances;
@@ -37,14 +38,33 @@ public sealed record PortConflict(int Port, string Reason);
 /// Its <c>max-players</c>, null when the key is unset — the input the suggested
 /// play-port range's width comes from.
 /// </param>
+/// <param name="NoSettings">
+/// Set when the file was read and not one line in it is a setting, the shape of a
+/// garbled or truncated file. <see cref="Ports"/> are still BDS's defaults, so a start
+/// is checked against them, but <see cref="UsesPorts"/> claims nothing.
+/// </param>
+/// <param name="NoFile">
+/// Set when there is no file to read. <see cref="Ports"/> are the union a start is
+/// gated on, since BDS writes the file at first start, but <see cref="UsesPorts"/>
+/// claims nothing for a file nobody has written.
+/// </param>
 public readonly record struct InstancePorts(
     ServerTransport? Transport,
     string? Value,
     IReadOnlyList<ServerPort> Ports,
     string? Unreadable = null,
     ServerUdpPorts? UdpPorts = null,
-    int? MaxPlayers = null)
+    int? MaxPlayers = null,
+    bool NoSettings = false,
+    bool NoFile = false)
 {
+    /// <summary>
+    /// Whether the file names no port at all: there is none, or not one line in it is a
+    /// setting. <see cref="Ports"/> are then BDS's defaults, kept for the start's own
+    /// check, and nothing shown to a reader may present them as this server's (<c>T461</c>).
+    /// </summary>
+    public bool NamesNoPorts => NoFile || NoSettings;
+
     /// <summary>Where this server's play traffic lands (<c>D71</c>).</summary>
     public PlayPorts Play => PlayPorts.For(Transport, PortNumber, UdpPorts);
 
@@ -90,6 +110,46 @@ public readonly record struct InstancePorts(
     /// <para>No file at all is <em>not</em> RakNet: BDS writes one at first start,
     /// and a post-1.26.50 BDS writes <c>nethernet</c> into it.</para>
     /// </remarks>
+    /// <summary>
+    /// Every port this server uses, in one short line for the Status page's table
+    /// (<c>T436</c>): each socket <see cref="Ports"/> names, a number bound on both
+    /// protocols written once as <c>TCP/UDP</c>, then a pinned play window.
+    /// </summary>
+    /// <remarks>
+    /// Null when the file could not be read, so the table shows a dash rather than
+    /// ports nobody looked up (<c>T210</c>), and when it holds no setting at all, where
+    /// RakNet's defaults were shown for a file that names nothing, and when there is
+    /// no file, where both transports' defaults were shown for a server set elsewhere.
+    /// </remarks>
+    public string? UsesPorts
+    {
+        get
+        {
+            if (Unreadable is { Length: > 0 } || NoSettings || NoFile || Ports.Count == 0)
+            {
+                return null;
+            }
+
+            var parts = Ports
+                .GroupBy(p => p.Port)
+                .Select(g =>
+                {
+                    var tcp = g.Any(p => p.Protocol == PortProtocol.Tcp);
+                    var udp = g.Any(p => p.Protocol == PortProtocol.Udp);
+                    var protocols = tcp && udp ? "TCP/UDP" : tcp ? "TCP" : "UDP";
+                    return string.Create(CultureInfo.InvariantCulture, $"{g.Key} {protocols}");
+                })
+                .ToList();
+
+            if (Play is { Kind: PlayPortKind.Pinned, Span: { } window })
+            {
+                parts.Add($"{window} UDP");
+            }
+
+            return string.Join(", ", parts);
+        }
+    }
+
     public string TransportLabel => this switch
     {
         { Transport: ServerTransport.RakNet } => "RakNet",
@@ -252,6 +312,10 @@ public sealed class PortInspector : IStartPreflight
         // Which running process belongs to which instance, so a socket found
         // below can be named rather than reported as an anonymous program.
         var instanceOf = new Dictionary<int, string>();
+
+        // Whether each running server's own file names this port, which tells a
+        // server on its configured port from one that took the LAN discovery pair.
+        var fileNames = new Dictionary<int, bool>();
         int? ownProcess = null;
 
         // The ports this instance's own file claims, so the wrapper's standing hold
@@ -282,6 +346,8 @@ public sealed class PortInspector : IStartPreflight
             if (other.Status.ProcessId is { } processId)
             {
                 instanceOf[processId] = other.Definition.Name;
+                fileNames[processId] = BindsOf(other.WorkingDirectory)
+                    .Any(used => used.Port == port && used.Protocol == protocol);
             }
 
             // The name map above is still wanted so a live socket can be
@@ -289,6 +355,22 @@ public sealed class PortInspector : IStartPreflight
             // `named` either, so a sibling that really is running on this port is
             // reported by its socket below rather than suppressed as already said.
             if (liveOnly)
+            {
+                continue;
+            }
+
+            // A server whose folder is gone cannot start, and its file's claim was
+            // BDS's defaults read off nothing: a deleted server set to 19152 was
+            // reported as holding 19132 against the server beside it.
+            if (!Directory.Exists(other.WorkingDirectory))
+            {
+                continue;
+            }
+
+            // The same for a folder with no file, or a file with no setting (`T461`):
+            // it names no port, and BDS's defaults read off it were blamed on the
+            // server beside it.
+            if (ModelOf(other.WorkingDirectory).NamesNoPorts)
             {
                 continue;
             }
@@ -375,8 +457,8 @@ public sealed class PortInspector : IStartPreflight
                 // not been restarted. Worth saying; worth saying only once.
                 if (named.Add(instanceName))
                 {
-                    conflicts.Add(new PortConflict(
-                        port, $"is open right now by {instanceName}'s running server"));
+                    conflicts.Add(new PortConflict(port, LiveHolderReason(
+                        instanceName, port, protocol, fileNames.GetValueOrDefault(owner))));
                 }
 
                 continue;
@@ -388,6 +470,22 @@ public sealed class PortInspector : IStartPreflight
 
         return conflicts;
     }
+
+    /// <summary>
+    /// What to say about a managed server's process holding <paramref name="port"/>.
+    /// </summary>
+    /// <remarks>
+    /// A RakNet server binds the LAN discovery pair whatever its own ports are, when
+    /// it started with no server configured for the pair (<c>D24</c>). Its file does
+    /// not name the port then, and the way out is a restart of that server, which
+    /// starts with the pair held for the one now configured for it (<c>T450</c>).
+    /// Any other disagreement is a file edited since the server started.
+    /// </remarks>
+    internal static string LiveHolderReason(string instanceName, int port, PortProtocol protocol, bool fileNamesIt) =>
+        !fileNamesIt && protocol is PortProtocol.Udp
+        && port is LanDiscoveryPortGuard.DefaultPortV4 or LanDiscoveryPortGuard.DefaultPortV6
+            ? $"is held by {instanceName} for LAN discovery; restart {instanceName} to free it"
+            : $"is open right now by {instanceName}'s running server";
 
     /// <summary>
     /// Every port a new server could run into (<c>ON1</c>): each instance's sockets as
@@ -406,6 +504,8 @@ public sealed class PortInspector : IStartPreflight
     /// (<c>D24</c>) are left out of the machine's half, because each is a server's
     /// file claim already listed, and a second sentence about the same port names
     /// "another program" for something the panel runs.</para>
+    /// <para>The exception is the LAN discovery pair held by a running server whose
+    /// file names neither port: no file claim lists it, so it is named here.</para>
     /// </remarks>
     internal IReadOnlyList<PortClaim> Claims(
         Func<PortProtocol, IReadOnlyList<SocketListener>> listening,
@@ -432,16 +532,37 @@ public sealed class PortInspector : IStartPreflight
 
         var claims = FileClaims(_registry.All).ToList();
         var managed = _registry.All
-            .Select(instance => instance.Status.ProcessId)
-            .OfType<int>()
-            .ToHashSet();
+            .Where(instance => instance.Status.ProcessId is not null)
+            .GroupBy(instance => instance.Status.ProcessId!.Value)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        var discovery = new Dictionary<string, PortSpan>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var protocol in new[] { PortProtocol.Udp, PortProtocol.Tcp })
         {
             foreach (var socket in listening(protocol).Distinct())
             {
-                if (managed.Contains(socket.ProcessId)
-                    || (protocol is PortProtocol.Udp && socket.ProcessId != 0 && isThisWrapper(socket.ProcessId)))
+                if (managed.TryGetValue(socket.ProcessId, out var server))
+                {
+                    // The discovery pair in the hands of a server on another port: its
+                    // file names neither, so no claim above covers it, and a new server
+                    // put on 19132 was refused at its first start (T455). Only the pair:
+                    // a NetherNet server's per-player sockets come and go.
+                    if (protocol is PortProtocol.Udp
+                        && socket.Port is LanDiscoveryPortGuard.DefaultPortV4 or LanDiscoveryPortGuard.DefaultPortV6
+                        && !BindsOf(server.WorkingDirectory).Any(used => used.Port == socket.Port && used.Protocol == protocol))
+                    {
+                        // One claim for the pair, so the form says it in one sentence.
+                        var name = server.Definition.Name;
+                        discovery[name] = discovery.TryGetValue(name, out var held)
+                            ? new PortSpan(Math.Min(held.First, socket.Port), Math.Max(held.Last, socket.Port))
+                            : new PortSpan(socket.Port, socket.Port);
+                    }
+
+                    continue;
+                }
+
+                if (protocol is PortProtocol.Udp && socket.ProcessId != 0 && isThisWrapper(socket.ProcessId))
                 {
                     continue;
                 }
@@ -451,6 +572,12 @@ public sealed class PortInspector : IStartPreflight
                     protocol,
                     $"already open on this machine by {describe(socket.ProcessId)}"));
             }
+        }
+
+        foreach (var (name, span) in discovery)
+        {
+            claims.Add(new PortClaim(
+                span, PortProtocol.Udp, $"held by {name} for LAN discovery; restart {name} to free it"));
         }
 
         return claims;
@@ -519,6 +646,13 @@ public sealed class PortInspector : IStartPreflight
         {
             var model = ModelOf(instance.WorkingDirectory);
             var name = instance.Definition.Name;
+
+            // `T461`. A file that names no port claims none: the defaults read off it
+            // are for this server's own start, not a claim against another's.
+            if (model.NamesNoPorts)
+            {
+                continue;
+            }
 
             foreach (var port in model.Ports)
             {
@@ -597,6 +731,26 @@ public sealed class PortInspector : IStartPreflight
     }
 
     /// <summary>
+    /// <see cref="ReachableOn"/> for a surface a person reads, the firewall rows and the
+    /// out-of-date strip: null when the file names no port (<see cref="InstancePorts.NamesNoPorts"/>).
+    /// </summary>
+    /// <remarks>
+    /// <para><see cref="ReachableOn"/> answers with BDS's defaults then, so a server whose
+    /// folder was deleted, or whose file was never written, got firewall rows for 19132
+    /// and an offer to open it (<c>T461</c>).</para>
+    /// <para>Null rather than empty: an empty list reads as "this server uses no port",
+    /// against which every rule it has is out of date.</para>
+    /// </remarks>
+    public static IReadOnlyList<ReachableSockets>? ReachableToShow(string workingDirectory)
+    {
+        var model = ModelOf(workingDirectory);
+
+        return model.NamesNoPorts
+            ? null
+            : ServerPorts.ReachableFor(model.Transport, model.PortNumber, portV6: null, model.UdpPorts);
+    }
+
+    /// <summary>
     /// The transport an instance's file names and the sockets that follow from it.
     /// </summary>
     /// <remarks>See <see cref="PortsOf"/>, which is this without the label.</remarks>
@@ -670,7 +824,7 @@ public sealed class PortInspector : IStartPreflight
         if (document is null)
         {
             return new InstancePorts(
-                null, null, ServerPorts.For(transport: null, port: null, portV6: null));
+                null, null, ServerPorts.For(transport: null, port: null, portV6: null), NoFile: true);
         }
 
         // A key that is absent, commented out, or unparseable is not "no port" —
@@ -707,7 +861,8 @@ public sealed class PortInspector : IStartPreflight
                 udpPorts),
             Unreadable: null,
             UdpPorts: udpPorts,
-            MaxPlayers: NumberAt(MaxPlayersKey));
+            MaxPlayers: NumberAt(MaxPlayersKey),
+            NoSettings: document.Properties.Count == 0);
 
         int? NumberAt(string key) =>
             document.SetValueOf(key) is { } text && int.TryParse(text, out var value)

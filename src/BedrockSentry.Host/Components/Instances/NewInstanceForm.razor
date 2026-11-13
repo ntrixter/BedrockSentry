@@ -17,6 +17,7 @@
 @inject WorldFileImport Import
 @inject PortInspector Ports
 @inject PublicAddressService PublicAddress
+@inject BedrockSentry.Services.Broker.OutsideFolders Outside
 
 <div class="provision-panel" style="max-width:36rem">
     <h3>New instance</h3>
@@ -105,6 +106,11 @@
         @foreach (var warning in portWarnings)
         {
             <span class="prop-check warn">@warning</span>
+        }
+        @* T455. Shown once Create was held back over the warnings above. *@
+        @if (portWarnings.Count > 0 && portsKept is not null && portsKept == PortClash)
+        {
+            <span class="prop-check warn">@NewServerPorts.KeepPrompt</span>
         }
     </label>
 
@@ -215,6 +221,18 @@
             whichever volume you like — it does not have to share one with the
             others.
         </span>
+        @* T448. Said here, before Create: a folder outside the data root needs an
+           administrator's grant before the server can start in it. *@
+        @* A folder Create would refuse, such as one reached through a junction, is
+           said here first, the sentence the refusal itself gives. *@
+        @if (Registry.WhyThisFolderCannotHoldAServer(folder) is { } folderRefusal)
+        {
+            <span class="check-detail prop-check bad">@folderRefusal</span>
+        }
+        else if (Outside.FormNote(folder) is { } outsideNote)
+        {
+            <span class="check-detail prop-check warn">@outsideNote</span>
+        }
     </label>
 
     <div class="field-row">
@@ -397,7 +415,7 @@
         <p class="console-hint">
             Bedrock answers LAN discovery on 19132 and 19133 whatever port a server is
             set to, so more than one server wants the same pair. The wrapper holds them
-            for whichever server is configured for 19132, so this one starts normally
+            for whichever server plays on 19132, so this one starts normally
             with LAN visibility left alone.
         </p>
     }
@@ -454,6 +472,11 @@
     private string udpPorts = string.Empty;
     private bool udpPortsTyped;
     private IReadOnlyList<string> portWarnings = [];
+
+    /// <summary>The clash the last held-back Create saw (T455); a second press with it unchanged creates.</summary>
+    private string? portsKept;
+
+    private string? PortClash => NewServerPorts.ClashKey(portWarnings, transport, port, Window is not null ? udpPorts : null);
     private string? publicAddress;
 
     /// Ticked by default for a new server (D93).
@@ -504,23 +527,26 @@
                 ?? ServerPorts.DefaultPort;
         }
 
-        SuggestWindow();
+        SuggestWindow(claims);
         CheckPorts(claims);
     }
 
-    private void SuggestWindow()
+    /// T458. Past whatever holds UDP ports from the port up, so a port typed under
+    /// RakNet and then switched to NetherNet is not offered a taken window.
+    private void SuggestWindow(IReadOnlyList<PortClaim> claims)
     {
         if (!udpPortsTyped)
         {
-            udpPorts = NewServerPorts.SuggestWindow(port, publicAddress) ?? string.Empty;
+            udpPorts = NewServerPorts.SuggestWindow(claims, port, publicAddress) ?? string.Empty;
         }
     }
 
     private void PortTyped()
     {
         portTyped = true;
-        SuggestWindow();
-        CheckPorts(Ports.Claims());
+        var claims = Ports.Claims();
+        SuggestWindow(claims);
+        CheckPorts(claims);
     }
 
     private void UdpPortsTyped()
@@ -552,7 +578,7 @@
             }
 
             publicAddress = address;
-            SuggestWindow();
+            SuggestWindow(Ports.Claims());
             StateHasChanged();
         }).ContinueWith(
             static t => _ = t.Exception,
@@ -714,6 +740,16 @@
     {
         if (busy || NoPackage || string.IsNullOrWhiteSpace(name) || WaitingOnAWorldFile)
         {
+            return;
+        }
+
+        // T455. Read again here: a port typed and Create pressed straight after shows
+        // its warning only as the page is replaced by the new server's.
+        CheckPorts(Ports.Claims());
+
+        if (!NewServerPorts.MayCreate(PortClash, portsKept))
+        {
+            portsKept = PortClash;
             return;
         }
 

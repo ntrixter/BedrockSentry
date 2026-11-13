@@ -41,10 +41,17 @@ else
                at the same thing on both, so switching from one console to another
                should land on the console — not send you back to Status to click
                through again. *@
-            <a class="instance-tab @(instance.InstanceId == InstanceId && !creating && !adopting ? "active" : null)"
-               href="@($"instances/{instance.InstanceId}/{CurrentTab}")">
+            @* T437. Dragged onto another tab, a tab takes its place, and the order is
+               saved for every viewer. Plain HTML drag events: no script to ship. *@
+            <a class="instance-tab @(instance.InstanceId == InstanceId && !creating && !adopting ? "active" : null) @(instance.InstanceId == dragging ? "dragging" : null)"
+               href="@($"instances/{instance.InstanceId}/{CurrentTab}")"
+               draggable="true" title="Drag to reorder"
+               @ondragstart="() => dragging = instance.InstanceId"
+               @ondragend="() => dragging = null"
+               @ondragover:preventDefault
+               @ondrop="() => DropOnAsync(instance.InstanceId)">
                 @instance.Name
-                <span class="state-dot state-@instance.State.ToString().ToLowerInvariant()"></span>
+                <span class="state-dot state-@InstanceStateText.Style(instance)"></span>
             </a>
         }
 
@@ -207,6 +214,23 @@ else
 }
 
 @code {
+    /// The tab being dragged, while one is (`T437`).
+    private string? dragging;
+
+    private async Task DropOnAsync(string target)
+    {
+        var moved = dragging;
+        dragging = null;
+
+        if (moved is null
+            || InstanceOrder.Move([.. Registry.Statuses().Select(s => s.InstanceId)], moved, target) is not { } order)
+        {
+            return;
+        }
+
+        await Registry.SetOrderAsync(order);
+    }
+
     /// Order matters: this is the order they appear in.
     private static readonly (string Key, string Label)[] Tabs =
     [

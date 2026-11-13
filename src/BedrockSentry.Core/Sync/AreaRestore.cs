@@ -161,7 +161,9 @@ public static class BackupChoice
         {
             return usable.Count > 0
                 ? new BackupChosen(usable[0].Name, null)
-                : new BackupChosen(null, owner is null ? AreaRestoreText.NoUsableBackup : AreaRestoreText.NoUsableBackupOf(owner));
+                : new BackupChosen(null, newestFirst.Count > 0
+                    ? AreaRestoreText.NoneUsable(newestFirst.Count, newestFirst[0], owner)
+                    : owner is null ? AreaRestoreText.NoUsableBackup : AreaRestoreText.NoUsableBackupOf(owner));
         }
 
         var match = newestFirst.FirstOrDefault(b =>

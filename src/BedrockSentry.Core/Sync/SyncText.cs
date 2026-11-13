@@ -111,6 +111,24 @@ public static class SyncText
             ? "."
             : $", with {Names(plan.Areas.Select(a => a.Name).ToList())} kept from before.");
 
+    /// <summary>
+    /// <paramref name="message"/> as one sentence: an exception's text, which .NET writes
+    /// for a file as <c>There is not enough space on the disk. : 'path'</c>, read as
+    /// <c>…on the disk: 'path'.</c>
+    /// </summary>
+    public static string Reason(string? message)
+    {
+        var text = (message ?? "it failed").Trim();
+        var at = text.IndexOf(". : '", StringComparison.Ordinal);
+
+        if (at >= 0)
+        {
+            text = text[..at] + ": '" + text[(at + ". : '".Length)..];
+        }
+
+        return text.EndsWith('.') ? text : text + ".";
+    }
+
     public static string CalledOff(string source, string reason) =>
         $"Sync from {source} called off before this server's world changed: {reason}";
 

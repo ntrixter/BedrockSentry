@@ -541,10 +541,10 @@ public sealed class BackupImporter
         {
             foreach (var entry in directory.EnumerateFileSystemInfos())
             {
-                if (Security.ReparseTags.IsLink(entry))
+                if (Security.ReparseTags.Why(entry) is { } link)
                 {
                     throw new InvalidDataException(
-                        $"'{Path.GetRelativePath(root, entry.FullName)}' is a link to somewhere else, "
+                        $"'{Path.GetRelativePath(root, entry.FullName)}' is {link}, a link to somewhere else, "
                         + "so the folder was not imported.");
                 }
 

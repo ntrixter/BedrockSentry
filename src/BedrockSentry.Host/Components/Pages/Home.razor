@@ -61,6 +61,7 @@ else
                     <th>State</th>
                     <th>Uptime</th>
                     <th>Version</th>
+                    <th>Uses ports</th>
                     <th class="num">Memory</th>
                     <th class="num">CPU</th>
                     <th class="num">Last backup</th>
@@ -72,8 +73,8 @@ else
                     <tr>
                         <td><a href="@($"instances/{instance.InstanceId}")">@instance.Name</a></td>
                         <td>
-                            <span class="state-badge state-@instance.State.ToString().ToLowerInvariant()">
-                                @instance.State
+                            <span class="state-badge state-@InstanceStateText.Style(instance)">
+                                @InstanceStateText.Label(instance)
                             </span>
                             @if (instance.State is InstanceState.Faulted && instance.FaultReason is { } reason)
                             {
@@ -90,6 +91,9 @@ else
                                 : "—")
                         </td>
                         <td class="num">@(instance.ServerVersion ?? "—")</td>
+                        @* T436. Every port the server's own file names, so all of
+                           them are in one place. *@
+                        <td>@(portsInUse.TryGetValue(instance.InstanceId, out var portList) ? portList : "—")</td>
                         <td class="num" title="@(instance.ProcessId is { } pid ? $"process {pid}" : null)">
                             @(Usage(instance) is { } used ? used.Memory : "—")
                         </td>
@@ -210,6 +214,11 @@ else
 
     private DateTimeOffset lastBackupRead;
 
+    /// What each instance's server.properties says it binds, read with the
+    /// backups on their slow cadence: a file read for a value that changes when
+    /// somebody edits it.
+    private Dictionary<string, string> portsInUse = [];
+
     private ProcessUsage? Usage(InstanceStatus instance) =>
         instance.ProcessId is { } pid && usage.TryGetValue(pid, out var used) ? used : null;
 
@@ -279,7 +288,24 @@ else
 
         lastBackups = read;
         unreadBackups = unread;
+        portsInUse = ReadPorts();
         lastBackupRead = DateTimeOffset.UtcNow;
+    }
+
+    private Dictionary<string, string> ReadPorts()
+    {
+        var read = new Dictionary<string, string>();
+
+        foreach (var instance in instances)
+        {
+            if (Registry.TryGet(instance.InstanceId, out var supervisor)
+                && PortInspector.ModelOf(supervisor.WorkingDirectory).UsesPorts is { } ports)
+            {
+                read[instance.InstanceId] = ports;
+            }
+        }
+
+        return read;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)

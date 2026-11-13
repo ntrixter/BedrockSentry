@@ -79,6 +79,31 @@ public static class ReparseTags
         return tag is { } known && IsOwnStorage(known, attributes.HasFlag(FileAttributes.Directory)) ? null : Describe(tag);
     }
 
+    /// <summary>
+    /// The nearest folder above <paramref name="full"/> that is a link, and what it is with
+    /// its tag; null when none is or one cannot be read (<c>T443</c>). What names the cause
+    /// when a path resolves somewhere other than where it was named.
+    /// </summary>
+    public static (string Path, string What)? LinkAbove(string full)
+    {
+        for (var folder = Path.GetDirectoryName(full); folder is not null; folder = Path.GetDirectoryName(folder))
+        {
+            try
+            {
+                if (Why(folder) is { } what)
+                {
+                    return (folder, what);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Whether <paramref name="entry"/> is a link (<see cref="Why(FileSystemInfo)"/>).</summary>
     public static bool IsLink(FileSystemInfo entry) => Why(entry) is not null;
 

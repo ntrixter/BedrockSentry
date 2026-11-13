@@ -191,7 +191,9 @@ internal static class BrokerProgram
 
             foreach (var path in DataRootPreparation.Run(paths, sid, new WindowsAccessListWriter()))
             {
-                Console.WriteLine($"Granted {name}: {path}");
+                // A note such as "… could not be labelled no-read-up" is printed as it is:
+                // prefixed, it read as a grant that was made.
+                Console.WriteLine(File.Exists(path) || Directory.Exists(path) ? $"Granted {name}: {path}" : path);
             }
 
             return 0;
@@ -245,6 +247,8 @@ internal static class BrokerProgram
         Directory.CreateDirectory(folder);
         WindowsAcl.RestrictToSystemAndAdministrators(folder);
 
-        return BrokerRecord.Load(Path.Combine(folder, "record.json"));
+        var record = BrokerRecord.Load(Path.Combine(folder, "record.json"));
+        record.DropGoneFolders();
+        return record;
     }
 }
