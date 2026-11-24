@@ -2,8 +2,9 @@ namespace BedrockSentry.Core.Diagnostics;
 
 /// <summary>What kind of drive a volume sits on, as the Storage table's Drive column reads it.</summary>
 /// <remarks>
-/// Unknown is its own state rather than a guess: a virtual machine's disk reports
-/// no media type, and a Storage Space or hardware array is several drives behind
+/// Unknown is its own state rather than a guess: a disk can report no media type
+/// (some virtual disks do; Windows Server 2025 reports a VHD as SSD, <c>T430</c>),
+/// and a Storage Space or hardware array is several drives behind
 /// one disk number. Reading either as SSD or HDD would put a wrong word on the page.
 /// </remarks>
 public enum DriveMedia

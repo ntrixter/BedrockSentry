@@ -17,6 +17,25 @@ a test server you have backups of.
 
 ---
 
+## 0.5.1 — 2026-11-24
+
+### Fixed
+- A server's own Status tab showed Bedrock's default ports as its own when its
+  `server.properties` was garbled or missing; it now shows a dash, as the Status page does.
+- A port or transport the file does not set reads as a default: *19133 UDP (default)*,
+  *RakNet (not set)*, and the RakNet warning no longer says the server is *set to* RakNet.
+- A port outside 1 to 65535 (such as `server-portv6=-5`) was shown as given; it is read as
+  unset, so Bedrock's default stands in.
+- **Restore as new** showed a design reference (*D42:*) in its configuration checkbox text.
+- After a server gave up starting, the event log said the LAN port pair was released after
+  it *started*; it now says the start ended without a server.
+
+### Known issues
+- A `server.properties` that sets `server-port` twice: Bedrock uses the last value, but the
+  panel's port, firewall and readiness rows read the first.
+
+---
+
 ## 0.5.0 — 2026-11-13
 
 ### Added

@@ -1,0 +1,4 @@
+# Empty on purpose. MSBuild reads the first Directory.Build.rsp it finds in the
+# project's folder or any folder above it; this one ends that search at the root
+# of the repository, so no response file from above a clone is applied (T465
+# clause 11).

@@ -65,7 +65,7 @@ git checkout build
 .\scripts\package-local.ps1
 ```
 
-That produces `bedrocksentry-0.4.1-local_<sha>.zip` in the repo root, with the
+That produces `bedrocksentry-0.5.1-local_<sha>.zip` in the repo root, with the
 same files CI puts in a release and checked against the same list, so
 `install.ps1` treats it like any other. Expect roughly 80 MB and a minute or two.
 
@@ -84,14 +84,14 @@ Server already allows unblocked scripts.
 ```powershell
 # Unblock it if it came from a browser or a network share, or PowerShell
 # will refuse to run the scripts inside.
-Unblock-File .\bedrocksentry-0.4.1-local_abc1234.zip
+Unblock-File .\bedrocksentry-0.5.1-local_abc1234.zip
 
 # Name the folder after the build. Never reuse one folder across installs —
 # see Updating below for why that matters.
-Expand-Archive .\bedrocksentry-0.4.1-local_abc1234.zip -DestinationPath .\bs-0.4.1-local_abc1234
-cd .\bs-0.4.1-local_abc1234
+Expand-Archive .\bedrocksentry-0.5.1-local_abc1234.zip -DestinationPath .\bs-0.5.1-local_abc1234
+cd .\bs-0.5.1-local_abc1234
 
-.\install.ps1 -ZipPath ..\bedrocksentry-0.4.1-local_abc1234.zip
+.\install.ps1 -ZipPath ..\bedrocksentry-0.5.1-local_abc1234.zip
 ```
 
 Yes, you extract it and then point the installer back at the zip — the scripts

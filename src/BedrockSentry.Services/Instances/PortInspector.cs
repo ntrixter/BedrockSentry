@@ -48,6 +48,11 @@ public sealed record PortConflict(int Port, string Reason);
 /// gated on, since BDS writes the file at first start, but <see cref="UsesPorts"/>
 /// claims nothing for a file nobody has written.
 /// </param>
+/// <param name="Defaulted">
+/// The port keys the file does not set to a usable port (absent, unparseable, or
+/// outside 1 to 65535), so <see cref="Ports"/> carries BDS's default for them
+/// (<c>T466</c>). Null when none is defaulted.
+/// </param>
 public readonly record struct InstancePorts(
     ServerTransport? Transport,
     string? Value,
@@ -56,14 +61,46 @@ public readonly record struct InstancePorts(
     ServerUdpPorts? UdpPorts = null,
     int? MaxPlayers = null,
     bool NoSettings = false,
-    bool NoFile = false)
+    bool NoFile = false,
+    IReadOnlyCollection<string>? Defaulted = null)
 {
+    /// <summary>
+    /// Whether <paramref name="socket"/>'s number is BDS's default rather than one the
+    /// file sets, so a reader is not shown it as configured (<c>T466</c>).
+    /// </summary>
+    public bool IsDefault(ServerPort socket) => Defaulted?.Contains(socket.Key) is true;
+
+    /// <summary>
+    /// Whether the file was read, holds settings, and has no <c>transport</c> line, so
+    /// RakNet is BDS's reading of an absent key rather than what the file says (<c>T466</c>).
+    /// </summary>
+    public bool TransportNotSet =>
+        Transport is ServerTransport.RakNet && Value is null && !NamesNoPorts && Unreadable is null;
+
     /// <summary>
     /// Whether the file names no port at all: there is none, or not one line in it is a
     /// setting. <see cref="Ports"/> are then BDS's defaults, kept for the start's own
     /// check, and nothing shown to a reader may present them as this server's (<c>T461</c>).
     /// </summary>
     public bool NamesNoPorts => NoFile || NoSettings;
+
+    /// <summary>
+    /// The sockets a reader is shown as this server's: <see cref="Ports"/>, or none when
+    /// the file names no port (<see cref="NamesNoPorts"/>).
+    /// </summary>
+    /// <remarks>
+    /// A server's own Status tab rendered <see cref="Ports"/>, so a garbled file read as
+    /// RakNet on 19132 and 19133 and a missing one as 19132 on both protocols, while the
+    /// Status page's table already showed a dash (<c>T464</c>).
+    /// </remarks>
+    public IReadOnlyList<ServerPort> PortsToShow => NamesNoPorts ? [] : Ports;
+
+    /// <summary>
+    /// The transport a reader is told this server is set to: <see cref="Transport"/>, or
+    /// null when the file names no port, since a file with no setting reads as RakNet
+    /// only because BDS defaults an absent key to it (<c>T464</c>).
+    /// </summary>
+    public ServerTransport? TransportToShow => NamesNoPorts ? null : Transport;
 
     /// <summary>Where this server's play traffic lands (<c>D71</c>).</summary>
     public PlayPorts Play => PlayPorts.For(Transport, PortNumber, UdpPorts);
@@ -152,6 +189,9 @@ public readonly record struct InstancePorts(
 
     public string TransportLabel => this switch
     {
+        // `T464`. Before RakNet: a garbled file's absent key reads as RakNet.
+        { NoSettings: true } => "— server.properties holds no settings",
+        { TransportNotSet: true } => "RakNet (not set)",
         { Transport: ServerTransport.RakNet } => "RakNet",
         { Transport: ServerTransport.NetherNet } => "NetherNet",
         { Value: { Length: > 0 } unknown } => $"\"{unknown}\" — not recognised",
@@ -851,22 +891,38 @@ public sealed class PortInspector : IStartPreflight
         var udpPorts = ServerUdpPorts.ParseAll(
             document.ValuesOf(ServerPropertiesDocument.AccumulatingKey));
 
+        var port = PortAt(ServerPorts.PortKey);
+        var portV6 = PortAt(ServerPorts.PortV6Key);
+        var defaulted = new List<string>(2);
+        if (port is null)
+        {
+            defaulted.Add(ServerPorts.PortKey);
+        }
+
+        if (portV6 is null)
+        {
+            defaulted.Add(ServerPorts.PortV6Key);
+        }
+
         return new InstancePorts(
             transport,
             value,
-            ServerPorts.For(
-                transport,
-                NumberAt(ServerPorts.PortKey),
-                NumberAt(ServerPorts.PortV6Key),
-                udpPorts),
+            ServerPorts.For(transport, port, portV6, udpPorts),
             Unreadable: null,
             UdpPorts: udpPorts,
             MaxPlayers: NumberAt(MaxPlayersKey),
-            NoSettings: document.Properties.Count == 0);
+            NoSettings: document.Properties.Count == 0,
+            Defaulted: defaulted.Count == 0 ? null : defaulted);
 
         int? NumberAt(string key) =>
             document.SetValueOf(key) is { } text && int.TryParse(text, out var value)
                 ? value
                 : null;
+
+        // A port outside 1 to 65535 is unparseable as a port, so it gets BDS's default
+        // like any other unusable value; it was shown as "-5 UDP" (`T466`).
+        int? PortAt(string key) => NumberAt(key) is { } number && number is >= 1 and <= 65535
+            ? number
+            : null;
     }
 }

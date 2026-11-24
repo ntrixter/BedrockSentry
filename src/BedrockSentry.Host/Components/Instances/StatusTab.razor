@@ -184,10 +184,18 @@ else if (presence.OffersInstall)
             <dt>Transport</dt>
             <dd>@TransportName</dd>
 
-            @foreach (var socket in network.Ports)
+            @* T464. PortsToShow, not Ports: the defaults a start is checked against are
+               not this server's ports when its file names none. *@
+            @foreach (var socket in network.PortsToShow)
             {
                 <dt>@(socket.Key == ServerPorts.PortV6Key ? "IPv6 port" : "Port")</dt>
-                <dd>@socket.Port @(socket.Protocol == PortProtocol.Tcp ? "TCP" : "UDP")</dd>
+                <dd>@socket.Port @(socket.Protocol == PortProtocol.Tcp ? "TCP" : "UDP")@(network.IsDefault(socket) ? " (default)" : "")</dd>
+            }
+
+            @if (network.NamesNoPorts)
+            {
+                <dt>Ports</dt>
+                <dd>—</dd>
             }
 
             @* D71. The sentence lives on PlayPorts in Core, where a test can read
@@ -195,7 +203,7 @@ else if (presence.OffersInstall)
                port's UDP side with server-udp-ports unset, and the configured
                window with it set -- and this card rendered one sentence for both
                while the second case's ports are knowable and nameable. *@
-            @if (network.Play.Kind != PlayPortKind.SameAsServerPort)
+            @if (!network.NamesNoPorts && network.Play.Kind != PlayPortKind.SameAsServerPort)
             {
                 <dt>Play ports</dt>
                 <dd title="@network.Play.Explanation">@network.Play.Sentence</dd>
@@ -210,8 +218,14 @@ else if (presence.OffersInstall)
             <p class="check-detail play-ports-pointer">Play ports need a change; see below.</p>
         }
 
-        @* T413. ServerTransports.Warning holds the sentence, where a test reads it. *@
-        @if (ServerTransports.Warning(network.Transport) is { } transportWarning)
+        @if (network.NamesNoPorts)
+        {
+            <p class="check-detail">@ReadinessInspector.NoPortsNamed</p>
+        }
+
+        @* T413. ServerTransports.Warning holds the sentence, where a test reads it;
+           T466: an absent transport line is not "set to RakNet". *@
+        @if (ServerTransports.Warning(network.TransportToShow, network.TransportNotSet) is { } transportWarning)
         {
             <p class="console-hint transport-warning">@transportWarning</p>
         }

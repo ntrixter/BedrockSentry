@@ -66,8 +66,13 @@ public static class ServerTransports
     /// version string which later builds will refuse it, and the cost of the sentence on
     /// an older build is a switch nobody needs yet (<c>T413</c>).
     /// </remarks>
-    public static string? Warning(ServerTransport? transport) => transport is ServerTransport.RakNet
-        ? "This server is set to RakNet. Bedrock 1.26.60 and later take players only over NetherNet: "
+    /// <param name="notSet">
+    /// The file has no <c>transport</c> line, so RakNet is BDS's reading of an absent key,
+    /// and the server is not "set to" it (<c>T466</c>).
+    /// </param>
+    public static string? Warning(ServerTransport? transport, bool notSet = false) => transport is ServerTransport.RakNet
+        ? (notSet ? "This server's file names no transport, which BDS reads as RakNet. " : "This server is set to RakNet. ")
+          + "Bedrock 1.26.60 and later take players only over NetherNet: "
           + "the console prints a TRANSPORT TYPE ERROR at start, and the port, firewall and play-port "
           + "rows here describe ports the server does not use. Set transport to nethernet on the "
           + "Configuration tab, with a server-udp-ports window of its own."

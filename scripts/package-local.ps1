@@ -27,7 +27,7 @@
 
 .EXAMPLE
     .\scripts\package-local.ps1
-    # -> bedrocksentry-0.5.0-local_<sha>.zip in the repository root
+    # -> bedrocksentry-0.5.1-local_<sha>.zip in the repository root
 #>
 
 [CmdletBinding()]
@@ -86,6 +86,9 @@ try {
             # no absolute path of the building machine (its user folder among them)
             # reaches the package or a logged stack trace.
             '-p:ContinuousIntegrationBuild=true'
+            # Only the repository's NuGet.config, not those of the folders above it
+            # (T465 clause 11).
+            "-p:RestoreConfigFile=$(Join-Path $repoRoot 'NuGet.config')"
         )
 
         Write-Host 'Publishing host...'

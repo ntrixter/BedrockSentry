@@ -518,9 +518,19 @@ public sealed class LanDiscoveryPortGuard : IDisposable
                     if (_guard.OwnerPlaysOnly?.Invoke() == true)
                     {
                         _guard.ReleaseStandingHold(_instanceId);
-                        _guard._log.LogInformation(
-                            "Let the LAN discovery pair go after {InstanceId} started; its owner only plays on it",
-                            _instanceId);
+                        // Not "started" when nothing did: a crash loop's give-up reaches here too.
+                        if (_nothingStarted)
+                        {
+                            _guard._log.LogInformation(
+                                "Let the LAN discovery pair go after {InstanceId}'s start ended without a server; its owner only plays on it",
+                                _instanceId);
+                        }
+                        else
+                        {
+                            _guard._log.LogInformation(
+                                "Let the LAN discovery pair go after {InstanceId} started; its owner only plays on it",
+                                _instanceId);
+                        }
                     }
                 }
             }
